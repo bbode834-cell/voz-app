@@ -7,7 +7,7 @@ const path = require('path');
 const { Server } = require('socket.io');
 
 const PORT = process.env.PORT || 3000;
-const MAX_PER_CHANNEL = Number(process.env.MAX_PER_CHANNEL || 6);
+const MAX_PER_CHANNEL = Number(process.env.MAX_PER_CHANNEL || 15);
 const DEFAULT_NAMES = (process.env.CHANNELS || 'Geral,Sala 2,Sala 3')
   .split(',')
   .map((s) => s.trim())
@@ -18,6 +18,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // Configuração de STUN/TURN entregue ao navegador
 app.get('/config', (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
   const iceServers = [
     { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
   ];
@@ -38,8 +39,8 @@ const io = new Server(server, { maxHttpBufferSize: 200_000 });
 const channels = DEFAULT_NAMES.map((name, i) => ({
   id: `c${i + 1}`,
   name,
-  users: new Map(), // socketId -> { name, muted, avatar }
-  sharer: null,
+  users: new Map(), // socketId -> { name, muted, avatar, proto }
+  sharers: new Set(), // quem está transmitindo agora (várias pessoas ao mesmo tempo)
 }));
 // Quando o nome foi trocado pela última vez (0 = nomes padrão)
 let namesVersion = 0;
@@ -65,7 +66,9 @@ function snapshot() {
     channels: channels.map((c) => ({
       id: c.id,
       name: c.name,
-      sharer: c.sharer,
+      sharers: [...c.sharers],
+      // "sharer" = a primeira transmissão (para a versão 1.0.2 do app)
+      sharer: c.sharers.values().next().value || null,
       users: [...c.users.entries()].map(([id, u]) => ({ id, ...u })),
     })),
   };
@@ -79,8 +82,7 @@ function leave(socket) {
   const ch = byId(socket.data.channel);
   if (!ch) return;
   ch.users.delete(socket.id);
-  if (ch.sharer === socket.id) {
-    ch.sharer = null;
+  if (ch.sharers.delete(socket.id)) {
     socket.to(ch.id).emit('share-stopped', { id: socket.id });
   }
   socket.to(ch.id).emit('peer-left', { id: socket.id });
@@ -120,7 +122,7 @@ io.on('connection', (socket) => {
     broadcastChannels();
   });
 
-  socket.on('join', ({ channel, name, avatar } = {}, ack = () => {}) => {
+  socket.on('join', ({ channel, name, avatar, proto } = {}, ack = () => {}) => {
     const ch = byId(channel);
     if (!ch) return ack({ error: 'Esse canal não existe.' });
     if (socket.data.channel === ch.id) return ack({ error: 'Você já está nesse canal.' });
@@ -133,12 +135,19 @@ io.on('connection', (socket) => {
     const nome = cleanName(name, 'Anônimo');
     const peers = [...ch.users.entries()].map(([id, u]) => ({ id, ...u }));
 
-    ch.users.set(socket.id, { name: nome, muted: false, avatar: cleanAvatar(avatar) });
+    // proto 2 = versão que escolhe qual transmissão assistir
+    ch.users.set(socket.id, { name: nome, muted: false, avatar: cleanAvatar(avatar), proto: Number(proto) || 1 });
     socket.data.channel = ch.id;
     socket.join(ch.id);
     socket.to(ch.id).emit('peer-joined', { id: socket.id, name: nome });
 
-    ack({ ok: true, selfId: socket.id, peers, sharer: ch.sharer });
+    ack({
+      ok: true,
+      selfId: socket.id,
+      peers,
+      sharers: [...ch.sharers],
+      sharer: ch.sharers.values().next().value || null,
+    });
     broadcastChannels();
   });
 
@@ -170,27 +179,33 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Apenas uma transmissão de tela por canal
+  // Transmissões: várias pessoas podem transmitir ao mesmo tempo
   socket.on('share-start', (_ = {}, ack = () => {}) => {
     const ch = byId(socket.data.channel);
     if (!ch) return ack({ error: 'Entre em um canal primeiro.' });
-    if (ch.sharer && ch.sharer !== socket.id) {
-      const who = ch.users.get(ch.sharer)?.name || 'Alguém';
-      return ack({ error: `${who} já está transmitindo a tela.` });
+    if (!ch.sharers.has(socket.id)) {
+      ch.sharers.add(socket.id);
+      io.to(ch.id).emit('share-started', { id: socket.id });
+      broadcastChannels();
     }
-    ch.sharer = socket.id;
-    io.to(ch.id).emit('share-started', { id: socket.id });
     ack({ ok: true });
-    broadcastChannels();
   });
 
   socket.on('share-stop', () => {
     const ch = byId(socket.data.channel);
-    if (ch && ch.sharer === socket.id) {
-      ch.sharer = null;
+    if (ch && ch.sharers.delete(socket.id)) {
       io.to(ch.id).emit('share-stopped', { id: socket.id });
       broadcastChannels();
     }
+  });
+
+  // Quem quer assistir (ou parar de assistir) avisa quem está transmitindo.
+  // Assim cada pessoa só envia o vídeo para quem está assistindo.
+  socket.on('watch', ({ id, on } = {}) => {
+    const ch = byId(socket.data.channel);
+    const target = io.sockets.sockets.get(id);
+    if (!ch || !target || target.data.channel !== ch.id) return;
+    target.emit('watch-request', { from: socket.id, on: !!on });
   });
 
   socket.on('disconnect', () => leave(socket));

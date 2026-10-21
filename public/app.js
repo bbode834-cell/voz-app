@@ -17,6 +17,7 @@ const ICON = {
   screen: svg('<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>'),
   hang: svg('<path d="M10.7 13.3a16 16 0 0 0 3.4 2.6l1.3-1.3a2 2 0 0 1 2.1-.5c.9.3 1.8.5 2.8.6a2 2 0 0 1 1.7 2v3a2 2 0 0 1-2.2 2A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .3 1.9.6 2.8a2 2 0 0 1-.5 2.1L7.9 9.9"/><path d="M22 2 2 22"/>'),
   full: svg('<path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/>'),
+  close: svg('<path d="M18 6 6 18M6 6l12 12"/>'),
   pencil: svg('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>'),
 };
 
@@ -36,15 +37,15 @@ let currentChannel = null; // id do canal (c1, c2...)
 let channelsState = [];
 let localStream = null;   // microfone
 let screenStream = null;  // minha tela (quando eu transmito)
-let sharerId = null;      // quem está transmitindo no meu canal
+const watching = new Set(); // transmissões que estou assistindo (ids)
 let muted = false;
 let deafened = false;
 let joining = false;
 const volumes = store.get('voz-volumes', {});            // nome do amigo -> 0..1
-let screenVolume = store.get('voz-volume-tela', 1);       // som da transmissão
+const screenVolumes = store.get('voz-volume-telas', {});  // nome de quem transmite -> 0..1
 let avatarList = [];
 
-// id -> { pc, polite, makingOffer, ignoreOffer, screenSenders, audioEls, micEl, screenStream }
+// id -> { pc, polite, makingOffer, ignoreOffer, screenSenders, audioEls, micEl, screenStream, watchingMe }
 const peers = new Map();
 const speaking = new Set();
 
@@ -83,6 +84,16 @@ function findUser(id) {
 }
 const nameOf = (id) => findUser(id)?.name || 'Alguém';
 const channelName = (id) => channelsState.find((c) => c.id === id)?.name || '';
+const currentCh = () => channelsState.find((c) => c.id === currentChannel);
+// Quem está transmitindo no meu canal agora
+const sharersNow = () => {
+  const ch = currentCh();
+  if (!ch) return [];
+  return ch.sharers || (ch.sharer ? [ch.sharer] : []);
+};
+const isSharing = (id) => sharersNow().includes(id);
+// Versão 1.0.2 do app não sabe pedir para assistir: recebe a primeira transmissão direto
+const isLegacy = (id) => (findUser(id)?.proto || 1) < 2;
 
 let toastTimer;
 function toast(msg) {
@@ -214,24 +225,9 @@ $('#btn-mute').onclick = toggleMute;
 $('#btn-deafen').onclick = toggleDeafen;
 $('#btn-share').onclick = toggleShare;
 $('#btn-leave').onclick = () => leaveChannel();
-$('#btn-fullscreen').innerHTML = ICON.full;
-$('#btn-fullscreen').onclick = () => {
-  const w = $('#screen-wrap');
-  if (document.fullscreenElement) document.exitFullscreen();
-  else w.requestFullscreen?.();
-};
 $('#btn-leave .ico').innerHTML = ICON.hang;
 $('#btn-share .ico').innerHTML = ICON.screen;
 
-// Volume do som da transmissão
-$('#screen-vol').value = Math.round(screenVolume * 100);
-$('#screen-vol-ico').innerHTML = screenVolume > 0 ? ICON.speaker : ICON.speakerOff;
-$('#screen-vol').addEventListener('input', (e) => {
-  screenVolume = e.target.value / 100;
-  store.set('voz-volume-tela', screenVolume);
-  $('#screen-vol-ico').innerHTML = screenVolume > 0 ? ICON.speaker : ICON.speakerOff;
-  applyVolumes();
-});
 
 // ---------- Nomes dos canais ----------
 // O servidor grátis "dorme" e volta com os nomes padrão; quem lembra dos
@@ -268,7 +264,7 @@ async function joinChannel(id) {
     applyMicState();
     ensureAudioCtx();
 
-    const res = await emitAck('join', { channel: id, name: myName, avatar: myAvatar });
+    const res = await emitAck('join', { channel: id, name: myName, avatar: myAvatar, proto: 2 });
     if (res.error) {
       toast(res.error);
       stopMic();
@@ -277,14 +273,16 @@ async function joinChannel(id) {
 
     currentChannel = id;
     selfId = res.selfId;
-    sharerId = res.sharer;
+    watching.clear();
     if (localStream) watchSpeaking(selfId, localStream);
     socket.emit('mute', { muted: muted || deafened || !localStream });
 
     res.peers.forEach((p) => createPeer(p.id, true));
-    if (sharerId) showScreenWaiting(sharerId);
     soundJoin();
     renderAll();
+    // Já tem gente transmitindo: começa assistindo a primeira
+    const already = res.sharers || (res.sharer ? [res.sharer] : []);
+    if (already.length) watch(already[0]);
   } finally {
     joining = false;
   }
@@ -298,8 +296,8 @@ function leaveChannel(switching = false) {
   if (!switching) { stopMic(); soundLeave(); }
   unwatchSpeaking(selfId);
   currentChannel = null;
-  sharerId = null;
-  hideScreen();
+  watching.clear();
+  renderScreens();
   closeVolume();
   renderAll();
 }
@@ -327,6 +325,7 @@ function createPeer(id, initiator = false) {
     audioEls: new Map(),
     micEl: null,
     screenStream: null,
+    watchingMe: false,
   };
   peers.set(id, peer);
 
@@ -369,7 +368,9 @@ function createPeer(id, initiator = false) {
     const stream = streams[0] || new MediaStream([track]);
     if (track.kind === 'video') {
       peer.screenStream = stream;
-      if (sharerId === id) showScreen(stream, id);
+      // Chegou vídeo de quem está transmitindo: mostra (o app 1.0.2 envia sem pedirmos)
+      if (isSharing(id) && !watching.has(id)) watching.add(id);
+      renderScreens();
       return;
     }
     // Áudio: pode ser o microfone ou o som da tela transmitida
@@ -396,9 +397,31 @@ function addLocalTracks(peer) {
   if (peer.tracksAdded) return;
   peer.tracksAdded = true;
   if (localStream) localStream.getTracks().forEach((t) => peer.pc.addTrack(t, localStream));
-  if (screenStream) {
+  if (screenStream && shouldSendTo(peer.id)) {
     peer.screenSenders = addScreenTracks(peer.pc, screenStream);
   }
+}
+
+// Só envio minha tela para quem está assistindo (economiza internet e processador)
+function shouldSendTo(id) {
+  const peer = peers.get(id);
+  if (!screenStream || !peer) return false;
+  if (peer.watchingMe) return true;
+  return isLegacy(id) && currentCh()?.sharer === selfId;
+}
+
+function syncScreenSenders() {
+  peers.forEach((peer, id) => {
+    if (!peer.tracksAdded) return; // recebe ao negociar
+    const want = shouldSendTo(id);
+    const has = peer.screenSenders.length > 0;
+    if (want && !has) {
+      peer.screenSenders = addScreenTracks(peer.pc, screenStream);
+    } else if (!want && has) {
+      peer.screenSenders.forEach((sd) => { try { peer.pc.removeTrack(sd); } catch {} });
+      peer.screenSenders = [];
+    }
+  });
 }
 
 // Adiciona a tela numa conexão, preferindo H.264 (usa a placa de vídeo do PC,
@@ -525,8 +548,12 @@ socket.on('channels', (data) => {
       names: data.channels.map((c) => ({ id: c.id, name: c.name })),
     });
   }
+  // Para de mostrar quem parou de transmitir ou saiu
+  [...watching].forEach((id) => { if (!isSharing(id)) watching.delete(id); });
+  syncScreenSenders();
   applyVolumes();
   renderAll();
+  renderScreens();
 });
 
 socket.on('peer-joined', ({ id }) => {
@@ -538,21 +565,18 @@ socket.on('peer-joined', ({ id }) => {
 socket.on('peer-left', ({ id }) => {
   if (!peers.has(id)) return;
   closePeer(id);
-  if (sharerId === id) { sharerId = null; hideScreen(); }
+  watching.delete(id);
+  renderScreens();
   if (volTarget === id) closeVolume();
   soundLeave();
 });
 
 socket.on('share-started', ({ id }) => {
-  if (id === selfId) return;
-  sharerId = id;
-  const p = peers.get(id);
-  if (p?.screenStream && p.screenStream.getVideoTracks().some((t) => t.readyState === 'live')) {
-    showScreen(p.screenStream, id);
-  } else {
-    showScreenWaiting(id);
-  }
+  if (id === selfId || !currentChannel) return;
+  toast(`${nameOf(id)} começou a transmitir a tela.`);
   renderAll();
+  // Se não estou vendo nada, já abro essa
+  if (watching.size === 0) watch(id);
 });
 
 socket.on('share-stopped', ({ id }) => {
@@ -564,9 +588,33 @@ socket.on('share-stopped', ({ id }) => {
       if (el.dataset.kind === 'screen') { el.srcObject = null; el.remove(); p.audioEls.delete(sid); }
     });
   }
-  if (sharerId === id) { sharerId = null; hideScreen(); }
+  watching.delete(id);
+  renderScreens();
   renderAll();
 });
+
+// Alguém começou/parou de assistir a minha transmissão
+socket.on('watch-request', ({ from, on }) => {
+  const peer = peers.get(from);
+  if (!peer) return;
+  peer.watchingMe = !!on;
+  syncScreenSenders();
+});
+
+function watch(id) {
+  if (!currentChannel || id === selfId) return;
+  watching.add(id);
+  socket.emit('watch', { id, on: true });
+  renderScreens();
+  renderMain();
+}
+
+function unwatch(id) {
+  watching.delete(id);
+  socket.emit('watch', { id, on: false });
+  renderScreens();
+  renderMain();
+}
 
 socket.on('disconnect', () => {
   if (currentChannel) {
@@ -575,8 +623,8 @@ socket.on('disconnect', () => {
     [...peers.keys()].forEach(closePeer);
     stopMic();
     currentChannel = null;
-    sharerId = null;
-    hideScreen();
+    watching.clear();
+    renderScreens();
     closeVolume();
     renderAll();
   }
@@ -586,7 +634,6 @@ socket.on('disconnect', () => {
 async function toggleShare() {
   if (screenStream) return stopShare();
   if (!currentChannel) return;
-  if (sharerId && sharerId !== selfId) return toast(`${nameOf(sharerId)} já está transmitindo.`);
   if (!navigator.mediaDevices?.getDisplayMedia) return toast('Seu navegador não permite compartilhar a tela.');
 
   let stream;
@@ -614,13 +661,8 @@ async function toggleShare() {
   if (vt && 'contentHint' in vt) vt.contentHint = q().hint;
   if (vt) vt.onended = () => stopShare(); // botão "Parar compartilhamento" do navegador
 
-  peers.forEach((peer) => {
-    // quem ainda não negociou recebe a tela automaticamente ao negociar
-    if (peer.tracksAdded) peer.screenSenders = addScreenTracks(peer.pc, stream);
-  });
-
-  sharerId = selfId;
-  showScreen(stream, selfId);
+  syncScreenSenders(); // envia para quem já pediu para assistir
+  renderScreens();
   renderAll();
 }
 
@@ -633,35 +675,79 @@ function stopShare() {
   screenStream.getTracks().forEach((t) => t.stop());
   screenStream = null;
   socket.emit('share-stop');
-  if (sharerId === selfId) { sharerId = null; hideScreen(); }
+  renderScreens();
   renderAll();
 }
 
-function showScreen(stream, id) {
-  const v = $('#screen-video');
-  if (v.srcObject !== stream) v.srcObject = stream;
-  v.play().catch(() => {});
-  $('#screen-waiting').hidden = true;
-  $('#screen-owner').textContent = id === selfId ? 'Você está transmitindo' : `Tela de ${nameOf(id)}`;
-  $('#screen-vol-box').hidden = id === selfId;
-  $('#screen-wrap').hidden = false;
-  $('#stage').classList.add('sharing');
-}
+// ---------- Grade de transmissões ----------
+const screenCards = new Map(); // id -> elemento do cartão
 
-function showScreenWaiting(id) {
-  $('#screen-video').srcObject = null;
-  $('#screen-waiting').hidden = false;
-  $('#screen-owner').textContent = `Tela de ${nameOf(id)}`;
-  $('#screen-vol-box').hidden = false;
-  $('#screen-wrap').hidden = false;
-  $('#stage').classList.add('sharing');
-}
+function renderScreens() {
+  const box = $('#screens');
+  const list = [];
+  if (screenStream && currentChannel) list.push(selfId);
+  watching.forEach((id) => { if (isSharing(id) && id !== selfId) list.push(id); });
 
-function hideScreen() {
-  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-  $('#screen-video').srcObject = null;
-  $('#screen-wrap').hidden = true;
-  $('#stage').classList.remove('sharing');
+  // remove cartões que não estão mais na lista
+  screenCards.forEach((el, id) => {
+    if (!list.includes(id)) {
+      if (document.fullscreenElement === el) document.exitFullscreen().catch(() => {});
+      el.querySelector('video').srcObject = null;
+      el.remove();
+      screenCards.delete(id);
+    }
+  });
+
+  list.forEach((id) => {
+    let el = screenCards.get(id);
+    const mine = id === selfId;
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'screen-card';
+      el.innerHTML = `
+        <video autoplay playsinline muted></video>
+        <div class="screen-waiting">Conectando à transmissão…</div>
+        <div class="screen-label"><span class="live">AO VIVO</span><span class="owner"></span></div>
+        <div class="screen-tools">
+          ${mine ? '' : `<label class="screen-vol" title="Volume do som desta transmissão">
+            <span class="ico">${ICON.speaker}</span><input type="range" min="0" max="100"></label>`}
+          <button class="icon-btn fs" title="Tela cheia">${ICON.full}</button>
+          <button class="icon-btn close" title="${mine ? 'Parar de transmitir' : 'Parar de assistir'}">${ICON.close}</button>
+        </div>`;
+      el.querySelector('.fs').onclick = () => {
+        if (document.fullscreenElement) document.exitFullscreen();
+        else el.requestFullscreen?.();
+      };
+      el.querySelector('.close').onclick = () => (mine ? stopShare() : unwatch(id));
+      const range = el.querySelector('.screen-vol input');
+      if (range) {
+        range.value = Math.round(screenVolumeOf(nameOf(id)) * 100);
+        range.addEventListener('input', (e) => {
+          const name = nameOf(id);
+          const v = e.target.value / 100;
+          if (v === 1) delete screenVolumes[name]; else screenVolumes[name] = v;
+          store.set('voz-volume-telas', screenVolumes);
+          el.querySelector('.screen-vol .ico').innerHTML = v > 0 ? ICON.speaker : ICON.speakerOff;
+          applyVolumes();
+        });
+      }
+      screenCards.set(id, el);
+      box.appendChild(el);
+    }
+    const stream = mine ? screenStream : peers.get(id)?.screenStream;
+    const live = !!stream && stream.getVideoTracks().some((t) => t.readyState === 'live');
+    const v = el.querySelector('video');
+    if (live && v.srcObject !== stream) { v.srcObject = stream; v.play().catch(() => {}); }
+    if (!live && v.srcObject) v.srcObject = null;
+    el.querySelector('.screen-waiting').hidden = live;
+    el.querySelector('.owner').textContent = mine ? 'Sua tela' : `Tela de ${nameOf(id)}`;
+  });
+
+  box.dataset.count = String(list.length);
+  box.hidden = list.length === 0;
+  $('#stage').classList.toggle('sharing', list.length > 0);
+  // Marca d'água some quando tem transmissão na tela (não atrapalha a imagem)
+  document.body.classList.toggle('has-stream', list.length > 0);
 }
 
 // ---------- Mute / ensurdecer / volumes ----------
@@ -687,6 +773,7 @@ function toggleDeafen() {
 }
 
 const volumeOf = (name) => (name in volumes ? volumes[name] : 1);
+const screenVolumeOf = (name) => (name in screenVolumes ? screenVolumes[name] : 1);
 
 // Aplica ensurdecer + volume de cada amigo + volume da transmissão
 function applyVolumes() {
@@ -694,7 +781,7 @@ function applyVolumes() {
     const v = volumeOf(nameOf(id));
     p.audioEls.forEach((el) => {
       el.muted = deafened;
-      el.volume = el.dataset.kind === 'screen' ? screenVolume : v;
+      el.volume = el.dataset.kind === 'screen' ? screenVolumeOf(nameOf(id)) : v;
     });
   });
 }
@@ -844,7 +931,7 @@ function renderChannels() {
       li.innerHTML = `
         ${avatarHTML(u)}
         <span class="mname">${esc(u.name)}${u.id === selfId ? ' (você)' : ''}</span>
-        ${ch.sharer === u.id ? '<span class="live">AO VIVO</span>' : ''}
+        ${(ch.sharers || [ch.sharer]).includes(u.id) ? '<span class="live">AO VIVO</span>' : ''}
         ${u.muted ? `<span class="muted-ico">${ICON.micOff}</span>` : ''}`;
       ul.appendChild(li);
     });
@@ -872,12 +959,18 @@ function renderMain() {
     t.innerHTML = `
       ${avatarHTML(u)}
       <span class="tname">${u.muted ? ICON.micOff : ''}${esc(u.name)}${isMe ? ' (você)' : ''}</span>
-      ${ch.sharer === u.id ? '<span class="live">AO VIVO</span>' : ''}
+      ${isSharing(u.id) ? '<span class="live">AO VIVO</span>' : ''}
+      ${!isMe && isSharing(u.id) ? `<button class="watch-btn ${watching.has(u.id) ? 'on' : ''}">${watching.has(u.id) ? 'Assistindo' : 'Assistir'}</button>` : ''}
       ${!isMe && vol !== 1 ? `<span class="vol-badge">${vol === 0 ? 'Silenciado' : Math.round(vol * 100) + '%'}</span>` : ''}`;
     if (!isMe) {
       t.dataset.vol = '1';
       t.title = 'Ajustar volume';
       t.onclick = () => (volTarget === u.id ? closeVolume() : openVolume(u.id, t));
+      const wb = t.querySelector('.watch-btn');
+      if (wb) {
+        wb.title = watching.has(u.id) ? 'Parar de assistir' : 'Assistir a transmissão';
+        wb.onclick = (e) => { e.stopPropagation(); watching.has(u.id) ? unwatch(u.id) : watch(u.id); };
+      }
     }
     tiles.appendChild(t);
   });
@@ -903,13 +996,7 @@ function renderControls() {
   st.classList.toggle('on', !!currentChannel);
 
   const bs = $('#btn-share');
-  const someoneElse = sharerId && sharerId !== selfId;
-  bs.disabled = !!someoneElse || !navigator.mediaDevices?.getDisplayMedia;
+  bs.disabled = !navigator.mediaDevices?.getDisplayMedia;
   bs.classList.toggle('active', !!screenStream);
   bs.querySelector('.label').textContent = screenStream ? 'Parar transmissão' : 'Compartilhar tela';
-  bs.title = someoneElse ? `${nameOf(sharerId)} já está transmitindo` : '';
-
-  if (sharerId && sharerId !== selfId && !$('#screen-wrap').hidden) {
-    $('#screen-owner').textContent = `Tela de ${nameOf(sharerId)}`;
-  }
 }

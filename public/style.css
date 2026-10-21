@@ -317,3 +317,49 @@ svg { display: block; }
 .quality select option { background: var(--panel-2); color: var(--text-strong); }
 @media (max-width: 720px) { .quality span { display: none; } .callbar { flex-wrap: wrap; } }
 .screen-vol[hidden] { display: none; }
+
+
+/* =========================================================
+   Várias transmissões ao mesmo tempo
+   ========================================================= */
+.screens {
+  flex: 1; min-height: 0; display: grid; gap: 10px;
+  grid-template-columns: 1fr; grid-auto-rows: minmax(0, 1fr);
+}
+.screens[hidden] { display: none; }
+.screens[data-count="2"] { grid-template-columns: 1fr 1fr; }
+.screens[data-count="3"], .screens[data-count="4"] { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+.screens[data-count="5"], .screens[data-count="6"] { grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr 1fr; }
+@media (max-width: 720px) {
+  .screens[data-count] { grid-template-columns: 1fr; grid-template-rows: none; grid-auto-rows: 220px; overflow-y: auto; }
+}
+.screen-card {
+  position: relative; min-height: 0; background: #111; border-radius: var(--radius); overflow: hidden;
+  display: grid; place-items: center;
+}
+.screen-card video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+.screen-card .screen-waiting { position: absolute; color: var(--muted); }
+.screen-card .screen-waiting[hidden] { display: none; }
+.screen-card .screen-label {
+  position: absolute; left: 10px; top: 10px; display: flex; align-items: center; gap: 8px;
+  background: rgba(0,0,0,.6); padding: 5px 9px; border-radius: 6px; font-size: 13px;
+}
+.screen-card .screen-tools { position: absolute; right: 10px; top: 10px; display: flex; gap: 6px; align-items: center; }
+.screen-card .screen-tools .icon-btn { background: rgba(0,0,0,.6); }
+.screen-card .screen-tools .close:hover { background: var(--red); color: #fff; }
+.screen-card .screen-vol input { width: 80px; }
+.screen-card:fullscreen { border-radius: 0; }
+
+/* Botão "Assistir" nos cartões de quem transmite */
+.watch-btn {
+  position: absolute; right: 8px; bottom: 8px;
+  background: var(--accent); color: #fff; font-size: 12px; font-weight: 700;
+  padding: 4px 10px; border-radius: 999px;
+}
+.stage.sharing .watch-btn { right: 6px; bottom: 6px; font-size: 11px; padding: 3px 8px; }
+.watch-btn:hover { background: var(--accent-hover); }
+.watch-btn.on { background: var(--green); }
+.tile:has(.watch-btn) .tname { max-width: calc(100% - 100px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Marca d'água some quando há transmissão na tela */
+body.has-stream .watermark { display: none; }

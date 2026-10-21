@@ -6,13 +6,13 @@ App parecido com o Discord, para grupos pequenos:
 - **Trocar nome do canal**: passe o mouse no canal e clique no lápis ✏️
 - **Volume separado de cada amigo**: clique no cartão do amigo; a transmissão tem o próprio controle de volume
 - **Som** quando alguém entra ou sai da chamada
-- **Marca d'água** com a logo King Launcher no fundo
+- **Marca d'água** com a logo King Launcher no fundo (some quando há transmissão na tela)
 
-- Canais de voz com até **6 pessoas** em cada um
+- Canais de voz com até **15 pessoas** em cada um
 - Mutar o microfone e ensurdecer (parar de ouvir)
 - Contorno verde em **quem está falando**
 - **Compartilhamento de tela**, com o som do sistema quando o navegador permite
-- **Uma transmissão por vez**: enquanto alguém transmite, o botão fica bloqueado para os outros
+- **Várias transmissões ao mesmo tempo**: cada pessoa escolhe o que assistir (botão **Assistir**) e pode ver várias lado a lado; quem transmite só envia o vídeo para quem está assistindo
 - Tela cheia na transmissão
 - A barra lateral mostra quem está em cada canal, quem está mutado e quem está **AO VIVO**
 
@@ -107,7 +107,7 @@ PORT=3000 node server.js
 |---|---|---|
 | `PORT` | `3000` | Porta do servidor |
 | `CHANNELS` | `Geral,Sala 2,Sala 3` | Nomes dos canais, separados por vírgula |
-| `MAX_PER_CHANNEL` | `6` | Limite de pessoas por canal |
+| `MAX_PER_CHANNEL` | `15` | Limite de pessoas por canal |
 | `TURN_URL` / `TURN_USER` / `TURN_PASS` | vazio | Servidor TURN |
 
 Exemplo: `CHANNELS="Lobby,Jogos,Reunião" npm start`

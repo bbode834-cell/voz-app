@@ -68,21 +68,7 @@
       </header>
 
       <section id="stage" class="stage">
-        <div id="screen-wrap" class="screen-wrap" hidden>
-          <video id="screen-video" autoplay playsinline muted></video>
-          <div id="screen-waiting" class="screen-waiting">Conectando à transmissão…</div>
-          <div class="screen-label">
-            <span class="live">AO VIVO</span>
-            <span id="screen-owner"></span>
-          </div>
-          <div class="screen-tools">
-            <label class="screen-vol" id="screen-vol-box" title="Volume do som da transmissão">
-              <span class="ico" id="screen-vol-ico"></span>
-              <input id="screen-vol" type="range" min="0" max="100" value="100" />
-            </label>
-            <button id="btn-fullscreen" class="icon-btn" title="Tela cheia"></button>
-          </div>
-        </div>
+        <div id="screens" class="screens" hidden></div>
         <div id="tiles" class="tiles"></div>
         <div id="empty" class="empty">
           <img src="logo.svg" alt="" class="empty-logo" />
