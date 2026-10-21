@@ -106,26 +106,37 @@ function toast(msg) {
 const emitAck = (ev, data) => new Promise((resolve) => socket.emit(ev, data, resolve));
 const sendSignal = (to, data) => socket.emit('signal', { to, data });
 
-// ---------- Sons de entrar / sair ----------
-function playTone(notes) {
-  if (deafened || !audioCtx) return;
-  ensureAudioCtx();
-  const t0 = audioCtx.currentTime + 0.01;
-  notes.forEach(([freq, start, dur]) => {
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    osc.type = 'triangle';
-    osc.frequency.value = freq;
-    gain.gain.setValueAtTime(0, t0 + start);
-    gain.gain.linearRampToValueAtTime(0.18, t0 + start + 0.015);
-    gain.gain.exponentialRampToValueAtTime(0.001, t0 + start + dur);
-    osc.connect(gain).connect(audioCtx.destination);
-    osc.start(t0 + start);
-    osc.stop(t0 + start + dur + 0.05);
-  });
+// ---------- Efeitos sonoros ----------
+const SONS = ['entrou', 'saiu', 'mic-on', 'mic-off', 'fone-on', 'fone-off', 'transmissao'];
+const soundBuffers = {};
+let soundsLoaded = false;
+
+async function loadSounds() {
+  if (soundsLoaded || !audioCtx) return;
+  soundsLoaded = true;
+  await Promise.all(SONS.map(async (n) => {
+    try {
+      const r = await fetch(`sons/${n}.wav`);
+      soundBuffers[n] = await audioCtx.decodeAudioData(await r.arrayBuffer());
+    } catch {}
+  }));
 }
-const soundJoin = () => playTone([[587, 0, 0.16], [880, 0.11, 0.26]]);   // sobe: alguém entrou
-const soundLeave = () => playTone([[880, 0, 0.16], [494, 0.11, 0.3]]);   // desce: alguém saiu
+
+// force = toca mesmo com o fone desligado (ex.: o som de desligar o fone)
+function playSound(name, force = false) {
+  if ((deafened && !force) || !audioCtx) return;
+  ensureAudioCtx();
+  const buf = soundBuffers[name];
+  if (!buf) return;
+  const src = audioCtx.createBufferSource();
+  const gain = audioCtx.createGain();
+  src.buffer = buf;
+  gain.gain.value = 0.6;
+  src.connect(gain).connect(audioCtx.destination);
+  src.start();
+}
+const soundJoin = () => playSound('entrou');
+const soundLeave = () => playSound('saiu');
 
 // ---------- Perfil (nome + avatar) ----------
 if (!window.isSecureContext) $('#secure-warning').hidden = false;
@@ -212,6 +223,7 @@ $('#profile-form').addEventListener('submit', async (e) => {
     try { config = await (await fetch('/config')).json(); } catch {}
   }
   ensureAudioCtx();
+  loadSounds();
   if (currentChannel) socket.emit('profile', { name: myName, avatar: myAvatar });
   renderAll();
 });
@@ -282,7 +294,8 @@ async function joinChannel(id) {
     renderAll();
     // Já tem gente transmitindo: começa assistindo a primeira
     const already = res.sharers || (res.sharer ? [res.sharer] : []);
-    if (already.length) watch(already[0]);
+    const other = already.filter((x) => x !== selfId);
+    if (other.length) watch(other[0]);
   } finally {
     joining = false;
   }
@@ -443,6 +456,31 @@ function addScreenTracks(pc, stream) {
   });
 }
 
+// Faz o vídeo já começar com velocidade alta (em vez de subir aos poucos a
+// partir de ~0,3 Mbps). Sem isso a imagem fica borrada nos primeiros segundos.
+const START_KBPS = 2500;
+function fastStart(sdp) {
+  if (!sdp || sdp.includes('x-google-start-bitrate')) return sdp;
+  const lines = sdp.split('\r\n');
+  const out = [];
+  let inVideo = false;
+  const hasFmtp = new Set();
+  lines.forEach((l) => { const m = l.match(/^a=fmtp:(\d+) /); if (m) hasFmtp.add(m[1]); });
+  for (const l of lines) {
+    if (l.startsWith('m=')) inVideo = l.startsWith('m=video');
+    if (inVideo) {
+      const fm = l.match(/^a=fmtp:(\d+) (.*)$/);
+      const rm = l.match(/^a=rtpmap:(\d+) (VP8|VP9|H264|AV1)\//i);
+      if (fm && !/apt=/.test(fm[2])) { out.push(`${l};x-google-start-bitrate=${START_KBPS}`); continue; }
+      out.push(l);
+      if (rm && !hasFmtp.has(rm[1])) out.push(`a=fmtp:${rm[1]} x-google-start-bitrate=${START_KBPS}`);
+      continue;
+    }
+    out.push(l);
+  }
+  return out.join('\r\n');
+}
+
 socket.on('signal', async ({ from, data }) => {
   if (!currentChannel) return;
   const peer = peers.get(from) || createPeer(from);
@@ -457,7 +495,7 @@ socket.on('signal', async ({ from, data }) => {
       if (peer.ignoreOffer) return;
       peer.settingRemoteAnswer = d.type === 'answer';
       try {
-        await pc.setRemoteDescription(d);
+        await pc.setRemoteDescription({ type: d.type, sdp: fastStart(d.sdp) });
       } finally {
         peer.settingRemoteAnswer = false;
       }
@@ -492,8 +530,9 @@ function closePeer(id) {
 // ---------- Qualidade da transmissão ----------
 // bitrate = quanto de internet (upload) vai para CADA amigo assistindo
 const QUALITY = {
-  leve:   { w: 1280, h: 720,  fps: 30, bitrate: 1_500_000, hint: 'detail' },
-  padrao: { w: 1920, h: 1080, fps: 30, bitrate: 3_500_000, hint: 'detail' },
+  // 'motion' = codificador otimizado para movimento (jogos)
+  leve:   { w: 1280, h: 720,  fps: 30, bitrate: 2_000_000, hint: 'motion' },
+  padrao: { w: 1920, h: 1080, fps: 30, bitrate: 4_000_000, hint: 'motion' },
   max:    { w: 1920, h: 1080, fps: 60, bitrate: 6_000_000, hint: 'motion' },
 };
 let qualityKey = store.get('voz-qualidade', 'padrao');
@@ -531,8 +570,8 @@ async function tuneScreenSenders(peer) {
       if (!p.encodings || !p.encodings.length) continue;
       p.encodings[0].maxBitrate = q().bitrate;
       p.encodings[0].maxFramerate = q().fps;
-      // 60 FPS: prefere manter a fluidez; senão, prefere manter a nitidez
-      p.degradationPreference = q().fps >= 60 ? 'maintain-framerate' : 'maintain-resolution';
+      // Jogo: quando a internet/PC aperta, diminui a nitidez mas mantém a fluidez
+      p.degradationPreference = 'maintain-framerate';
       await sender.setParameters(p);
     } catch {}
   }
@@ -574,6 +613,7 @@ socket.on('peer-left', ({ id }) => {
 socket.on('share-started', ({ id }) => {
   if (id === selfId || !currentChannel) return;
   toast(`${nameOf(id)} começou a transmitir a tela.`);
+  playSound('transmissao');
   renderAll();
   // Se não estou vendo nada, já abro essa
   if (watching.size === 0) watch(id);
@@ -708,6 +748,7 @@ function renderScreens() {
         <video autoplay playsinline muted></video>
         <div class="screen-waiting">Conectando à transmissão…</div>
         <div class="screen-label"><span class="live">AO VIVO</span><span class="owner"></span></div>
+        <div class="screen-stats" title="Qualidade da transmissão agora"></div>
         <div class="screen-tools">
           ${mine ? '' : `<label class="screen-vol" title="Volume do som desta transmissão">
             <span class="ico">${ICON.speaker}</span><input type="range" min="0" max="100"></label>`}
@@ -750,14 +791,73 @@ function renderScreens() {
   document.body.classList.toggle('has-stream', list.length > 0);
 }
 
+// ---------- Medidor da transmissão (FPS, resolução, atraso) ----------
+// Mostra em cada transmissão como ela está chegando de verdade, para saber
+// se o problema é a internet, o computador de quem transmite ou nada.
+const LIMIT_LABEL = { bandwidth: 'internet', cpu: 'processador', other: 'outro' };
+const num = (v) => (typeof v === 'number' && isFinite(v) ? v : 0);
+
+async function updateScreenStats() {
+  for (const [id, el] of screenCards) {
+    const box = el.querySelector('.screen-stats');
+    if (!box) continue;
+    try {
+      if (id === selfId) {
+        // Minha transmissão: como está saindo para quem assiste
+        let fps = 0, h = 0, lim = '', viewers = 0;
+        for (const peer of peers.values()) {
+          const v = peer.screenSenders.find((sd) => sd.track?.kind === 'video');
+          if (!v) continue;
+          viewers++;
+          (await v.getStats()).forEach((r) => {
+            if (r.type === 'outbound-rtp') {
+              fps = Math.max(fps, num(r.framesPerSecond));
+              h = Math.max(h, num(r.frameHeight));
+              if (r.qualityLimitationReason && r.qualityLimitationReason !== 'none') lim = r.qualityLimitationReason;
+            }
+          });
+        }
+        box.textContent = viewers === 0
+          ? 'Ninguém assistindo ainda'
+          : `${viewers} assistindo · ${Math.round(fps)} FPS · ${h}p` + (lim ? ` · limitado pelo ${LIMIT_LABEL[lim] || lim}` : '');
+        box.className = 'screen-stats' + (lim ? ' warn' : '');
+        continue;
+      }
+      const peer = peers.get(id);
+      const recv = peer?.pc.getReceivers().find((r) => r.track?.kind === 'video' && r.track.readyState === 'live');
+      if (!peer || !recv) { box.textContent = ''; continue; }
+      let fps = 0, h = 0, jb = 0, rtt = 0, lost = 0, got = 0;
+      (await recv.getStats()).forEach((r) => {
+        if (r.type === 'inbound-rtp') {
+          fps = num(r.framesPerSecond);
+          h = num(r.frameHeight);
+          const emitted = num(r.jitterBufferEmittedCount);
+          jb = emitted ? (num(r.jitterBufferDelay) / emitted) * 1000 : 0;
+          lost = num(r.packetsLost);
+          got = num(r.packetsReceived);
+        }
+        if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded') {
+          rtt = num(r.currentRoundTripTime) * 1000;
+        }
+      });
+      // atraso aproximado = metade do "ida e volta" da rede + o que fica guardado para tocar liso
+      const delay = Math.round(rtt / 2 + jb);
+      const lossPct = got + lost > 0 ? (lost / (got + lost)) * 100 : 0;
+      box.textContent = `${Math.round(fps)} FPS · ${h}p · atraso ~${delay} ms` + (lossPct > 2 ? ` · perda ${lossPct.toFixed(0)}%` : '');
+      box.className = 'screen-stats' + (fps > 0 && fps < 20 || delay > 300 || lossPct > 2 ? ' warn' : '');
+    } catch {}
+  }
+}
+setInterval(updateScreenStats, 1000);
+
 // ---------- Mute / ensurdecer / volumes ----------
 function applyMicState() {
   if (localStream) localStream.getAudioTracks().forEach((t) => { t.enabled = !(muted || deafened); });
 }
 
 function toggleMute() {
-  if (deafened) { deafened = false; muted = false; }
-  else muted = !muted;
+  if (deafened) { deafened = false; muted = false; playSound('fone-on'); }
+  else { muted = !muted; playSound(muted ? 'mic-off' : 'mic-on'); }
   applyMicState();
   applyVolumes();
   if (currentChannel) socket.emit('mute', { muted: muted || deafened || !localStream });
@@ -766,6 +866,7 @@ function toggleMute() {
 
 function toggleDeafen() {
   deafened = !deafened;
+  playSound(deafened ? 'fone-off' : 'fone-on', true);
   applyMicState();
   applyVolumes();
   if (currentChannel) socket.emit('mute', { muted: muted || deafened || !localStream });

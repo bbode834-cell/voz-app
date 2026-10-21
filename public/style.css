@@ -363,3 +363,11 @@ svg { display: block; }
 
 /* Marca d'água some quando há transmissão na tela */
 body.has-stream .watermark { display: none; }
+
+/* Medidor da transmissão */
+.screen-card .screen-stats {
+  position: absolute; left: 10px; bottom: 10px; font-size: 12px; font-variant-numeric: tabular-nums;
+  background: rgba(0,0,0,.6); color: #b5f5c8; padding: 3px 8px; border-radius: 6px;
+}
+.screen-card .screen-stats:empty { display: none; }
+.screen-card .screen-stats.warn { color: #fbbf24; }
