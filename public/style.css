@@ -384,3 +384,11 @@ body.has-stream .watermark { display: none; }
 .screen-card .lat.on { color: #fde047; }
 .screen-card .lat:hover { background: rgba(0,0,0,.8); }
 @media (max-width: 720px) { .screen-card .screen-vol { display: none; } }
+
+/* Diagnóstico de quem transmite */
+.screen-card .screen-sender {
+  position: absolute; left: 10px; bottom: 36px; font-size: 12px; max-width: calc(100% - 20px);
+  background: rgba(0,0,0,.6); color: var(--text); padding: 3px 8px; border-radius: 6px;
+}
+.screen-card .screen-sender:empty { display: none; }
+.screen-card .screen-sender.warn { color: #fbbf24; }

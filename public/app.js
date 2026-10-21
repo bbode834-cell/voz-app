@@ -506,6 +506,9 @@ socket.on('signal', async ({ from, data }) => {
         sendSignal(from, { description: pc.localDescription });
       }
       tuneScreenSenders(peer);
+    } else if (data.stats) {
+      // Diagnóstico enviado por quem transmite (como está saindo do lado dele)
+      peer.remoteStats = { ...data.stats, at: Date.now() };
     } else if (data.candidate) {
       try {
         await pc.addIceCandidate(data.candidate);
@@ -786,6 +789,7 @@ function renderScreens() {
         <div class="screen-waiting">Conectando à transmissão…</div>
         <div class="screen-label"><span class="live">AO VIVO</span><span class="owner"></span></div>
         <div class="screen-stats" title="Qualidade da transmissão agora"></div>
+        <div class="screen-sender"></div>
         <div class="screen-tools">
           ${mine ? '' : `<label class="screen-vol" title="Volume do som desta transmissão">
             <span class="ico">${ICON.speaker}</span><input type="range" min="0" max="100"></label>`}
@@ -899,10 +903,56 @@ async function updateScreenStats() {
       const lossPct = got + lost > 0 ? (lost / (got + lost)) * 100 : 0;
       box.textContent = `${fpsText(fps)} · ${resText(w, h)} · atraso ~${delay} ms` + (lossPct > 2 ? ` · perda ${lossPct.toFixed(0)}%` : '');
       box.className = 'screen-stats' + ((fps >= 1 && fps < 20) || delay > 400 || lossPct > 2 ? ' warn' : '');
+      showSenderDiagnosis(el, id, peer, fps);
     } catch {}
   }
 }
 setInterval(updateScreenStats, 1000);
+
+// Explica, em português, onde está o gargalo (do lado de quem transmite)
+function showSenderDiagnosis(el, id, peer, fpsHere) {
+  const box = el.querySelector('.screen-sender');
+  if (!box) return;
+  const st = peer.remoteStats;
+  if (!st || Date.now() - st.at > 8000) { box.textContent = ''; return; }
+  const who = nameOf(id);
+  const mbps = st.bwe ? (st.bwe / 1e6).toFixed(1).replace('.', ',') : null;
+  let msg = '', warn = false;
+  if (st.lim === 'cpu') {
+    msg = `⚠ O ${st.mobile ? 'celular' : 'computador'} de ${who} está sobrecarregado (processador)` + (st.auto ? ' — já reduzi para 30 FPS' : '');
+    warn = true;
+  } else if (st.lim === 'bandwidth' || (st.bwe && st.bwe < 1_200_000)) {
+    msg = `⚠ Internet de ${who} fraca para enviar` + (mbps ? `: ${mbps} Mbps` : '');
+    warn = true;
+  } else if (st.fps >= 20 && fpsHere > 0 && fpsHere < st.fps * 0.6) {
+    msg = `⚠ ${who} envia ${Math.round(st.fps)} FPS, mas chegam só ${Math.round(fpsHere)}: sua internet pode estar fraca`;
+    warn = true;
+  } else {
+    msg = `Envio de ${who}: ${fpsText(st.fps)} · ${resText(st.w, st.h)}` + (mbps ? ` · ${mbps} Mbps disponíveis` : '');
+  }
+  box.textContent = msg;
+  box.className = 'screen-sender' + (warn ? ' warn' : '');
+}
+
+// Quem transmite: manda o próprio diagnóstico para quem está assistindo
+setInterval(async () => {
+  if (!screenStream) return;
+  for (const [id, peer] of peers) {
+    const v = peer.screenSenders.find((sd) => sd.track?.kind === 'video');
+    if (!v) continue;
+    try {
+      const st = { fps: 0, w: 0, h: 0, lim: '', bwe: 0, mobile: /Android|iPhone|iPad/i.test(navigator.userAgent) };
+      (await v.getStats()).forEach((r) => {
+        if (r.type === 'outbound-rtp') {
+          st.fps = num(r.framesPerSecond); st.w = num(r.frameWidth); st.h = num(r.frameHeight);
+          if (r.qualityLimitationReason && r.qualityLimitationReason !== 'none') st.lim = r.qualityLimitationReason;
+        }
+        if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded') st.bwe = num(r.availableOutgoingBitrate);
+      });
+      sendSignal(id, { stats: st });
+    } catch {}
+  }
+}, 2000);
 
 // ---------- Mute / ensurdecer / volumes ----------
 function applyMicState() {
