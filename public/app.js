@@ -397,8 +397,27 @@ function addLocalTracks(peer) {
   peer.tracksAdded = true;
   if (localStream) localStream.getTracks().forEach((t) => peer.pc.addTrack(t, localStream));
   if (screenStream) {
-    peer.screenSenders = screenStream.getTracks().map((t) => peer.pc.addTrack(t, screenStream));
+    peer.screenSenders = addScreenTracks(peer.pc, screenStream);
   }
+}
+
+// Adiciona a tela numa conexão, preferindo H.264 (usa a placa de vídeo do PC,
+// deixa 1080p/60 FPS mais leve). Se o navegador não tiver, usa o padrão.
+function addScreenTracks(pc, stream) {
+  return stream.getTracks().map((t) => {
+    const sender = pc.addTrack(t, stream);
+    if (t.kind === 'video') {
+      try {
+        const tr = pc.getTransceivers().find((x) => x.sender === sender);
+        const caps = RTCRtpReceiver.getCapabilities?.('video')?.codecs || [];
+        const h264 = caps.filter((c) => c.mimeType === 'video/H264');
+        if (tr?.setCodecPreferences && h264.length) {
+          tr.setCodecPreferences([...h264, ...caps.filter((c) => c.mimeType !== 'video/H264')]);
+        }
+      } catch {}
+    }
+    return sender;
+  });
 }
 
 socket.on('signal', async ({ from, data }) => {
@@ -447,15 +466,50 @@ function closePeer(id) {
   unwatchSpeaking(id);
 }
 
-// Limita a qualidade da tela para não estourar o upload de quem transmite
+// ---------- Qualidade da transmissão ----------
+// bitrate = quanto de internet (upload) vai para CADA amigo assistindo
+const QUALITY = {
+  leve:   { w: 1280, h: 720,  fps: 30, bitrate: 1_500_000, hint: 'detail' },
+  padrao: { w: 1920, h: 1080, fps: 30, bitrate: 3_500_000, hint: 'detail' },
+  max:    { w: 1920, h: 1080, fps: 60, bitrate: 6_000_000, hint: 'motion' },
+};
+let qualityKey = store.get('voz-qualidade', 'padrao');
+if (!QUALITY[qualityKey]) qualityKey = 'padrao';
+const q = () => QUALITY[qualityKey];
+
+$('#quality').value = qualityKey;
+$('#quality').addEventListener('change', async (e) => {
+  qualityKey = e.target.value;
+  store.set('voz-qualidade', qualityKey);
+  if (qualityKey === 'max') {
+    toast('60 FPS precisa de internet boa: cerca de 6 Mbps de upload por amigo assistindo.');
+  }
+  // Se já estiver transmitindo, muda na hora
+  if (screenStream) {
+    const vt = screenStream.getVideoTracks()[0];
+    try {
+      await vt.applyConstraints({
+        frameRate: { ideal: q().fps, max: q().fps },
+        width: { ideal: q().w, max: q().w },
+        height: { ideal: q().h, max: q().h },
+      });
+    } catch {}
+    if ('contentHint' in vt) vt.contentHint = q().hint;
+    peers.forEach(tuneScreenSenders);
+  }
+});
+
+// Ajusta o envio da tela para cada amigo conforme a qualidade escolhida
 async function tuneScreenSenders(peer) {
   for (const sender of peer.screenSenders) {
     if (!sender.track || sender.track.kind !== 'video') continue;
     try {
       const p = sender.getParameters();
       if (!p.encodings || !p.encodings.length) continue;
-      p.encodings[0].maxBitrate = 2_500_000;
-      p.encodings[0].maxFramerate = 30;
+      p.encodings[0].maxBitrate = q().bitrate;
+      p.encodings[0].maxFramerate = q().fps;
+      // 60 FPS: prefere manter a fluidez; senão, prefere manter a nitidez
+      p.degradationPreference = q().fps >= 60 ? 'maintain-framerate' : 'maintain-resolution';
       await sender.setParameters(p);
     } catch {}
   }
@@ -538,7 +592,11 @@ async function toggleShare() {
   let stream;
   try {
     stream = await navigator.mediaDevices.getDisplayMedia({
-      video: { frameRate: { ideal: 30, max: 30 }, width: { max: 1920 }, height: { max: 1080 } },
+      video: {
+        frameRate: { ideal: q().fps, max: q().fps },
+        width: { ideal: q().w, max: q().w },
+        height: { ideal: q().h, max: q().h },
+      },
       audio: true,
     });
   } catch {
@@ -553,12 +611,12 @@ async function toggleShare() {
 
   screenStream = stream;
   const vt = stream.getVideoTracks()[0];
-  if (vt && 'contentHint' in vt) vt.contentHint = 'detail';
+  if (vt && 'contentHint' in vt) vt.contentHint = q().hint;
   if (vt) vt.onended = () => stopShare(); // botão "Parar compartilhamento" do navegador
 
   peers.forEach((peer) => {
     // quem ainda não negociou recebe a tela automaticamente ao negociar
-    if (peer.tracksAdded) peer.screenSenders = stream.getTracks().map((t) => peer.pc.addTrack(t, stream));
+    if (peer.tracksAdded) peer.screenSenders = addScreenTracks(peer.pc, stream);
   });
 
   sharerId = selfId;

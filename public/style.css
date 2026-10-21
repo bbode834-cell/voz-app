@@ -303,3 +303,17 @@ svg { display: block; }
 }
 .screen-vol .ico svg { width: 18px; height: 18px; }
 .screen-vol input { width: 100px; accent-color: var(--accent); }
+
+/* Qualidade da transmissão */
+.quality {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: var(--panel-3); border-radius: 6px; padding: 0 4px 0 12px;
+  color: var(--muted); font-size: 13px; font-weight: 600;
+}
+.quality select {
+  background: transparent; color: var(--text-strong); border: 0; outline: none;
+  font: inherit; font-weight: 600; padding: 10px 4px; cursor: pointer;
+}
+.quality select option { background: var(--panel-2); color: var(--text-strong); }
+@media (max-width: 720px) { .quality span { display: none; } .callbar { flex-wrap: wrap; } }
+.screen-vol[hidden] { display: none; }
