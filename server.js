@@ -8,7 +8,7 @@ const { Server } = require('socket.io');
 
 const PORT = process.env.PORT || 3000;
 const MAX_PER_CHANNEL = Number(process.env.MAX_PER_CHANNEL || 6);
-const CHANNELS = (process.env.CHANNELS || 'Geral,Sala 2,Sala 3')
+const DEFAULT_NAMES = (process.env.CHANNELS || 'Geral,Sala 2,Sala 3')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
@@ -32,21 +32,43 @@ app.get('/config', (req, res) => {
 });
 
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, { maxHttpBufferSize: 200_000 });
 
-// canal -> { users: Map<socketId, {name, muted}>, sharer: socketId | null }
-const rooms = new Map();
-CHANNELS.forEach((c) => rooms.set(c, { users: new Map(), sharer: null }));
+// Canais têm um id fixo (c1, c2, ...) e um nome que pode ser trocado
+const channels = DEFAULT_NAMES.map((name, i) => ({
+  id: `c${i + 1}`,
+  name,
+  users: new Map(), // socketId -> { name, muted, avatar }
+  sharer: null,
+}));
+// Quando o nome foi trocado pela última vez (0 = nomes padrão)
+let namesVersion = 0;
+
+const byId = (id) => channels.find((c) => c.id === id);
+
+function cleanName(s, fallback) {
+  const v = String(s || '').replace(/\s+/g, ' ').trim().slice(0, 24);
+  return v || fallback;
+}
+
+// Avatar: um do pacote ("p:gato") ou uma foto pequena enviada pela pessoa
+function cleanAvatar(a) {
+  if (typeof a !== 'string') return '';
+  if (/^p:[a-z0-9-]{1,20}$/.test(a)) return a;
+  if (/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(a) && a.length < 40_000) return a;
+  return '';
+}
 
 function snapshot() {
-  return CHANNELS.map((name) => {
-    const r = rooms.get(name);
-    return {
-      name,
-      sharer: r.sharer,
-      users: [...r.users.entries()].map(([id, u]) => ({ id, ...u })),
-    };
-  });
+  return {
+    namesVersion,
+    channels: channels.map((c) => ({
+      id: c.id,
+      name: c.name,
+      sharer: c.sharer,
+      users: [...c.users.entries()].map(([id, u]) => ({ id, ...u })),
+    })),
+  };
 }
 
 function broadcastChannels() {
@@ -54,16 +76,15 @@ function broadcastChannels() {
 }
 
 function leave(socket) {
-  const ch = socket.data.channel;
+  const ch = byId(socket.data.channel);
   if (!ch) return;
-  const room = rooms.get(ch);
-  room.users.delete(socket.id);
-  if (room.sharer === socket.id) {
-    room.sharer = null;
-    socket.to(ch).emit('share-stopped', { id: socket.id });
+  ch.users.delete(socket.id);
+  if (ch.sharer === socket.id) {
+    ch.sharer = null;
+    socket.to(ch.id).emit('share-stopped', { id: socket.id });
   }
-  socket.to(ch).emit('peer-left', { id: socket.id });
-  socket.leave(ch);
+  socket.to(ch.id).emit('peer-left', { id: socket.id });
+  socket.leave(ch.id);
   socket.data.channel = null;
   broadcastChannels();
 }
@@ -72,25 +93,62 @@ io.on('connection', (socket) => {
   socket.data.channel = null;
   socket.emit('channels', snapshot());
 
-  socket.on('join', ({ channel, name } = {}, ack = () => {}) => {
-    const room = rooms.get(channel);
-    if (!room) return ack({ error: 'Esse canal não existe.' });
-    if (socket.data.channel === channel) return ack({ error: 'Você já está nesse canal.' });
-    if (room.users.size >= MAX_PER_CHANNEL) {
+  // Depois que o servidor "dorme", ele volta com os nomes padrão.
+  // Quem já conhecia os nomes novos devolve eles aqui.
+  socket.on('sync-names', ({ version, names } = {}) => {
+    const v = Number(version) || 0;
+    if (v <= namesVersion || !Array.isArray(names)) return;
+    let changed = false;
+    names.forEach((n) => {
+      const ch = byId(n?.id);
+      if (ch) { ch.name = cleanName(n.name, ch.name); changed = true; }
+    });
+    if (changed) {
+      namesVersion = v;
+      broadcastChannels();
+    }
+  });
+
+  socket.on('rename-channel', ({ id, name } = {}, ack = () => {}) => {
+    const ch = byId(id);
+    if (!ch) return ack({ error: 'Canal não encontrado.' });
+    const novo = cleanName(name, '');
+    if (!novo) return ack({ error: 'Digite um nome.' });
+    ch.name = novo;
+    namesVersion = Date.now();
+    ack({ ok: true });
+    broadcastChannels();
+  });
+
+  socket.on('join', ({ channel, name, avatar } = {}, ack = () => {}) => {
+    const ch = byId(channel);
+    if (!ch) return ack({ error: 'Esse canal não existe.' });
+    if (socket.data.channel === ch.id) return ack({ error: 'Você já está nesse canal.' });
+    if (ch.users.size >= MAX_PER_CHANNEL) {
       return ack({ error: `Canal cheio (máximo ${MAX_PER_CHANNEL} pessoas).` });
     }
 
     leave(socket);
 
-    const cleanName = String(name || 'Anônimo').trim().slice(0, 24) || 'Anônimo';
-    const peers = [...room.users.entries()].map(([id, u]) => ({ id, ...u }));
+    const nome = cleanName(name, 'Anônimo');
+    const peers = [...ch.users.entries()].map(([id, u]) => ({ id, ...u }));
 
-    room.users.set(socket.id, { name: cleanName, muted: false });
-    socket.data.channel = channel;
-    socket.join(channel);
-    socket.to(channel).emit('peer-joined', { id: socket.id, name: cleanName });
+    ch.users.set(socket.id, { name: nome, muted: false, avatar: cleanAvatar(avatar) });
+    socket.data.channel = ch.id;
+    socket.join(ch.id);
+    socket.to(ch.id).emit('peer-joined', { id: socket.id, name: nome });
 
-    ack({ ok: true, selfId: socket.id, peers, sharer: room.sharer });
+    ack({ ok: true, selfId: socket.id, peers, sharer: ch.sharer });
+    broadcastChannels();
+  });
+
+  // Trocar nome/foto sem sair do canal
+  socket.on('profile', ({ name, avatar } = {}) => {
+    const ch = byId(socket.data.channel);
+    const u = ch?.users.get(socket.id);
+    if (!u) return;
+    u.name = cleanName(name, u.name);
+    u.avatar = cleanAvatar(avatar);
     broadcastChannels();
   });
 
@@ -105,9 +163,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('mute', ({ muted } = {}) => {
-    const ch = socket.data.channel;
-    if (!ch) return;
-    const u = rooms.get(ch).users.get(socket.id);
+    const u = byId(socket.data.channel)?.users.get(socket.id);
     if (u) {
       u.muted = !!muted;
       broadcastChannels();
@@ -116,26 +172,23 @@ io.on('connection', (socket) => {
 
   // Apenas uma transmissão de tela por canal
   socket.on('share-start', (_ = {}, ack = () => {}) => {
-    const ch = socket.data.channel;
+    const ch = byId(socket.data.channel);
     if (!ch) return ack({ error: 'Entre em um canal primeiro.' });
-    const room = rooms.get(ch);
-    if (room.sharer && room.sharer !== socket.id) {
-      const who = room.users.get(room.sharer)?.name || 'Alguém';
+    if (ch.sharer && ch.sharer !== socket.id) {
+      const who = ch.users.get(ch.sharer)?.name || 'Alguém';
       return ack({ error: `${who} já está transmitindo a tela.` });
     }
-    room.sharer = socket.id;
-    io.to(ch).emit('share-started', { id: socket.id });
+    ch.sharer = socket.id;
+    io.to(ch.id).emit('share-started', { id: socket.id });
     ack({ ok: true });
     broadcastChannels();
   });
 
   socket.on('share-stop', () => {
-    const ch = socket.data.channel;
-    if (!ch) return;
-    const room = rooms.get(ch);
-    if (room.sharer === socket.id) {
-      room.sharer = null;
-      io.to(ch).emit('share-stopped', { id: socket.id });
+    const ch = byId(socket.data.channel);
+    if (ch && ch.sharer === socket.id) {
+      ch.sharer = null;
+      io.to(ch.id).emit('share-stopped', { id: socket.id });
       broadcastChannels();
     }
   });
@@ -145,6 +198,6 @@ io.on('connection', (socket) => {
 
 server.listen(PORT, () => {
   console.log(`Servidor rodando em http://localhost:${PORT}`);
-  console.log(`Canais: ${CHANNELS.join(', ')} | Máx. por canal: ${MAX_PER_CHANNEL}`);
+  console.log(`Canais: ${DEFAULT_NAMES.join(', ')} | Máx. por canal: ${MAX_PER_CHANNEL}`);
   console.log(process.env.TURN_URL ? `TURN: ${process.env.TURN_URL}` : 'TURN: não configurado (só STUN)');
 });

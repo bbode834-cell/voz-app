@@ -166,7 +166,7 @@ svg { display: block; }
   display: flex; align-items: center; gap: 8px;
   background: rgba(0, 0, 0, .6); padding: 6px 10px; border-radius: 6px; font-size: 14px;
 }
-.screen-fs { position: absolute; right: 12px; top: 12px; background: rgba(0, 0, 0, .6); }
+
 
 .empty { margin: auto; text-align: center; color: var(--muted); }
 .empty h2 { color: var(--text-strong); margin: 12px 0 4px; }
@@ -210,3 +210,96 @@ svg { display: block; }
   .tile .avatar { width: 48px; height: 48px; font-size: 20px; }
   .btn .label { display: none; }
 }
+
+/* =========================================================
+   King Laucher — logo, marca d'água, perfil e volumes
+   ========================================================= */
+
+/* Marca d'água por cima de tudo, bem clarinha e sem atrapalhar cliques */
+.watermark {
+  position: fixed; inset: 0; z-index: 40; pointer-events: none;
+  background: url("logo.svg") center / min(62vw, 560px) no-repeat;
+  opacity: .07;
+}
+
+.sidebar-header { display: flex; align-items: center; gap: 10px; padding: 10px 16px; }
+.side-logo { width: 44px; height: 33px; }
+.empty-logo { width: 180px; opacity: .9; margin: 0 auto; display: block; }
+.modal-logo { width: 120px; margin: 0 auto -4px; display: block; }
+
+/* Avatar com imagem */
+.avatar { overflow: hidden; }
+.avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.avatar.big { width: 72px; height: 72px; font-size: 28px; }
+
+/* Perfil */
+.modal { z-index: 50; }
+.modal-card { width: min(460px, calc(100% - 32px)); max-height: calc(100% - 32px); overflow-y: auto; }
+.field-label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-top: 4px; }
+.avatar-preview-row { display: flex; align-items: center; gap: 14px; }
+.upload-box { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.upload-box small { color: var(--muted); }
+.avatar-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(52px, 1fr)); gap: 8px;
+  background: var(--bg); border-radius: 8px; padding: 10px;
+}
+.avatar-opt {
+  aspect-ratio: 1; border-radius: 50%; padding: 0; overflow: hidden;
+  outline: 3px solid transparent; outline-offset: 2px; transition: transform .1s, outline-color .1s;
+}
+.avatar-opt img { width: 100%; height: 100%; display: block; }
+.avatar-opt:hover { transform: scale(1.08); }
+.avatar-opt.selected { outline-color: var(--accent); }
+.btn.small { padding: 6px 12px; font-size: 13px; }
+
+/* Botão do perfil na barra de baixo */
+.me { padding: 4px; border-radius: 6px; text-align: left; flex: 1; min-width: 0; }
+.me:hover { background: var(--hover); }
+
+/* Renomear canal */
+.channel-row { display: flex; align-items: center; }
+.channel-row .channel-btn { flex: 1; min-width: 0; }
+.rename-btn {
+  width: 28px; height: 28px; border-radius: 6px; display: grid; place-items: center;
+  color: var(--muted); opacity: 0; flex-shrink: 0;
+}
+.rename-btn svg { width: 15px; height: 15px; }
+.channel-row:hover .rename-btn, .rename-btn:focus { opacity: 1; }
+.rename-btn:hover { background: var(--hover); color: var(--text-strong); }
+@media (hover: none) { .rename-btn { opacity: .7; } }
+
+/* Dica de volume e cartões clicáveis */
+.main-header { gap: 12px; }
+.main-hint { color: var(--muted); font-weight: 400; font-size: 13px; }
+.tile.clickable { cursor: pointer; }
+.tile.clickable:hover { background: #42444b; }
+.tile .vol-badge {
+  position: absolute; top: 8px; left: 8px; font-size: 11px; font-weight: 700;
+  background: rgba(0,0,0,.6); padding: 2px 6px; border-radius: 4px; color: #fbbf24;
+}
+
+/* Janela de volume */
+.vol-pop {
+  position: fixed; z-index: 45; width: 250px;
+  background: #111214; border-radius: 10px; padding: 14px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.6); display: flex; flex-direction: column; gap: 12px;
+}
+.vol-pop[hidden] { display: none; }
+.vol-head { display: flex; align-items: center; gap: 10px; color: var(--text-strong); }
+.vol-row { display: flex; align-items: center; gap: 10px; }
+.vol-row input { flex: 1; accent-color: var(--accent); }
+.vol-row span { width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
+.vol-actions { display: flex; gap: 8px; }
+.vol-actions .btn { flex: 1; }
+
+/* Ferramentas da transmissão (volume + tela cheia) */
+.screen-tools {
+  position: absolute; right: 12px; top: 12px; display: flex; gap: 8px; align-items: center;
+}
+.screen-tools .icon-btn { background: rgba(0,0,0,.6); }
+.screen-vol {
+  display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px;
+  background: rgba(0,0,0,.6); border-radius: 6px; color: var(--text);
+}
+.screen-vol .ico svg { width: 18px; height: 18px; }
+.screen-vol input { width: 100px; accent-color: var(--accent); }

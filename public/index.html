@@ -3,16 +3,35 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Canais de Voz</title>
+  <title>King Laucher</title>
+  <link rel="icon" href="logo.svg" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div id="login" class="modal">
-    <form id="login-form" class="modal-card">
-      <h1>Bem-vindo</h1>
-      <p>Como você quer ser chamado?</p>
-      <input id="name-input" maxlength="24" placeholder="Seu nome" autocomplete="off" required />
-      <button type="submit" class="btn primary">Entrar</button>
+  <!-- Marca d'água no fundo de toda a tela -->
+  <div class="watermark" aria-hidden="true"></div>
+
+  <!-- Perfil: nome + avatar (aparece ao entrar e ao clicar na sua foto) -->
+  <div id="profile" class="modal">
+    <form id="profile-form" class="modal-card">
+      <img src="logo.svg" alt="King Laucher" class="modal-logo" />
+      <h1 id="profile-title">Bem-vindo</h1>
+
+      <label class="field-label" for="name-input">Seu nome</label>
+      <input id="name-input" maxlength="24" placeholder="Como quer ser chamado?" autocomplete="off" required />
+
+      <span class="field-label">Escolha sua foto de perfil</span>
+      <div class="avatar-preview-row">
+        <span id="avatar-preview" class="avatar big"></span>
+        <div class="upload-box">
+          <button type="button" id="btn-upload" class="btn small">Enviar minha foto</button>
+          <small>ou escolha um personagem abaixo</small>
+        </div>
+        <input id="file-input" type="file" accept="image/*" hidden />
+      </div>
+      <div id="avatar-grid" class="avatar-grid"></div>
+
+      <button type="submit" class="btn primary">Salvar e entrar</button>
       <p id="secure-warning" class="warning" hidden>
         Atenção: o microfone só funciona em <b>https://</b> ou em <b>localhost</b>.
       </p>
@@ -21,17 +40,20 @@
 
   <div class="app">
     <aside class="sidebar">
-      <header class="sidebar-header">Canais de voz</header>
+      <header class="sidebar-header">
+        <img src="logo.svg" alt="" class="side-logo" />
+        <span>Canais de voz</span>
+      </header>
       <div id="channels" class="channels"></div>
 
       <div class="userbar">
-        <div class="me">
+        <button class="me" id="btn-profile" title="Editar perfil">
           <span id="me-avatar" class="avatar"></span>
           <div class="me-info">
             <strong id="me-name"></strong>
             <small id="me-status">Desconectado</small>
           </div>
-        </div>
+        </button>
         <div class="userbar-controls">
           <button id="btn-mute" class="icon-btn" title="Mutar microfone"></button>
           <button id="btn-deafen" class="icon-btn" title="Ensurdecer"></button>
@@ -42,6 +64,7 @@
     <main class="main">
       <header class="main-header">
         <span id="main-title">Escolha um canal de voz</span>
+        <small id="main-hint" class="main-hint" hidden>Clique em um amigo para ajustar o volume dele</small>
       </header>
 
       <section id="stage" class="stage">
@@ -52,11 +75,17 @@
             <span class="live">AO VIVO</span>
             <span id="screen-owner"></span>
           </div>
-          <button id="btn-fullscreen" class="icon-btn screen-fs" title="Tela cheia"></button>
+          <div class="screen-tools">
+            <label class="screen-vol" id="screen-vol-box" title="Volume do som da transmissão">
+              <span class="ico" id="screen-vol-ico"></span>
+              <input id="screen-vol" type="range" min="0" max="100" value="100" />
+            </label>
+            <button id="btn-fullscreen" class="icon-btn" title="Tela cheia"></button>
+          </div>
         </div>
         <div id="tiles" class="tiles"></div>
         <div id="empty" class="empty">
-          <div class="empty-icon"></div>
+          <img src="logo.svg" alt="" class="empty-logo" />
           <h2>Nenhum canal selecionado</h2>
           <p>Clique em um canal de voz à esquerda para entrar.</p>
         </div>
@@ -71,6 +100,22 @@
         </button>
       </footer>
     </main>
+  </div>
+
+  <!-- Volume de um amigo -->
+  <div id="vol-pop" class="vol-pop" hidden>
+    <div class="vol-head">
+      <span id="vol-avatar" class="avatar"></span>
+      <strong id="vol-name"></strong>
+    </div>
+    <div class="vol-row">
+      <input id="vol-range" type="range" min="0" max="100" />
+      <span id="vol-value">100%</span>
+    </div>
+    <div class="vol-actions">
+      <button id="vol-mute" class="btn small"></button>
+      <button id="vol-reset" class="btn small">Voltar a 100%</button>
+    </div>
   </div>
 
   <div id="audio-sink" hidden></div>

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fbcfe8"/><stop offset="1" stop-color="#f9a8d4"/></linearGradient><radialGradient id="shade" cx="70%" cy="80%" r="70%"><stop offset="0" stop-color="#000" stop-opacity=".6"/><stop offset="1" stop-color="#000" stop-opacity="0"/></radialGradient></defs><rect width="128" height="128" fill="url(#bg)"/><ellipse cx="48" cy="30" rx="10" ry="26" fill="#f8fafc"/><ellipse cx="80" cy="30" rx="10" ry="26" fill="#f8fafc"/>
+<ellipse cx="48" cy="32" rx="5" ry="18" fill="#f9a8d4"/><ellipse cx="80" cy="32" rx="5" ry="18" fill="#f9a8d4"/>
+<circle cx="64" cy="76" r="36" fill="#f8fafc"/>
+<circle cx="51" cy="72" r="5" fill="#1f1b24"/><circle cx="77" cy="72" r="5" fill="#1f1b24"/><circle cx="52.5" cy="70.2" r="1.5" fill="#fff"/><circle cx="78.5" cy="70.2" r="1.5" fill="#fff"/>
+<ellipse cx="64" cy="84" rx="5" ry="3.5" fill="#f472b6"/>
+<path d="M64 88 v4 M64 92 q-5 4 -9 1 M64 92 q5 4 9 1" fill="none" stroke="#1f1b24" stroke-width="2.2" stroke-linecap="round"/>
+<rect x="60" y="94" width="8" height="7" rx="1.5" fill="#fff" stroke="#1f1b24" stroke-width="1.5"/>
+<ellipse cx="40" cy="86" rx="6" ry="3.5" fill="#ff8fa3" opacity="0.55"/><ellipse cx="88" cy="86" rx="6" ry="3.5" fill="#ff8fa3" opacity="0.55"/></svg>
