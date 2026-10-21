@@ -1,4 +1,4 @@
-# King Laucher — Canais de Voz com Compartilhamento de Tela
+# King Launcher — Canais de Voz com Compartilhamento de Tela
 
 App parecido com o Discord, para grupos pequenos:
 
@@ -6,7 +6,7 @@ App parecido com o Discord, para grupos pequenos:
 - **Trocar nome do canal**: passe o mouse no canal e clique no lápis ✏️
 - **Volume separado de cada amigo**: clique no cartão do amigo; a transmissão tem o próprio controle de volume
 - **Som** quando alguém entra ou sai da chamada
-- **Marca d'água** com a logo King Laucher no fundo
+- **Marca d'água** com a logo King Launcher no fundo
 
 - Canais de voz com até **6 pessoas** em cada um
 - Mutar o microfone e ensurdecer (parar de ouvir)

@@ -19,5 +19,5 @@
   </g>
   <!-- nome -->
   <text x="200" y="222" text-anchor="middle" font-family="Impact, 'Arial Black', 'Segoe UI', sans-serif" font-weight="900" font-size="72" letter-spacing="6" fill="url(#ouro)" stroke="#a8650a" stroke-width="2">KING</text>
-  <text x="200" y="278" text-anchor="middle" font-family="Impact, 'Arial Black', 'Segoe UI', sans-serif" font-weight="900" font-size="44" letter-spacing="10" fill="#f8fafc">LAUCHER</text>
+  <text x="200" y="278" text-anchor="middle" font-family="Impact, 'Arial Black', 'Segoe UI', sans-serif" font-weight="900" font-size="44" letter-spacing="10" fill="#f8fafc">LAUNCHER</text>
 </svg>

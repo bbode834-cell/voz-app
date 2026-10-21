@@ -1,4 +1,4 @@
-// King Laucher — cliente
+// King Launcher — cliente
 // WebRTC em malha (cada participante conecta direto com os outros).
 // Ideal para grupos pequenos (até 6) com uma transmissão de tela por vez.
 
