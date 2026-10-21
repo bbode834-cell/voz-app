@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: voz-app
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: CHANNELS
+        value: Geral,Sala 2,Sala 3
+      - key: MAX_PER_CHANNEL
+        value: "6"

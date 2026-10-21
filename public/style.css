@@ -1,0 +1,212 @@
+:root {
+  --bg: #1e1f22;
+  --panel: #2b2d31;
+  --panel-2: #313338;
+  --panel-3: #383a40;
+  --hover: #35373c;
+  --text: #dbdee1;
+  --text-strong: #f2f3f5;
+  --muted: #949ba4;
+  --accent: #5865f2;
+  --accent-hover: #4752c4;
+  --green: #23a55a;
+  --red: #da373c;
+  --red-hover: #a12828;
+  --radius: 8px;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "gg sans", "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+  font-size: 15px;
+  overflow: hidden;
+}
+button { font: inherit; color: inherit; cursor: pointer; border: 0; background: none; }
+svg { display: block; }
+
+/* ---------- Login ---------- */
+.modal {
+  position: fixed; inset: 0; z-index: 50;
+  display: grid; place-items: center;
+  background: rgba(0, 0, 0, .7);
+}
+.modal[hidden] { display: none; }
+.modal-card {
+  width: min(380px, calc(100% - 32px));
+  background: var(--panel-2);
+  border-radius: 12px;
+  padding: 28px;
+  display: flex; flex-direction: column; gap: 12px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, .5);
+}
+.modal-card h1 { margin: 0; color: var(--text-strong); font-size: 24px; text-align: center; }
+.modal-card p { margin: 0; color: var(--muted); text-align: center; }
+.modal-card input {
+  background: var(--bg); border: 1px solid #111; border-radius: 6px;
+  color: var(--text-strong); padding: 12px; font-size: 16px; outline: none;
+}
+.modal-card input:focus { border-color: var(--accent); }
+.warning { color: #f0b232 !important; font-size: 13px; }
+
+/* ---------- Layout ---------- */
+.app { display: flex; height: 100%; }
+.sidebar {
+  width: 260px; flex-shrink: 0;
+  background: var(--panel);
+  display: flex; flex-direction: column;
+}
+.sidebar-header {
+  padding: 16px; font-weight: 700; color: var(--text-strong);
+  border-bottom: 1px solid #1f2023; text-transform: uppercase; font-size: 12px; letter-spacing: .04em;
+}
+.channels { flex: 1; overflow-y: auto; padding: 8px; }
+
+.channel-btn {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  padding: 8px; border-radius: 6px; color: var(--muted); text-align: left;
+}
+.channel-btn svg { width: 20px; height: 20px; flex-shrink: 0; }
+.channel-btn:hover { background: var(--hover); color: var(--text); }
+.channel.active .channel-btn { background: var(--panel-3); color: var(--text-strong); }
+.channel-btn span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.channel-btn small { font-size: 12px; color: var(--muted); }
+.channel ul { list-style: none; margin: 2px 0 6px; padding: 0 0 0 28px; }
+
+.member {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 6px; border-radius: 6px; color: var(--muted); font-size: 14px;
+}
+.member .mname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.member .avatar { width: 24px; height: 24px; font-size: 11px; }
+.member.speaking .avatar { box-shadow: 0 0 0 2px var(--green); }
+.member .muted-ico { color: var(--red); width: 16px; height: 16px; }
+
+.avatar {
+  width: 32px; height: 32px; border-radius: 50%;
+  display: grid; place-items: center; flex-shrink: 0;
+  color: #fff; font-weight: 700; font-size: 14px;
+  transition: box-shadow .12s;
+}
+
+.live {
+  background: var(--red); color: #fff; font-size: 10px; font-weight: 700;
+  padding: 2px 5px; border-radius: 4px; letter-spacing: .03em;
+}
+
+/* ---------- Userbar ---------- */
+.userbar {
+  background: #232428; padding: 8px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.me { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.me-info { display: flex; flex-direction: column; min-width: 0; }
+.me-info strong { color: var(--text-strong); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.me-info small { color: var(--muted); font-size: 12px; }
+.me-info small.on { color: var(--green); }
+.userbar-controls { display: flex; gap: 2px; }
+
+.icon-btn {
+  width: 34px; height: 34px; border-radius: 6px;
+  display: grid; place-items: center; color: var(--muted);
+}
+.icon-btn:hover { background: var(--hover); color: var(--text); }
+.icon-btn svg { width: 20px; height: 20px; }
+.icon-btn.off { color: var(--red); }
+
+/* ---------- Main ---------- */
+.main { flex: 1; display: flex; flex-direction: column; background: var(--panel-2); min-width: 0; }
+.main-header {
+  height: 48px; flex-shrink: 0; display: flex; align-items: center;
+  padding: 0 16px; border-bottom: 1px solid #26282c;
+  font-weight: 700; color: var(--text-strong);
+}
+.stage {
+  flex: 1; min-height: 0; padding: 16px;
+  display: flex; flex-direction: column; gap: 16px;
+  background: #000;
+}
+.stage:not(.sharing) .tiles { flex: 1; align-content: center; }
+
+.tiles {
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 12px;
+}
+.tile {
+  width: 220px; aspect-ratio: 16 / 10;
+  background: var(--panel-3); border-radius: var(--radius);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  position: relative; transition: box-shadow .12s;
+}
+.tile.speaking { box-shadow: 0 0 0 3px var(--green); }
+.tile .avatar { width: 72px; height: 72px; font-size: 28px; }
+.tile .tname {
+  position: absolute; left: 8px; bottom: 8px;
+  background: rgba(0, 0, 0, .55); padding: 3px 8px; border-radius: 4px; font-size: 13px;
+  display: flex; align-items: center; gap: 6px; max-width: calc(100% - 16px);
+}
+.tile .tname svg { width: 14px; height: 14px; color: var(--red); }
+.tile .live { position: absolute; top: 8px; right: 8px; }
+
+.stage.sharing .tiles { flex-wrap: nowrap; overflow-x: auto; justify-content: flex-start; flex-shrink: 0; padding: 4px; }
+.stage.sharing .tile { width: 150px; flex-shrink: 0; }
+.stage.sharing .tile .avatar { width: 44px; height: 44px; font-size: 18px; }
+
+.screen-wrap {
+  flex: 1; min-height: 0; position: relative;
+  background: #111; border-radius: var(--radius); overflow: hidden;
+  display: grid; place-items: center;
+}
+.screen-wrap[hidden] { display: none; }
+.screen-wrap video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+.screen-waiting { position: absolute; color: var(--muted); }
+.screen-label {
+  position: absolute; left: 12px; top: 12px;
+  display: flex; align-items: center; gap: 8px;
+  background: rgba(0, 0, 0, .6); padding: 6px 10px; border-radius: 6px; font-size: 14px;
+}
+.screen-fs { position: absolute; right: 12px; top: 12px; background: rgba(0, 0, 0, .6); }
+
+.empty { margin: auto; text-align: center; color: var(--muted); }
+.empty h2 { color: var(--text-strong); margin: 12px 0 4px; }
+.empty-icon svg { width: 56px; height: 56px; margin: 0 auto; color: var(--panel-3); }
+
+/* ---------- Callbar ---------- */
+.callbar {
+  display: flex; justify-content: center; gap: 12px;
+  padding: 12px; background: #000;
+}
+.callbar[hidden] { display: none; }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 10px 18px; border-radius: 6px; font-weight: 600;
+  background: var(--panel-3); color: var(--text-strong);
+}
+.btn:hover { background: #45474e; }
+.btn .ico svg { width: 18px; height: 18px; }
+.btn.primary { background: var(--accent); color: #fff; }
+.btn.primary:hover { background: var(--accent-hover); }
+.btn.danger { background: var(--red); color: #fff; }
+.btn.danger:hover { background: var(--red-hover); }
+.btn.active { background: var(--green); color: #fff; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+
+/* ---------- Toast ---------- */
+.toast {
+  position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 20px);
+  background: #111214; color: var(--text-strong);
+  padding: 10px 16px; border-radius: 8px; box-shadow: 0 6px 20px rgba(0, 0, 0, .5);
+  opacity: 0; pointer-events: none; transition: .2s; z-index: 60;
+  max-width: calc(100% - 32px);
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* ---------- Celular ---------- */
+@media (max-width: 720px) {
+  .app { flex-direction: column; }
+  .sidebar { width: 100%; max-height: 42%; }
+  .tile { width: 140px; }
+  .tile .avatar { width: 48px; height: 48px; font-size: 20px; }
+  .btn .label { display: none; }
+}

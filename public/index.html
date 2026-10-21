@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Canais de Voz</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="login" class="modal">
+    <form id="login-form" class="modal-card">
+      <h1>Bem-vindo</h1>
+      <p>Como você quer ser chamado?</p>
+      <input id="name-input" maxlength="24" placeholder="Seu nome" autocomplete="off" required />
+      <button type="submit" class="btn primary">Entrar</button>
+      <p id="secure-warning" class="warning" hidden>
+        Atenção: o microfone só funciona em <b>https://</b> ou em <b>localhost</b>.
+      </p>
+    </form>
+  </div>
+
+  <div class="app">
+    <aside class="sidebar">
+      <header class="sidebar-header">Canais de voz</header>
+      <div id="channels" class="channels"></div>
+
+      <div class="userbar">
+        <div class="me">
+          <span id="me-avatar" class="avatar"></span>
+          <div class="me-info">
+            <strong id="me-name"></strong>
+            <small id="me-status">Desconectado</small>
+          </div>
+        </div>
+        <div class="userbar-controls">
+          <button id="btn-mute" class="icon-btn" title="Mutar microfone"></button>
+          <button id="btn-deafen" class="icon-btn" title="Ensurdecer"></button>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="main-header">
+        <span id="main-title">Escolha um canal de voz</span>
+      </header>
+
+      <section id="stage" class="stage">
+        <div id="screen-wrap" class="screen-wrap" hidden>
+          <video id="screen-video" autoplay playsinline muted></video>
+          <div id="screen-waiting" class="screen-waiting">Conectando à transmissão…</div>
+          <div class="screen-label">
+            <span class="live">AO VIVO</span>
+            <span id="screen-owner"></span>
+          </div>
+          <button id="btn-fullscreen" class="icon-btn screen-fs" title="Tela cheia"></button>
+        </div>
+        <div id="tiles" class="tiles"></div>
+        <div id="empty" class="empty">
+          <div class="empty-icon"></div>
+          <h2>Nenhum canal selecionado</h2>
+          <p>Clique em um canal de voz à esquerda para entrar.</p>
+        </div>
+      </section>
+
+      <footer class="callbar" id="callbar" hidden>
+        <button id="btn-share" class="btn">
+          <span class="ico"></span><span class="label">Compartilhar tela</span>
+        </button>
+        <button id="btn-leave" class="btn danger">
+          <span class="ico"></span><span class="label">Sair</span>
+        </button>
+      </footer>
+    </main>
+  </div>
+
+  <div id="audio-sink" hidden></div>
+  <div id="toast" class="toast" role="status"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
