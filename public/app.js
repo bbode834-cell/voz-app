@@ -796,6 +796,10 @@ function renderScreens() {
 // se o problema é a internet, o computador de quem transmite ou nada.
 const LIMIT_LABEL = { bandwidth: 'internet', cpu: 'processador', other: 'outro' };
 const num = (v) => (typeof v === 'number' && isFinite(v) ? v : 0);
+// Celular em pé manda 720x1600: o "p" é sempre o lado menor (720p)
+const resText = (w, h) => `${Math.min(w || h, h || w)}p`;
+// Sem mudança na tela não há quadros novos para enviar (ex.: tela inicial parada)
+const fpsText = (fps) => (fps < 1 ? 'imagem parada' : `${Math.round(fps)} FPS`);
 
 async function updateScreenStats() {
   for (const [id, el] of screenCards) {
@@ -804,7 +808,7 @@ async function updateScreenStats() {
     try {
       if (id === selfId) {
         // Minha transmissão: como está saindo para quem assiste
-        let fps = 0, h = 0, lim = '', viewers = 0;
+        let fps = 0, h = 0, w = 0, lim = '', viewers = 0;
         for (const peer of peers.values()) {
           const v = peer.screenSenders.find((sd) => sd.track?.kind === 'video');
           if (!v) continue;
@@ -813,24 +817,26 @@ async function updateScreenStats() {
             if (r.type === 'outbound-rtp') {
               fps = Math.max(fps, num(r.framesPerSecond));
               h = Math.max(h, num(r.frameHeight));
+              w = Math.max(w, num(r.frameWidth));
               if (r.qualityLimitationReason && r.qualityLimitationReason !== 'none') lim = r.qualityLimitationReason;
             }
           });
         }
         box.textContent = viewers === 0
           ? 'Ninguém assistindo ainda'
-          : `${viewers} assistindo · ${Math.round(fps)} FPS · ${h}p` + (lim ? ` · limitado pelo ${LIMIT_LABEL[lim] || lim}` : '');
+          : `${viewers} assistindo · ${fpsText(fps)} · ${resText(w, h)}` + (lim ? ` · limitado pelo ${LIMIT_LABEL[lim] || lim}` : '');
         box.className = 'screen-stats' + (lim ? ' warn' : '');
         continue;
       }
       const peer = peers.get(id);
       const recv = peer?.pc.getReceivers().find((r) => r.track?.kind === 'video' && r.track.readyState === 'live');
       if (!peer || !recv) { box.textContent = ''; continue; }
-      let fps = 0, h = 0, jb = 0, rtt = 0, lost = 0, got = 0;
+      let fps = 0, h = 0, w = 0, jb = 0, rtt = 0, lost = 0, got = 0;
       (await recv.getStats()).forEach((r) => {
         if (r.type === 'inbound-rtp') {
           fps = num(r.framesPerSecond);
           h = num(r.frameHeight);
+          w = num(r.frameWidth);
           const emitted = num(r.jitterBufferEmittedCount);
           jb = emitted ? (num(r.jitterBufferDelay) / emitted) * 1000 : 0;
           lost = num(r.packetsLost);
@@ -843,8 +849,8 @@ async function updateScreenStats() {
       // atraso aproximado = metade do "ida e volta" da rede + o que fica guardado para tocar liso
       const delay = Math.round(rtt / 2 + jb);
       const lossPct = got + lost > 0 ? (lost / (got + lost)) * 100 : 0;
-      box.textContent = `${Math.round(fps)} FPS · ${h}p · atraso ~${delay} ms` + (lossPct > 2 ? ` · perda ${lossPct.toFixed(0)}%` : '');
-      box.className = 'screen-stats' + (fps > 0 && fps < 20 || delay > 300 || lossPct > 2 ? ' warn' : '');
+      box.textContent = `${fpsText(fps)} · ${resText(w, h)} · atraso ~${delay} ms` + (lossPct > 2 ? ` · perda ${lossPct.toFixed(0)}%` : '');
+      box.className = 'screen-stats' + ((fps >= 1 && fps < 20) || delay > 300 || lossPct > 2 ? ' warn' : '');
     } catch {}
   }
 }

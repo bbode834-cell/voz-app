@@ -337,7 +337,11 @@ svg { display: block; }
   position: relative; min-height: 0; background: #111; border-radius: var(--radius); overflow: hidden;
   display: grid; place-items: center;
 }
-.screen-card video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+/* O vídeo ocupa a caixa inteira e encaixa SEM cortar (celular em pé ou PC deitado) */
+.screen-card video {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: contain; background: #000;
+}
 .screen-card .screen-waiting { position: absolute; color: var(--muted); }
 .screen-card .screen-waiting[hidden] { display: none; }
 .screen-card .screen-label {
