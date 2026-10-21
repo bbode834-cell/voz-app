@@ -375,3 +375,12 @@ body.has-stream .watermark { display: none; }
 }
 .screen-card .screen-stats:empty { display: none; }
 .screen-card .screen-stats.warn { color: #fbbf24; }
+
+/* Botão ⚡ Baixo atraso / Mais liso */
+.screen-card .lat {
+  height: 34px; padding: 0 10px; border-radius: 6px; font-size: 12px; font-weight: 700;
+  background: rgba(0,0,0,.6); color: var(--text);
+}
+.screen-card .lat.on { color: #fde047; }
+.screen-card .lat:hover { background: rgba(0,0,0,.8); }
+@media (max-width: 720px) { .screen-card .screen-vol { display: none; } }

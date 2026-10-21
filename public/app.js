@@ -43,6 +43,7 @@ let deafened = false;
 let joining = false;
 const volumes = store.get('voz-volumes', {});            // nome do amigo -> 0..1
 const screenVolumes = store.get('voz-volume-telas', {});  // nome de quem transmite -> 0..1
+let lowLatency = store.get('voz-baixo-atraso', true);      // ⚡ mostra cada quadro assim que chega
 let avatarList = [];
 
 // id -> { pc, polite, makingOffer, ignoreOffer, screenSenders, audioEls, micEl, screenStream, watchingMe }
@@ -719,6 +720,42 @@ function stopShare() {
   renderAll();
 }
 
+// ---------- Baixo atraso ----------
+// Por padrão o navegador guarda alguns quadros para a imagem ficar mais lisa
+// (isso aumenta o atraso). No modo ⚡ ele mostra cada quadro assim que chega.
+function applyLatencyMode() {
+  watching.forEach((id) => {
+    const peer = peers.get(id);
+    if (!peer) return;
+    peer.pc.getReceivers().forEach((r) => {
+      if (!r.track) return;
+      // só o vídeo e o som da TELA (o microfone fica como está)
+      const isScreenAudio = r.track.kind === 'audio' && peer.screenStream?.getAudioTracks().some((t) => t.id === r.track.id);
+      if (r.track.kind !== 'video' && !isScreenAudio) return;
+      try { r.playoutDelayHint = lowLatency ? 0 : null; } catch {}
+      try { r.jitterBufferTarget = lowLatency ? 0 : null; } catch {}
+    });
+  });
+}
+
+function toggleLatency() {
+  lowLatency = !lowLatency;
+  store.set('voz-baixo-atraso', lowLatency);
+  applyLatencyMode();
+  screenCards.forEach((el) => updateLatencyButton(el));
+  toast(lowLatency
+    ? '⚡ Baixo atraso: a imagem chega mais rápido.'
+    : 'Mais liso: um pouco mais de atraso, menos engasgos se a internet oscilar.');
+}
+
+function updateLatencyButton(el) {
+  const b = el.querySelector('.lat');
+  if (!b) return;
+  b.textContent = lowLatency ? '⚡ Baixo atraso' : 'Mais liso';
+  b.classList.toggle('on', lowLatency);
+  b.title = lowLatency ? 'Clique para priorizar imagem mais lisa' : 'Clique para priorizar menos atraso';
+}
+
 // ---------- Grade de transmissões ----------
 const screenCards = new Map(); // id -> elemento do cartão
 
@@ -752,6 +789,7 @@ function renderScreens() {
         <div class="screen-tools">
           ${mine ? '' : `<label class="screen-vol" title="Volume do som desta transmissão">
             <span class="ico">${ICON.speaker}</span><input type="range" min="0" max="100"></label>`}
+          ${mine ? '' : '<button class="lat"></button>'}
           <button class="icon-btn fs" title="Tela cheia">${ICON.full}</button>
           <button class="icon-btn close" title="${mine ? 'Parar de transmitir' : 'Parar de assistir'}">${ICON.close}</button>
         </div>`;
@@ -760,6 +798,8 @@ function renderScreens() {
         else el.requestFullscreen?.();
       };
       el.querySelector('.close').onclick = () => (mine ? stopShare() : unwatch(id));
+      const lat = el.querySelector('.lat');
+      if (lat) { lat.onclick = toggleLatency; updateLatencyButton(el); }
       const range = el.querySelector('.screen-vol input');
       if (range) {
         range.value = Math.round(screenVolumeOf(nameOf(id)) * 100);
@@ -784,6 +824,7 @@ function renderScreens() {
     el.querySelector('.owner').textContent = mine ? 'Sua tela' : `Tela de ${nameOf(id)}`;
   });
 
+  applyLatencyMode();
   box.dataset.count = String(list.length);
   box.hidden = list.length === 0;
   $('#stage').classList.toggle('sharing', list.length > 0);
@@ -837,10 +878,17 @@ async function updateScreenStats() {
           fps = num(r.framesPerSecond);
           h = num(r.frameHeight);
           w = num(r.frameWidth);
-          const emitted = num(r.jitterBufferEmittedCount);
-          jb = emitted ? (num(r.jitterBufferDelay) / emitted) * 1000 : 0;
-          lost = num(r.packetsLost);
-          got = num(r.packetsReceived);
+          // atraso do "estoque" de quadros no ÚLTIMO segundo (não a média desde o começo)
+          const delayTot = num(r.jitterBufferDelay), emitted = num(r.jitterBufferEmittedCount);
+          const prev = el._jb || { d: 0, n: 0 };
+          const dn = emitted - prev.n;
+          jb = dn > 0 ? ((delayTot - prev.d) / dn) * 1000 : (emitted ? (delayTot / emitted) * 1000 : 0);
+          el._jb = { d: delayTot, n: emitted };
+          // perda também do último segundo
+          const pl = el._pl || { lost: 0, got: 0 };
+          lost = Math.max(0, num(r.packetsLost) - pl.lost);
+          got = Math.max(0, num(r.packetsReceived) - pl.got);
+          el._pl = { lost: num(r.packetsLost), got: num(r.packetsReceived) };
         }
         if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded') {
           rtt = num(r.currentRoundTripTime) * 1000;
@@ -850,7 +898,7 @@ async function updateScreenStats() {
       const delay = Math.round(rtt / 2 + jb);
       const lossPct = got + lost > 0 ? (lost / (got + lost)) * 100 : 0;
       box.textContent = `${fpsText(fps)} · ${resText(w, h)} · atraso ~${delay} ms` + (lossPct > 2 ? ` · perda ${lossPct.toFixed(0)}%` : '');
-      box.className = 'screen-stats' + ((fps >= 1 && fps < 20) || delay > 300 || lossPct > 2 ? ' warn' : '');
+      box.className = 'screen-stats' + ((fps >= 1 && fps < 20) || delay > 400 || lossPct > 2 ? ' warn' : '');
     } catch {}
   }
 }
