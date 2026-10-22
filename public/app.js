@@ -522,7 +522,9 @@ function updatePendingBadges() {
 socket.on('pending', ({ count }) => {
   if (count > pendingCount && loggedIn) {
     toast(`🛡️ ${count === 1 ? 'Uma conta nova está' : `${count} contas estão`} esperando sua aprovação (menu ⚙).`);
-    playSound('mensagem');
+    playSound('mensagem', true);
+    notifyIfHidden('🛡️ Conta nova esperando aprovação', 'Abra o menu ⚙ > Moderação para aprovar.');
+    flashTitle('🛡️ Conta nova para aprovar');
   }
   pendingCount = count;
   updatePendingBadges();
@@ -556,6 +558,7 @@ function renderAccounts() {
   $('#mod-users').innerHTML = rest.map((u) => {
     if (u.id === me?.id || RANK[u.role] >= RANK[me?.role]) return row(u, '');
     let b = '';
+    if (u.status === 'approved') b += btn('reset-pass', '🔑 Nova senha');
     if (souDono && u.status === 'approved') b += u.role === 'mod' ? btn('make-member', 'Tirar moderador') : btn('make-mod', '🛡️ Tornar moderador');
     b += u.status === 'banned' ? btn('unban', 'Desbanir', 'ok') : btn('ban', 'Banir', 'danger');
     if (souDono) b += btn('delete', 'Apagar', 'danger');
@@ -575,8 +578,12 @@ $('.settings-body section[data-sec="mod"]').addEventListener('click', async (e) 
   const u = accounts.find((x) => x.id === id);
   const q = ACT_CONFIRM[b.dataset.act];
   if (q && !confirm(q.replace('{n}', u?.name || 'essa pessoa'))) return;
+  if (b.dataset.act === 'reset-pass' && !confirm(`Criar uma senha nova para ${u?.name}? A senha antiga deixa de funcionar.`)) return;
   const r = await emitAck('admin-set', { userId: id, action: b.dataset.act });
   if (r?.error) toast(r.error);
+  if (r?.password) {
+    prompt(`Senha nova de ${u?.name} (@${u?.username}). Copie e mande pra ele — depois ele pode trocar em ⚙ > Conta:`, r.password);
+  }
   loadAccounts();
 });
 
@@ -2170,16 +2177,18 @@ function nudge(from) {
   const layer = $('#fun-layer');
   const box = document.createElement('div');
   box.className = 'fx-nudge';
-  box.innerHTML = `<img src="fx/mao.svg" alt=""><div class="fx-nudge-text"><b>${esc(from)}</b> está chamando sua atenção!</div>`;
+  box.innerHTML = `<div class="fx-fist"><i class="fx-hit h1"></i><i class="fx-hit h2"></i><img src="fx/mao.svg" alt=""></div>
+    <div class="fx-nudge-text"><b>${esc(from)}</b> está chamando sua atenção!</div>`;
   layer.appendChild(box);
   playSound('toctoc', true);
+  // duas batidas "no vidro" (0,25 s e 0,47 s) e depois a tela treme
   setTimeout(() => {
     const app = document.querySelector('.app');
     app.classList.remove('shake');
     void app.offsetWidth;
     app.classList.add('shake');
     setTimeout(() => app.classList.remove('shake'), 650);
-  }, 780);
+  }, 620);
   setTimeout(() => box.classList.add('out'), 2300);
   setTimeout(() => box.remove(), 2700);
 }

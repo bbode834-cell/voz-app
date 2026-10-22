@@ -746,6 +746,16 @@ io.on('connection', (socket) => {
       } else if (action === 'ban') {
         await banco.update(u.id, { status: 'banned' });
         expulsaConta(u.id, me().name);
+      } else if (action === 'reset-pass') {
+        // Senha provisória fácil de ditar (ex.: rei4821); a pessoa troca depois
+        if (u.status === 'pending') return ack({ error: 'Aprove a conta primeiro.' });
+        const letras = 'abcdefghjkmnpqrstuvwxyz';
+        const crypto = require('crypto');
+        let nova = '';
+        for (let i = 0; i < 3; i++) nova += letras[crypto.randomInt(letras.length)];
+        nova += String(crypto.randomInt(1000, 10000));
+        await banco.update(u.id, { pass: hashSenha(nova) });
+        return ack({ ok: true, password: nova });
       } else if (action === 'unban') {
         await banco.update(u.id, { status: 'approved' });
       } else if (action === 'make-mod' || action === 'make-member') {

@@ -1,11 +1,24 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 140">
-  <g stroke="#7a4a1c" stroke-width="4" stroke-linejoin="round" stroke-linecap="round">
-    <path d="M30 70 q-6-26 14-30 h52 q18 0 18 18 v26 q0 30-30 34 h-26 q-24 0-28-24z" fill="#f6c28b"/>
-    <path d="M44 40 q-2-16 14-16 q14 0 14 16" fill="#f6c28b"/>
-    <path d="M70 40 q0-16 14-16 q14 0 14 16" fill="#f6c28b"/>
-    <path d="M96 42 q4-14 16-10 q10 4 6 18 l-4 10" fill="#f6c28b"/>
-    <path d="M30 72 q-14-2-14 12 q0 12 18 14 h22 q10 0 10-10 q0-10-12-10z" fill="#ffd3a1"/>
-    <path d="M58 40 v12 M84 40 v12" fill="none"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 220">
+  <!-- Punho fechado visto de frente (dedos para a tela) — desenho original -->
+  <defs>
+    <linearGradient id="pele" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffd9ad"/><stop offset="1" stop-color="#eeb27a"/></linearGradient>
+    <linearGradient id="dedo" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffe2bf"/><stop offset="1" stop-color="#f2bb86"/></linearGradient>
+  </defs>
+  <g stroke="#8a5424" stroke-width="5" stroke-linejoin="round" stroke-linecap="round">
+    <!-- punho e manga -->
+    <rect x="62" y="168" width="76" height="40" rx="10" fill="url(#pele)"/>
+    <rect x="54" y="190" width="92" height="28" rx="8" fill="#e8590c" stroke="#a63c06"/>
+    <!-- costas da mão -->
+    <path d="M34 92 q-4 -30 26 -34 h86 q24 2 24 30 v44 q0 46 -52 50 h-30 q-52 -4 -54 -48z" fill="url(#pele)"/>
+    <!-- quatro dedos dobrados (nós dos dedos para a frente) -->
+    <rect x="34" y="40" width="36" height="56" rx="18" fill="url(#dedo)"/>
+    <rect x="68" y="30" width="38" height="62" rx="19" fill="url(#dedo)"/>
+    <rect x="104" y="32" width="37" height="60" rx="18.5" fill="url(#dedo)"/>
+    <rect x="139" y="44" width="33" height="52" rx="16.5" fill="url(#dedo)"/>
+    <!-- polegar cruzando por baixo -->
+    <path d="M30 112 q2 -16 22 -14 l62 6 q16 2 14 18 q-2 14 -18 13 l-58 -4 q-22 -2 -22 -19z" fill="url(#dedo)"/>
   </g>
-  <path d="M100 116 v18 h-50 v-18" fill="#3b5bdb" stroke="#24398f" stroke-width="4"/>
+  <!-- unha do polegar e brilhos -->
+  <rect x="98" y="108" width="20" height="14" rx="6" fill="#fff" opacity=".55"/>
+  <g fill="#fff" opacity=".5"><ellipse cx="52" cy="52" rx="7" ry="4"/><ellipse cx="87" cy="42" rx="8" ry="4"/><ellipse cx="122" cy="44" rx="8" ry="4"/><ellipse cx="155" cy="56" rx="6" ry="3.5"/></g>
 </svg>

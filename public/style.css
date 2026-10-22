@@ -687,15 +687,26 @@ body.dm-open .main { margin-right: 340px; }
 .fx-nudge { position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; gap: 10px;
   transition: opacity .35s; }
 .fx-nudge.out { opacity: 0; }
-.fx-nudge img { width: 150px; height: 150px; transform-origin: 50% 100%; animation: knock .78s ease-in-out 1; filter: drop-shadow(0 10px 14px rgba(0,0,0,.45)); }
-@keyframes knock {
-  0% { transform: rotate(0) translateY(0); }
-  10% { transform: rotate(-22deg) translateY(-6px); } 20% { transform: rotate(4deg) translateY(4px); }
-  31% { transform: rotate(-22deg) translateY(-6px); } 41% { transform: rotate(4deg) translateY(4px); }
-  60% { transform: rotate(-22deg) translateY(-6px); } 70% { transform: rotate(4deg) translateY(4px); }
-  81% { transform: rotate(-22deg) translateY(-6px); } 91% { transform: rotate(4deg) translateY(4px); }
-  100% { transform: rotate(0) translateY(0); }
+.fx-fist { position: relative; width: 230px; height: 250px; display: grid; place-items: center; }
+.fx-fist img { width: 210px; height: 230px; animation: knock2 .62s ease-out 1 both; filter: drop-shadow(0 16px 22px rgba(0,0,0,.5)); }
+/* vem para a tela e bate 2 vezes (como se batesse no vidro) */
+@keyframes knock2 {
+  0% { transform: scale(.5); opacity: 0; }
+  20% { transform: scale(.9); opacity: 1; }
+  34% { transform: scale(.85); }
+  40% { transform: scale(1.32); }
+  50% { transform: scale(1); }
+  70% { transform: scale(.88); }
+  76% { transform: scale(1.32); }
+  88% { transform: scale(1.04); }
+  100% { transform: scale(1); }
 }
+/* "impacto" no vidro em cada batida */
+.fx-hit { position: absolute; left: 50%; top: 40%; width: 240px; height: 240px; margin: -120px 0 0 -120px; border-radius: 50%;
+  border: 6px solid rgba(255,255,255,.85); opacity: 0; transform: scale(.3); animation: hit .28s ease-out both; }
+.fx-hit.h1 { animation-delay: .25s; }
+.fx-hit.h2 { animation-delay: .47s; }
+@keyframes hit { 0% { opacity: .9; transform: scale(.3); } 100% { opacity: 0; transform: scale(1.5); } }
 .fx-nudge-text { background: rgba(0,0,0,.78); color: #fff; padding: 10px 16px; border-radius: 20px; font-size: 16px; box-shadow: 0 6px 20px rgba(0,0,0,.4); }
 .app.shake { animation: shake .62s cubic-bezier(.36,.07,.19,.97) both; }
 @keyframes shake {
