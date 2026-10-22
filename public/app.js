@@ -17,6 +17,7 @@ const ICON = {
   screen: svg('<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>'),
   hang: svg('<path d="M10.7 13.3a16 16 0 0 0 3.4 2.6l1.3-1.3a2 2 0 0 1 2.1-.5c.9.3 1.8.5 2.8.6a2 2 0 0 1 1.7 2v3a2 2 0 0 1-2.2 2A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .3 1.9.6 2.8a2 2 0 0 1-.5 2.1L7.9 9.9"/><path d="M22 2 2 22"/>'),
   full: svg('<path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/>'),
+  chat: svg('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>'),
   close: svg('<path d="M18 6 6 18M6 6l12 12"/>'),
   pencil: svg('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>'),
 };
@@ -108,7 +109,7 @@ const emitAck = (ev, data) => new Promise((resolve) => socket.emit(ev, data, res
 const sendSignal = (to, data) => socket.emit('signal', { to, data });
 
 // ---------- Efeitos sonoros ----------
-const SONS = ['entrou', 'saiu', 'mic-on', 'mic-off', 'fone-on', 'fone-off', 'transmissao'];
+const SONS = ['entrou', 'saiu', 'mic-on', 'mic-off', 'fone-on', 'fone-off', 'transmissao', 'mensagem'];
 const soundBuffers = {};
 let soundsLoaded = false;
 
@@ -286,6 +287,9 @@ async function joinChannel(id) {
 
     currentChannel = id;
     selfId = res.selfId;
+    chatMsgs = Array.isArray(res.chat) ? res.chat.slice() : [];
+    chatUnread = 0;
+    renderChat(true);
     watching.clear();
     if (localStream) watchSpeaking(selfId, localStream);
     socket.emit('mute', { muted: muted || deafened || !localStream });
@@ -313,6 +317,7 @@ function leaveChannel(switching = false) {
   watching.clear();
   renderScreens();
   closeVolume();
+  chatMsgs = []; chatUnread = 0; setChatOpen(false);
   renderAll();
 }
 
@@ -835,6 +840,89 @@ function renderScreens() {
   // Marca d'água some quando tem transmissão na tela (não atrapalha a imagem)
   document.body.classList.toggle('has-stream', list.length > 0);
 }
+
+// ---------- Chat do canal ----------
+let chatMsgs = [];
+let chatOpen = false;
+let chatUnread = 0;
+$('#btn-chat .ico').innerHTML = ICON.chat;
+$('#chat-close').innerHTML = ICON.close;
+$('#btn-chat').onclick = () => setChatOpen(!chatOpen);
+$('#chat-close').onclick = () => setChatOpen(false);
+
+function setChatOpen(v) {
+  chatOpen = v && !!currentChannel;
+  $('#chat').hidden = !chatOpen;
+  document.body.classList.toggle('chat-open', chatOpen);
+  if (chatOpen) {
+    chatUnread = 0;
+    renderChat(true);
+    setTimeout(() => $('#chat-input').focus(), 30);
+  }
+  updateChatBadge();
+}
+
+function updateChatBadge() {
+  const b = $('#chat-badge');
+  b.hidden = chatUnread === 0;
+  b.textContent = chatUnread > 99 ? '99+' : String(chatUnread);
+  $('#btn-chat').classList.toggle('active', chatOpen);
+}
+
+// Texto com links clicáveis (sem permitir HTML de ninguém)
+function linkify(text) {
+  return esc(text).replace(/(https?:\/\/[^\s<]+)/g, (u) => `<a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>`);
+}
+const hhmm = (ts) => new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+function renderChat(scrollDown = false) {
+  const list = $('#chat-list');
+  const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 60;
+  if (!chatMsgs.length) {
+    list.innerHTML = '<div class="chat-empty">Nenhuma mensagem ainda. Diga oi! 👋</div>';
+  } else {
+    let html = '';
+    let prev = null;
+    for (const m of chatMsgs) {
+      const grouped = prev && prev.from === m.from && m.ts - prev.ts < 5 * 60 * 1000;
+      const live = findUser(m.from);
+      const u = { name: m.name, avatar: live?.avatar || m.avatar };
+      html += grouped
+        ? `<div class="chat-msg cont"><div class="chat-text">${linkify(m.text)}</div></div>`
+        : `<div class="chat-msg">${avatarHTML(u)}<div class="chat-body">
+             <div class="chat-meta"><strong>${esc(m.name)}</strong><time>${hhmm(m.ts)}</time></div>
+             <div class="chat-text">${linkify(m.text)}</div></div></div>`;
+      prev = m;
+    }
+    list.innerHTML = html;
+  }
+  if (scrollDown || atBottom) list.scrollTop = list.scrollHeight;
+}
+
+socket.on('chat', (m) => {
+  if (!currentChannel) return;
+  chatMsgs.push(m);
+  if (chatMsgs.length > 100) chatMsgs.shift();
+  if (m.from !== selfId) {
+    if (!chatOpen) {
+      chatUnread++;
+      updateChatBadge();
+      toast(`💬 ${m.name}: ${m.text.length > 60 ? m.text.slice(0, 60) + '…' : m.text}`);
+    }
+    playSound('mensagem');
+  }
+  renderChat(m.from === selfId);
+});
+
+$('#chat-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = $('#chat-input');
+  const text = input.value.trim();
+  if (!text || !currentChannel) return;
+  input.value = '';
+  const res = await emitAck('chat-send', { text });
+  if (res?.error) { toast(res.error); input.value = text; }
+});
 
 // ---------- Medidor da transmissão (FPS, resolução, atraso) ----------
 // Mostra em cada transmissão como ela está chegando de verdade, para saber

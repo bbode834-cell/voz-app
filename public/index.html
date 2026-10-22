@@ -89,12 +89,28 @@
         <button id="btn-share" class="btn">
           <span class="ico"></span><span class="label">Compartilhar tela</span>
         </button>
+        <button id="btn-chat" class="btn" title="Chat do canal">
+          <span class="ico"></span><span class="label">Chat</span><span id="chat-badge" class="chat-badge" hidden></span>
+        </button>
         <button id="btn-leave" class="btn danger">
           <span class="ico"></span><span class="label">Sair</span>
         </button>
       </footer>
     </main>
   </div>
+
+  <!-- Chat do canal -->
+  <aside id="chat" class="chat" hidden>
+    <header class="chat-head">
+      <strong>Chat do canal</strong>
+      <button id="chat-close" class="icon-btn" title="Fechar chat"></button>
+    </header>
+    <div id="chat-list" class="chat-list"></div>
+    <form id="chat-form" class="chat-form" autocomplete="off">
+      <input id="chat-input" maxlength="500" placeholder="Escreva uma mensagem…" />
+      <button type="submit" class="btn primary small">Enviar</button>
+    </form>
+  </aside>
 
   <!-- Volume de um amigo -->
   <div id="vol-pop" class="vol-pop" hidden>

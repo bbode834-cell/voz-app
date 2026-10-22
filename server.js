@@ -41,7 +41,10 @@ const channels = DEFAULT_NAMES.map((name, i) => ({
   name,
   users: new Map(), // socketId -> { name, muted, avatar, proto }
   sharers: new Set(), // quem está transmitindo agora (várias pessoas ao mesmo tempo)
+  chat: [], // últimas mensagens do chat deste canal
 }));
+const CHAT_KEEP = 100;
+let chatSeq = 0;
 // Quando o nome foi trocado pela última vez (0 = nomes padrão)
 let namesVersion = 0;
 
@@ -147,6 +150,7 @@ io.on('connection', (socket) => {
       peers,
       sharers: [...ch.sharers],
       sharer: ch.sharers.values().next().value || null,
+      chat: ch.chat,
     });
     broadcastChannels();
   });
@@ -162,6 +166,33 @@ io.on('connection', (socket) => {
   });
 
   socket.on('leave', () => leave(socket));
+
+  // Chat de texto do canal
+  socket.on('chat-send', ({ text } = {}, ack = () => {}) => {
+    const ch = byId(socket.data.channel);
+    const u = ch?.users.get(socket.id);
+    if (!u) return ack({ error: 'Entre em um canal para conversar.' });
+    const t = String(text || '').replace(/\r/g, '').trim().slice(0, 500);
+    if (!t) return ack({ error: 'Mensagem vazia.' });
+    // no máximo 5 mensagens a cada 3 segundos por pessoa
+    const now = Date.now();
+    socket.data.chatTimes = (socket.data.chatTimes || []).filter((x) => now - x < 3000);
+    if (socket.data.chatTimes.length >= 5) return ack({ error: 'Calma! Muitas mensagens seguidas.' });
+    socket.data.chatTimes.push(now);
+    const msg = {
+      id: ++chatSeq,
+      from: socket.id,
+      name: u.name,
+      // foto do pacote vai junto; foto enviada (pesada) fica de fora do histórico
+      avatar: u.avatar && u.avatar.startsWith('p:') ? u.avatar : '',
+      text: t,
+      ts: now,
+    };
+    ch.chat.push(msg);
+    if (ch.chat.length > CHAT_KEEP) ch.chat.splice(0, ch.chat.length - CHAT_KEEP);
+    io.to(ch.id).emit('chat', msg);
+    ack({ ok: true });
+  });
 
   // Repassa ofertas/respostas/candidatos WebRTC entre dois participantes do mesmo canal
   socket.on('signal', ({ to, data } = {}) => {
