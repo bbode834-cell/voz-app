@@ -456,3 +456,10 @@ body.chat-open .quality > span { display: none; }
 }
 .cam-pip:active { cursor: grabbing; }
 .cam-pip video { position: static !important; display: block; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+
+.screen-card .float-cam {
+  background: rgba(0,0,0,.6); color: #f5b82e; border: 1px solid #f5b82e; border-radius: 6px;
+  padding: 6px 10px; font-weight: 700; font-size: 13px; cursor: pointer;
+}
+.screen-card .float-cam:hover { background: rgba(0,0,0,.85); }
+.screen-card .float-cam[hidden] { display: none; }

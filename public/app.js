@@ -41,6 +41,11 @@ let channelsState = [];
 let localStream = null;   // microfone
 let screenStream = null;  // minha tela (quando eu transmito)
 let camStream = null;     // minha câmera (quando ligada)
+// Transmitindo a tela: a câmera vira uma janelinha flutuante na MINHA tela
+// (por cima de tudo, entra na transmissão), igual ao quadradinho do celular
+let camFloating = false;
+let floatWin = null;      // janelinha (Document PiP) ou o <video> em PiP
+let closingFloat = false;
 const watching = new Set(); // transmissões que estou assistindo (ids)
 let muted = false;
 let deafened = false;
@@ -103,7 +108,7 @@ const isLegacy = (id) => (findUser(id)?.proto || 1) < 2;
 const seesCams = (id) => (findUser(id)?.proto || 1) >= 3;
 // Câmera de alguém (ou a minha), se estiver chegando imagem
 function camOf(id) {
-  const st = id === selfId ? camStream : peers.get(id)?.camStream;
+  const st = id === selfId ? (camFloating ? null : camStream) : peers.get(id)?.camStream;
   return st && st.getVideoTracks().some((t) => t.readyState === 'live') ? st : null;
 }
 
@@ -441,7 +446,7 @@ function addLocalTracks(peer) {
   if (screenStream && shouldSendTo(peer.id)) {
     peer.screenSenders = addScreenTracks(peer.pc, screenStream);
   }
-  if (camStream && seesCams(peer.id)) addCamTracks(peer);
+  if (camStream && !camFloating && seesCams(peer.id)) addCamTracks(peer);
 }
 
 // ---------- Câmera ----------
@@ -455,7 +460,7 @@ function addCamTracks(peer) {
 function syncCamSenders() {
   peers.forEach((peer, id) => {
     if (!peer.tracksAdded) return;
-    const want = !!camStream && seesCams(id);
+    const want = !!camStream && !camFloating && seesCams(id);
     const has = peer.camSenders.length > 0;
     if (want && !has) addCamTracks(peer);
     else if (!want && has) {
@@ -491,19 +496,104 @@ async function toggleCam() {
   }
   if (!currentChannel) { camStream.getTracks().forEach((t) => t.stop()); camStream = null; return; }
   camStream.getVideoTracks()[0].onended = () => stopCam();
-  socket.emit('cam', { on: true });
-  syncCamSenders();
+  // Transmitindo a tela: abre a janelinha flutuante; senão manda aos amigos
+  if (!(screenStream && await openFloatingCam())) {
+    socket.emit('cam', { on: true });
+    syncCamSenders();
+  }
   renderCams();
   renderControls();
 }
 
 function stopCam() {
   if (!camStream) return;
+  closeFloatingCam();
   const st = camStream;
   camStream = null;
   syncCamSenders();
   st.getTracks().forEach((t) => t.stop());
   socket.emit('cam', { on: false });
+  renderCams();
+  renderControls();
+}
+
+// ---------- Câmera flutuante (enquanto transmite a tela) ----------
+// Janelinha que fica por cima de todos os programas (até do jogo em modo
+// janela/sem bordas). Dá para arrastar e mudar o tamanho. Como fica na sua
+// tela, aparece na transmissão quando você compartilha a "Tela inteira".
+const canFloat = () => 'documentPictureInPicture' in window || !!document.pictureInPictureEnabled;
+
+async function openFloatingCam() {
+  if (!camStream || camFloating || !canFloat()) return false;
+  try {
+    if ('documentPictureInPicture' in window) {
+      const win = await documentPictureInPicture.requestWindow({ width: 260, height: 195 });
+      const d = win.document;
+      d.title = 'Câmera — King Launcher';
+      d.body.style.cssText = 'margin:0;background:#000;overflow:hidden;height:100vh';
+      const v = d.createElement('video');
+      v.autoplay = true; v.muted = true; v.playsInline = true;
+      v.style.cssText = 'width:100%;height:100%;object-fit:cover;transform:scaleX(-1);display:block;' +
+        'box-sizing:border-box;border:3px solid #f5b82e;border-radius:10px;background:#000';
+      v.srcObject = camStream;
+      d.body.appendChild(v);
+      v.play().catch(() => {});
+      win.addEventListener('pagehide', onFloatClosed);
+      floatWin = win;
+    } else {
+      // Navegadores sem a janelinha nova: usa o "vídeo flutuante" comum
+      const v = document.createElement('video');
+      v.muted = true; v.playsInline = true; v.srcObject = camStream;
+      await v.play();
+      await v.requestPictureInPicture();
+      v.addEventListener('leavepictureinpicture', onFloatClosed);
+      floatWin = v;
+    }
+  } catch (err) {
+    console.warn('janelinha da câmera:', err);
+    floatWin = null;
+    return false;
+  }
+  camFloating = true;
+  socket.emit('cam', { on: false });
+  syncCamSenders(); // para de mandar a câmera separada (já vai dentro da tela)
+  toast('Câmera flutuante aberta! Arraste e mude o tamanho à vontade. Ela aparece na transmissão quando você compartilha a Tela inteira.');
+  renderCams();
+  renderControls();
+  return true;
+}
+
+// Fecha a janelinha (quando paramos de transmitir ou desligamos a câmera)
+function closeFloatingCam() {
+  if (!camFloating) return;
+  closingFloat = true;
+  try {
+    if (floatWin instanceof HTMLVideoElement) {
+      if (document.pictureInPictureElement === floatWin) document.exitPictureInPicture().catch(() => {});
+      floatWin.srcObject = null;
+    } else floatWin?.close();
+  } catch {}
+  floatWin = null;
+  camFloating = false;
+  closingFloat = false;
+}
+
+// A pessoa fechou a janelinha no X: desliga a câmera (igual ao ✕ do celular)
+function onFloatClosed() {
+  if (closingFloat || !camFloating) return;
+  floatWin = null;
+  camFloating = false;
+  stopCam();
+}
+
+// Parou de transmitir: a câmera volta a ir direto para os amigos
+function camFromFloating() {
+  if (!camFloating) return;
+  closeFloatingCam();
+  if (camStream) {
+    socket.emit('cam', { on: true });
+    syncCamSenders();
+  }
   renderCams();
   renderControls();
 }
@@ -832,6 +922,10 @@ async function toggleShare() {
   syncScreenSenders(); // envia para quem já pediu para assistir
   renderScreens();
   renderAll();
+  // Câmera ligada: tenta virar a janelinha flutuante (se o navegador deixar
+  // agora; senão aparece o botão "Câmera flutuante" na sua tela)
+  if (camStream && !camFloating) await openFloatingCam();
+  renderScreens();
 }
 
 function stopShare() {
@@ -843,6 +937,7 @@ function stopShare() {
   screenStream.getTracks().forEach((t) => t.stop());
   screenStream = null;
   socket.emit('share-stop');
+  camFromFloating();
   renderScreens();
   renderAll();
 }
@@ -918,6 +1013,7 @@ function renderScreens() {
           ${mine ? '' : `<label class="screen-vol" title="Volume do som desta transmissão">
             <span class="ico">${ICON.speaker}</span><input type="range" min="0" max="100"></label>`}
           ${mine ? '' : '<button class="lat"></button>'}
+          ${mine ? '<button class="float-cam" title="Abre sua câmera numa janelinha por cima de tudo, que aparece na transmissão">📌 Câmera flutuante</button>' : ''}
           <button class="icon-btn fs" title="Tela cheia">${ICON.full}</button>
           <button class="icon-btn close" title="${mine ? 'Parar de transmitir' : 'Parar de assistir'}">${ICON.close}</button>
         </div>`;
@@ -926,6 +1022,11 @@ function renderScreens() {
         else el.requestFullscreen?.();
       };
       el.querySelector('.close').onclick = () => (mine ? stopShare() : unwatch(id));
+      const fc = el.querySelector('.float-cam');
+      if (fc) fc.onclick = async () => {
+        if (!(await openFloatingCam())) toast('Seu navegador não abriu a janelinha. Use o Chrome ou o Edge atualizados.');
+        renderScreens();
+      };
       const lat = el.querySelector('.lat');
       if (lat) { lat.onclick = toggleLatency; updateLatencyButton(el); }
       const range = el.querySelector('.screen-vol input');
@@ -951,6 +1052,8 @@ function renderScreens() {
     el.querySelector('.screen-waiting').hidden = live;
     el.querySelector('.owner').textContent = mine ? 'Sua tela' : `Tela de ${nameOf(id)}`;
     updateCamPip(el, id);
+    const fc = el.querySelector('.float-cam');
+    if (fc) fc.hidden = !(camStream && !camFloating && canFloat());
   });
 
   applyLatencyMode();
@@ -1464,5 +1567,5 @@ function renderControls() {
   bc.disabled = !navigator.mediaDevices?.getUserMedia;
   bc.classList.toggle('active', !!camStream);
   bc.querySelector('.ico').innerHTML = camStream ? ICON.cam : ICON.camOff;
-  bc.querySelector('.label').textContent = camStream ? 'Desligar câmera' : 'Câmera';
+  bc.querySelector('.label').textContent = camStream ? (camFloating ? 'Fechar câmera flutuante' : 'Desligar câmera') : 'Câmera';
 }
