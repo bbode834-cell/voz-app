@@ -86,6 +86,10 @@ class Memoria {
     return n;
   }
 
+  // Canais (salas): [{ id, nome }]
+  async listChannels() { return (this.canais || []).map((c) => ({ ...c })); }
+  async saveChannels(list) { this.canais = list.map((c) => ({ id: c.id, nome: c.nome })); }
+
   // Amizades: { a, b (a < b), de (quem pediu), status: 'pending' | 'accepted' }
   async friendsOf(uid) { return this.amigos.filter((f) => f.a === uid || f.b === uid).map((f) => ({ ...f })); }
   async getFriend(x, y) {
@@ -147,6 +151,12 @@ class Postgres {
         status TEXT NOT NULL DEFAULT 'pending',
         criado TIMESTAMPTZ NOT NULL DEFAULT now(),
         PRIMARY KEY (a, b)
+      )`);
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS canais (
+        id TEXT PRIMARY KEY,
+        nome TEXT NOT NULL,
+        ordem INTEGER NOT NULL DEFAULT 0
       )`);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS imagens (
@@ -240,6 +250,28 @@ class Postgres {
   async removeOldImgs(dias) {
     const r = await this.pool.query(`DELETE FROM imagens WHERE criado < now() - ($1::int * interval '1 day')`, [dias]);
     return r.rowCount;
+  }
+
+  // Canais (salas)
+  async listChannels() {
+    const r = await this.pool.query('SELECT id, nome FROM canais ORDER BY ordem, id');
+    return r.rows;
+  }
+  async saveChannels(list) {
+    const c = await this.pool.connect();
+    try {
+      await c.query('BEGIN');
+      await c.query('DELETE FROM canais');
+      for (let i = 0; i < list.length; i++) {
+        await c.query('INSERT INTO canais (id, nome, ordem) VALUES ($1, $2, $3)', [list[i].id, list[i].nome, i]);
+      }
+      await c.query('COMMIT');
+    } catch (e) {
+      await c.query('ROLLBACK');
+      throw e;
+    } finally {
+      c.release();
+    }
   }
 
   // Amizades

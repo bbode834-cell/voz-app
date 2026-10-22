@@ -714,6 +714,20 @@ socket.on('connect', () => {
   if (saved?.version) socket.emit('sync-names', saved);
 });
 
+async function createChannel() {
+  const nome = prompt('Nome da nova sala:', '');
+  if (nome === null) return;
+  const res = await emitAck('create-channel', { name: nome });
+  if (res?.error) toast(res.error); else toast(`Sala "${nome.trim()}" criada!`);
+}
+
+async function deleteChannel(ch) {
+  const n = ch.users.length;
+  if (!confirm(`Apagar a sala "${ch.name}"?${n ? ` ${n} pessoa(s) vão sair da chamada.` : ''}`)) return;
+  const res = await emitAck('delete-channel', { id: ch.id });
+  if (res?.error) toast(res.error); else toast(`Sala "${ch.name}" apagada.`);
+}
+
 async function renameChannel(ch) {
   const novo = prompt(`Novo nome para o canal "${ch.name}":`, ch.name);
   if (novo === null) return;
@@ -773,6 +787,7 @@ function leaveChannel(switching = false) {
   if (!currentChannel) return;
   stopShare();
   stopCam();
+  stopMusic();
   [...peers.keys()].forEach(closePeer);
   socket.emit('leave');
   if (!switching) { stopMic(); soundLeave(); }
@@ -883,6 +898,8 @@ function createPeer(id, initiator = false) {
     screenStream: null,
     watchingMe: false,
     camSenders: [],
+    musicSenders: [],
+    musicStreamId: null, // qual som que chega dessa pessoa é a música (DJ)
     camStreamId: null, // qual "stream" que chega dessa pessoa é a câmera
     camStream: null,
   };
@@ -938,12 +955,13 @@ function createPeer(id, initiator = false) {
       renderScreens();
       return;
     }
-    // Áudio: pode ser o microfone ou o som da tela transmitida
+    // Áudio: pode ser o microfone, o som da tela transmitida ou a música (DJ)
     if (!peer.audioEls.has(stream.id)) {
       const el = new Audio();
       el.autoplay = true;
       el.srcObject = stream;
-      el.dataset.kind = stream.getVideoTracks().length > 0 ? 'screen' : 'mic';
+      el.dataset.kind = stream.id === peer.musicStreamId ? 'music' : stream.getVideoTracks().length > 0 ? 'screen' : 'mic';
+      if (el.dataset.kind === 'music') { track.onended = () => renderMusicBar(); setTimeout(renderMusicBar, 0); }
       $('#audio-sink').appendChild(el);
       peer.audioEls.set(stream.id, el);
       if (el.dataset.kind === 'mic') {
@@ -967,6 +985,7 @@ function addLocalTracks(peer) {
     peer.screenSenders = addScreenTracks(peer.pc, screenStream);
   }
   if (camStream && !camFloating && seesCams(peer.id)) addCamTracks(peer);
+  if (musicStream && seesCams(peer.id)) addMusicTracks(peer);
 }
 
 // ---------- Câmera ----------
@@ -1035,6 +1054,101 @@ function stopCam() {
   renderCams();
   renderControls();
 }
+
+// ---------- 🎵 Música (DJ) ----------
+// Quem está no computador escolhe uma aba do navegador (YouTube, Spotify...) e o som dela
+// vai para a chamada como uma faixa separada: todo mundo ouve (celular também), cada um
+// com o seu próprio volume da música. Não passa pelo servidor.
+let musicStream = null;
+let musicVolume = store.get('voz-musica-vol', 0.6);
+async function startMusic() {
+  if (musicStream) return stopMusic();
+  if (!currentChannel) return;
+  if (!navigator.mediaDevices?.getDisplayMedia) return toast('Esse navegador não deixa compartilhar o som de uma aba. Use o Chrome ou o Edge no computador.');
+  let st;
+  try {
+    st = await navigator.mediaDevices.getDisplayMedia({
+      video: true, // o navegador exige; o vídeo é descartado logo abaixo
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      selfBrowserSurface: 'exclude',
+      systemAudio: 'include',
+    });
+  } catch {
+    return;
+  }
+  st.getVideoTracks().forEach((t) => t.stop());
+  const at = st.getAudioTracks()[0];
+  if (!at) return toast('Marque "Compartilhar áudio da guia" na janelinha do navegador e tente de novo.');
+  if ('contentHint' in at) at.contentHint = 'music';
+  musicStream = new MediaStream([at]);
+  at.onended = () => stopMusic();
+  socket.emit('music', { on: true });
+  syncMusicSenders();
+  renderControls();
+  renderMusicBar();
+  toast('🎵 Música ligada! Todo mundo na chamada está ouvindo o som dessa aba.');
+}
+function stopMusic() {
+  if (!musicStream) return;
+  const st = musicStream;
+  musicStream = null;
+  syncMusicSenders();
+  st.getTracks().forEach((t) => t.stop());
+  socket.emit('music', { on: false });
+  renderControls();
+  renderMusicBar();
+}
+function addMusicTracks(peer) {
+  sendSignal(peer.id, { music: musicStream.id }); // avisa antes: "esse som é a música"
+  peer.musicSenders = musicStream.getAudioTracks().map((t) => peer.pc.addTrack(t, musicStream));
+  // qualidade de música (e não de voz)
+  peer.musicSenders.forEach(async (sd) => {
+    try {
+      const p = sd.getParameters();
+      if (!p.encodings?.length) p.encodings = [{}];
+      p.encodings[0].maxBitrate = 128000;
+      await sd.setParameters(p);
+    } catch {}
+  });
+}
+function syncMusicSenders() {
+  peers.forEach((peer, id) => {
+    if (!peer.tracksAdded) return;
+    const want = !!musicStream && seesCams(id);
+    const has = peer.musicSenders.length > 0;
+    if (want && !has) addMusicTracks(peer);
+    else if (!want && has) {
+      peer.musicSenders.forEach((sd) => { try { peer.pc.removeTrack(sd); } catch {} });
+      peer.musicSenders = [];
+      sendSignal(id, { music: null });
+    }
+  });
+}
+// Quem está tocando música agora (eu ou alguém da chamada)
+function musicDjs() {
+  const out = [];
+  if (musicStream) out.push({ id: selfId, name: myName, me: true });
+  peers.forEach((p, id) => { if ([...p.audioEls.values()].some((el) => el.dataset.kind === 'music')) out.push({ id, name: nameOf(id), me: false }); });
+  return out;
+}
+function renderMusicBar() {
+  const bar = $('#music-bar');
+  const djs = musicDjs();
+  bar.hidden = !djs.length;
+  if (!djs.length) return;
+  const mine = djs.some((d) => d.me);
+  $('#music-who').textContent = mine ? 'Você está tocando música para a chamada' : `Música de ${djs.map((d) => d.name).join(', ')}`;
+  $('#music-vol').value = Math.round(musicVolume * 100);
+  $('#music-vol').parentElement.hidden = mine && djs.length === 1;
+  $('#music-stop').hidden = !mine;
+}
+$('#music-vol').addEventListener('input', (e) => {
+  musicVolume = Number(e.target.value) / 100;
+  store.set('voz-musica-vol', musicVolume);
+  applyVolumes();
+});
+$('#music-stop').onclick = stopMusic;
+$('#btn-music').onclick = startMusic;
 
 // ---------- Câmera flutuante (enquanto transmite a tela) ----------
 // Janelinha que fica por cima de todos os programas (até do jogo em modo
@@ -1257,6 +1371,13 @@ socket.on('signal', async ({ from, data }) => {
       // Essa pessoa avisou qual vídeo é a câmera (ou que desligou)
       peer.camStreamId = data.cam || null;
       if (!data.cam) { peer.camStream = null; renderCams(); }
+    } else if ('music' in data) {
+      // Essa pessoa avisou qual som é a música (ou que parou)
+      peer.musicStreamId = data.music || null;
+      if (!data.music) {
+        peer.audioEls.forEach((el, sid) => { if (el.dataset.kind === 'music') { el.srcObject = null; el.remove(); peer.audioEls.delete(sid); } });
+      }
+      renderMusicBar();
     } else if (data.stats) {
       // Diagnóstico enviado por quem transmite (como está saindo do lado dele)
       peer.remoteStats = { ...data.stats, at: Date.now() };
@@ -1283,6 +1404,7 @@ function closePeer(id) {
   const cv = camVideos.get(id);
   if (cv) { cv.srcObject = null; cv.remove(); camVideos.delete(id); }
   unwatchSpeaking(id);
+  setTimeout(renderMusicBar, 0);
 }
 
 // ---------- Qualidade da transmissão ----------
@@ -1420,9 +1542,9 @@ function unwatch(id) {
 }
 
 // ---------- Ações de moderadores em mim ----------
-socket.on('kicked', ({ by }) => {
+socket.on('kicked', ({ by, motivo }) => {
   leaveChannel();
-  toast(`🚪 ${by} tirou você da chamada.`);
+  toast(motivo === 'sala-apagada' ? `🚪 ${by} apagou a sala. Escolha outra para continuar.` : `🚪 ${by} tirou você da chamada.`);
 });
 socket.on('banned', ({ by, motivo }) => {
   logout(motivo === 'apagada' ? 'Sua conta foi apagada.' : `Sua conta foi banida por ${by}.`);
@@ -1444,6 +1566,9 @@ socket.on('mod-stop-share', ({ by }) => {
 });
 socket.on('mod-stop-cam', ({ by }) => {
   if (camStream) { stopCam(); toast(`📷 ${by} desligou a sua câmera.`); }
+});
+socket.on('mod-stop-music', ({ by }) => {
+  if (musicStream) { stopMusic(); toast(`🎵 ${by} parou a sua música.`); }
 });
 
 socket.on('disconnect', () => {
@@ -2585,47 +2710,10 @@ socket.on('fun-shown', ({ kind, from, to }) => {
   if (FUN[kind]) toast(FUN[kind].seen(from, to));
 });
 
-// ---------- Janela "por cima do jogo" (PC) ----------
-// Um site não consegue desenhar por cima de outros programas. O que dá para fazer é abrir uma
-// janelinha que fica sempre na frente (a mesma técnica da câmera flutuante): as brincadeiras
-// aparecem nela mesmo com o navegador minimizado e o jogo aberto (em janela ou sem bordas).
-let funWin = null;
+// Onde as brincadeiras são desenhadas (a página inteira)
 function funEnv() {
-  if (funWin && !funWin.closed) {
-    const d = funWin.document;
-    return { win: funWin, doc: d, layer: d.getElementById('fun-layer'), shake: d.body, pip: true };
-  }
-  return { win: window, doc: document, layer: $('#fun-layer'), shake: document.querySelector('.app'), pip: false };
+  return { win: window, doc: document, layer: $('#fun-layer'), shake: document.querySelector('.app') };
 }
-async function openFunWindow() {
-  if (!('documentPictureInPicture' in window)) return toast('Essa janela só existe no Chrome e no Edge (computador).');
-  if (funWin && !funWin.closed) { funWin.focus(); return; }
-  try {
-    const win = await documentPictureInPicture.requestWindow({ width: 440, height: 300 });
-    const d = win.document;
-    d.title = 'Brincadeiras — King Launcher';
-    const base = d.createElement('base');
-    base.href = location.href;
-    d.head.appendChild(base);
-    for (const ss of document.styleSheets) {
-      try {
-        if (ss.href) { const l = d.createElement('link'); l.rel = 'stylesheet'; l.href = ss.href; d.head.appendChild(l); }
-        else { const st = d.createElement('style'); st.textContent = [...ss.cssRules].map((r) => r.cssText).join('\n'); d.head.appendChild(st); }
-      } catch {}
-    }
-    d.body.className = 'fun-win';
-    d.body.innerHTML = `<div class="fun-idle"><img src="logo-fone.svg" alt=""><b>Brincadeiras dos amigos aparecem aqui</b>
-      <small>Deixe esta janela num canto: ela fica por cima do jogo (em janela ou sem bordas), mesmo com o navegador minimizado.</small></div>
-      <div id="fun-layer" class="fun-layer"></div>`;
-    win.addEventListener('pagehide', () => { funWin = null; renderControls(); });
-    funWin = win;
-    renderControls();
-  } catch (err) {
-    console.warn('janela de brincadeiras:', err);
-    toast('Não consegui abrir a janela.');
-  }
-}
-$('#btn-funwin').onclick = openFunWindow;
 
 // O tomate voa em arco, achata ao bater, espirra gotinhas, mancha a tela e escorre
 const rnd = (a, b) => a + Math.random() * (b - a);
@@ -3244,7 +3332,7 @@ function applyVolumes() {
     const silenced = !!findUser(id)?.modMuted;
     p.audioEls.forEach((el) => {
       el.muted = deafened;
-      el.volume = el.dataset.kind === 'screen' ? screenVolumeOf(nameOf(id)) : (silenced ? 0 : v);
+      el.volume = el.dataset.kind === 'music' ? musicVolume : el.dataset.kind === 'screen' ? screenVolumeOf(nameOf(id)) : (silenced ? 0 : v);
     });
   });
 }
@@ -3283,6 +3371,7 @@ function renderModTools(u) {
     ${u.modMuted ? b('unmute', '🎙️ Liberar microfone', 'ok') : b('mute', '🔇 Fechar microfone')}
     ${isSharing(u.id) ? b('stop-share', '⏹ Parar transmissão') : ''}
     ${u.cam ? b('stop-cam', '📷 Desligar câmera') : ''}
+    ${u.music ? b('stop-music', '🎵 Parar a música') : ''}
     ${b('kick', '🚪 Expulsar da chamada', 'danger')}
     ${b('ban', '⛔ Banir', 'danger')}</div>`;
 }
@@ -3295,7 +3384,7 @@ $('#mod-tools').addEventListener('click', async (e) => {
   const r = await emitAck('mod-action', { action: act, id: volTarget });
   if (r?.error) return toast(r.error);
   const msg = { mute: `Microfone de ${name} fechado.`, unmute: `Microfone de ${name} liberado.`, 'stop-share': `Transmissão de ${name} parada.`,
-    'stop-cam': `Câmera de ${name} desligada.`, kick: `${name} foi expulso da chamada.`, ban: `${name} foi banido.` }[act];
+    'stop-cam': `Câmera de ${name} desligada.`, 'stop-music': `Música de ${name} parada.`, kick: `${name} foi expulso da chamada.`, ban: `${name} foi banido.` }[act];
   toast(msg);
   if (act === 'kick' || act === 'ban') closeVolume();
 });
@@ -3411,11 +3500,13 @@ function renderChannels() {
     el.innerHTML = `
       <div class="channel-row">
         <button class="channel-btn">${ICON.speaker}<span>${esc(ch.name)}</span><small>${ch.users.length}/${config.maxPerChannel}</small></button>
-        ${isMod() ? `<button class="rename-btn" title="Trocar nome do canal">${ICON.pencil}</button>` : ''}
+        ${isMod() ? `<button class="rename-btn" title="Trocar nome da sala">${ICON.pencil}</button><button class="rename-btn del-btn" title="Apagar sala">${ICON.close}</button>` : ''}
       </div>`;
     el.querySelector('.channel-btn').onclick = () => joinChannel(ch.id);
-    const rb = el.querySelector('.rename-btn');
+    const rb = el.querySelector('.rename-btn:not(.del-btn)');
     if (rb) rb.onclick = () => renameChannel(ch);
+    const db = el.querySelector('.del-btn');
+    if (db) db.onclick = () => deleteChannel(ch);
 
     const ul = document.createElement('ul');
     ch.users.forEach((u) => {
@@ -3427,12 +3518,20 @@ function renderChannels() {
         <span class="mname">${esc(u.name)}${u.id === selfId ? ' (você)' : ''}</span>${roleBadge(u.role)}
         ${(ch.sharers || [ch.sharer]).includes(u.id) ? '<span class="live">AO VIVO</span>' : ''}
         ${u.cam ? `<span class="cam-ico" title="Câmera ligada">${ICON.cam}</span>` : ''}
+        ${u.music ? '<span class="cam-ico" title="Tocando música">🎵</span>' : ''}
         ${u.muted ? `<span class="muted-ico">${ICON.micOff}</span>` : ''}`;
       ul.appendChild(li);
     });
     el.appendChild(ul);
     wrap.appendChild(el);
   });
+  if (isMod()) {
+    const add = document.createElement('button');
+    add.className = 'new-channel';
+    add.innerHTML = '➕ Nova sala';
+    add.onclick = createChannel;
+    wrap.appendChild(add);
+  }
 }
 
 function renderMain() {
@@ -3485,11 +3584,10 @@ function renderControls() {
   fillAvatar(me, myName, myAvatar);
   $('#me-name').textContent = myName;
 
-  // janela "por cima do jogo": só no Chrome/Edge do computador, e só em chamada
-  const fw = $('#btn-funwin');
-  fw.hidden = !('documentPictureInPicture' in window) || !currentChannel;
-  fw.classList.toggle('on', !!(funWin && !funWin.closed));
-  fw.textContent = funWin && !funWin.closed ? '🎉 Janela aberta' : '🎉 Por cima do jogo';
+  const bmu = $('#btn-music');
+  bmu.classList.toggle('active', !!musicStream);
+  bmu.querySelector('.label').textContent = musicStream ? 'Parar música' : 'Música';
+  bmu.hidden = !navigator.mediaDevices?.getDisplayMedia || /Android|iPhone|iPad/i.test(navigator.userAgent);
 
   const bm = $('#btn-mute');
   bm.innerHTML = muted || deafened ? ICON.micOff : ICON.mic;

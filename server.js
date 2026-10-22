@@ -311,14 +311,29 @@ const server = http.createServer(app);
 const io = new Server(server, { maxHttpBufferSize: 200_000, cors: { origin: '*' } });
 
 // ---------- Canais ----------
-// Canais têm um id fixo (c1, c2, ...) e um nome que pode ser trocado
-const channels = DEFAULT_NAMES.map((name, i) => ({
-  id: `c${i + 1}`,
-  name,
-  users: new Map(), // socketId -> { uid, name, muted, modMuted, avatar, proto, cam, role }
-  sharers: new Set(), // quem está transmitindo agora (várias pessoas ao mesmo tempo)
-  chat: [], // últimas mensagens do chat deste canal
-}));
+// Canais (salas) ficam guardados no banco: o dono e os moderadores criam, renomeiam e apagam.
+// Cada um tem um id fixo (c1, c2, ...) e um nome.
+const channels = [];
+const MAX_CHANNELS = 30;
+function makeChannel(id, name) {
+  return {
+    id,
+    name,
+    users: new Map(), // socketId -> { uid, name, muted, modMuted, avatar, proto, cam, role }
+    sharers: new Set(), // quem está transmitindo agora (várias pessoas ao mesmo tempo)
+    chat: [], // últimas mensagens do chat deste canal
+  };
+}
+async function loadChannels() {
+  let list = await banco.listChannels();
+  if (!list.length) {
+    list = DEFAULT_NAMES.map((name, i) => ({ id: `c${i + 1}`, nome: name }));
+    await banco.saveChannels(list);
+  }
+  channels.length = 0;
+  list.forEach((c) => channels.push(makeChannel(c.id, c.nome)));
+}
+const persistChannels = () => banco.saveChannels(channels.map((c) => ({ id: c.id, nome: c.name }))).catch((e) => console.error('salvar canais:', e.message));
 const CHAT_KEEP = 100;
 let chatSeq = 0;
 // Quando o nome foi trocado pela última vez (0 = nomes padrão)
@@ -598,21 +613,8 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Depois que o servidor "dorme", ele volta com os nomes padrão.
-  // Quem já conhecia os nomes novos devolve eles aqui.
-  socket.on('sync-names', ({ version, names } = {}) => {
-    const v = Number(version) || 0;
-    if (v <= namesVersion || !Array.isArray(names)) return;
-    let changed = false;
-    names.forEach((n) => {
-      const ch = byId(n?.id);
-      if (ch) { ch.name = cleanName(n.name, ch.name); changed = true; }
-    });
-    if (changed) {
-      namesVersion = v;
-      broadcastChannels();
-    }
-  });
+  // (versões antigas mandavam os nomes guardados no aparelho; agora os canais ficam no banco)
+  socket.on('sync-names', () => {});
 
   socket.on('rename-channel', ({ id, name } = {}, ack = () => {}) => {
     if (!isMod()) return ack({ error: 'Só o dono e os moderadores podem renomear canais.' });
@@ -624,6 +626,42 @@ io.on('connection', (socket) => {
     namesVersion = Date.now();
     ack({ ok: true });
     broadcastChannels();
+    persistChannels();
+  });
+
+  // Criar uma sala nova
+  socket.on('create-channel', ({ name } = {}, ack = () => {}) => {
+    if (!isMod()) return ack({ error: 'Só o dono e os moderadores podem criar salas.' });
+    const novo = cleanName(name, '');
+    if (!novo) return ack({ error: 'Digite um nome para a sala.' });
+    if (channels.length >= MAX_CHANNELS) return ack({ error: `Limite de ${MAX_CHANNELS} salas.` });
+    if (channels.some((c) => c.name.toLowerCase() === novo.toLowerCase())) return ack({ error: 'Já existe uma sala com esse nome.' });
+    const n = channels.reduce((m, c) => Math.max(m, Number(String(c.id).slice(1)) || 0), 0) + 1;
+    const ch = makeChannel(`c${n}`, novo);
+    channels.push(ch);
+    namesVersion = Date.now();
+    ack({ ok: true, id: ch.id });
+    broadcastChannels();
+    persistChannels();
+  });
+
+  // Apagar uma sala (quem estiver nela sai da chamada)
+  socket.on('delete-channel', ({ id } = {}, ack = () => {}) => {
+    if (!isMod()) return ack({ error: 'Só o dono e os moderadores podem apagar salas.' });
+    const ch = byId(id);
+    if (!ch) return ack({ error: 'Sala não encontrada.' });
+    if (channels.length <= 1) return ack({ error: 'Tem que sobrar pelo menos uma sala.' });
+    for (const sid of [...ch.users.keys()]) {
+      const s = io.sockets.sockets.get(sid);
+      if (!s) continue;
+      s.emit('kicked', { by: me().name, motivo: 'sala-apagada' });
+      leave(s);
+    }
+    channels.splice(channels.indexOf(ch), 1);
+    namesVersion = Date.now();
+    ack({ ok: true });
+    broadcastChannels();
+    persistChannels();
   });
 
   socket.on('join', ({ channel, proto } = {}, ack = () => {}) => {
@@ -642,7 +680,7 @@ io.on('connection', (socket) => {
     const modMuted = !!socket.data.modMuted;
     ch.users.set(socket.id, {
       uid: u.id, name: u.name, avatar: u.avatar, role: u.role,
-      muted: modMuted, modMuted, proto: Number(proto) || 1, cam: false,
+      muted: modMuted, modMuted, proto: Number(proto) || 1, cam: false, music: false,
     });
     socket.data.channel = ch.id;
     socket.join(ch.id);
@@ -744,6 +782,15 @@ io.on('connection', (socket) => {
     }
   });
 
+  // 🎵 Música: quem está tocando o som de uma aba para a chamada (o som vai direto entre os aparelhos)
+  socket.on('music', ({ on } = {}) => {
+    const u = byId(socket.data.channel)?.users.get(socket.id);
+    if (u && u.music !== !!on) {
+      u.music = !!on;
+      broadcastChannels();
+    }
+  });
+
   // Quem quer assistir (ou parar de assistir) avisa quem está transmitindo.
   socket.on('watch', ({ id, on } = {}) => {
     const ch = byId(socket.data.channel);
@@ -786,6 +833,10 @@ io.on('connection', (socket) => {
       } else if (action === 'stop-cam') {
         if (entry) entry.cam = false;
         target.emit('mod-stop-cam', { by });
+        broadcastChannels();
+      } else if (action === 'stop-music') {
+        if (entry) entry.music = false;
+        target.emit('mod-stop-music', { by });
         broadcastChannels();
       } else if (action === 'ban') {
         await banco.update(tu.id, { status: 'banned' });
@@ -866,10 +917,11 @@ io.on('connection', (socket) => {
 });
 
 banco.init()
+  .then(loadChannels)
   .then(() => {
     server.listen(PORT, () => {
       console.log(`Servidor rodando em http://localhost:${PORT}`);
-      console.log(`Canais: ${DEFAULT_NAMES.join(', ')} | Máx. por canal: ${MAX_PER_CHANNEL}`);
+      console.log(`Canais: ${channels.map((c) => c.name).join(', ')} | Máx. por canal: ${MAX_PER_CHANNEL}`);
       console.log(`Contas guardadas em: ${tipoBanco}`);
       console.log(process.env.TURN_URL ? `TURN: ${process.env.TURN_URL}` : 'TURN: não configurado (só STUN)');
     });

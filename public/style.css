@@ -773,7 +773,7 @@ body.dm-open .main { margin-right: 340px; }
 .fx-hit.h2 { animation-delay: .47s; }
 @keyframes hit { 0% { opacity: .9; transform: scale(.3); } 100% { opacity: 0; transform: scale(1.5); } }
 .fx-nudge-text { background: rgba(0,0,0,.78); color: #fff; padding: 10px 16px; border-radius: 20px; font-size: 16px; box-shadow: 0 6px 20px rgba(0,0,0,.4); }
-.app.shake, body.fun-win.shake { animation: shake .62s cubic-bezier(.36,.07,.19,.97) both; }
+.app.shake { animation: shake .62s cubic-bezier(.36,.07,.19,.97) both; }
 @keyframes shake {
   10%, 90% { transform: translate(-3px, 1px); } 20%, 80% { transform: translate(6px, -2px); }
   30%, 50%, 70% { transform: translate(-12px, 3px); } 40%, 60% { transform: translate(12px, -3px); }
@@ -833,10 +833,19 @@ body.dm-open .main { margin-right: 340px; }
 .dm-actions .btn { padding: 5px 9px; font-size: 12px; white-space: nowrap; }
 .dm-actions .icon-btn svg { width: 18px; height: 18px; }
 
-/* ---------- Janela "por cima do jogo" ---------- */
-body.fun-win { margin: 0; background: #141518; overflow: hidden; height: 100vh; font-family: inherit; }
-.fun-idle { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 16px; text-align: center; color: var(--muted); }
-.fun-idle img { width: 90px; opacity: .35; }
-.fun-idle b { color: var(--text); font-size: 14px; }
-.fun-idle small { font-size: 12px; max-width: 360px; }
-#btn-funwin.on { border-color: var(--green); color: var(--green); }
+/* ---------- Salas: criar / apagar ---------- */
+.new-channel { margin: 6px 8px; padding: 8px 10px; width: calc(100% - 16px); border-radius: 8px; border: 1px dashed var(--muted); background: none; color: var(--muted); cursor: pointer; font-weight: 700; font-size: 13px; }
+.new-channel:hover { color: var(--text-strong); border-color: var(--text-strong); background: var(--hover); }
+.del-btn:hover { color: var(--red); }
+
+/* ---------- Música (DJ) ---------- */
+.music-bar { display: flex; align-items: center; gap: 12px; margin: 10px 16px 0; padding: 8px 14px; border-radius: 10px;
+  background: var(--panel); border: 1px solid rgba(245,184,46,.45); color: var(--text); font-size: 14px; flex-wrap: wrap; }
+.music-bar[hidden], .music-bar [hidden], #btn-music[hidden] { display: none !important; }
+.music-ico { font-size: 18px; }
+.music-bar #music-who { font-weight: 700; color: var(--text-strong); flex: 1; min-width: 120px; }
+.music-vol { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+.music-vol input { width: 140px; accent-color: #f5b82e; }
+.music-vol[hidden] { display: none; }
+#btn-music .ico { font-size: 16px; }
+#btn-music.active { border-color: #f5b82e; color: #f5b82e; }
