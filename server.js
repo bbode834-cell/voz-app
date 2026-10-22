@@ -138,8 +138,8 @@ io.on('connection', (socket) => {
     const nome = cleanName(name, 'Anônimo');
     const peers = [...ch.users.entries()].map(([id, u]) => ({ id, ...u }));
 
-    // proto 2 = versão que escolhe qual transmissão assistir
-    ch.users.set(socket.id, { name: nome, muted: false, avatar: cleanAvatar(avatar), proto: Number(proto) || 1 });
+    // proto 2 = escolhe qual transmissão assistir; proto 3 = também vê câmeras
+    ch.users.set(socket.id, { name: nome, muted: false, avatar: cleanAvatar(avatar), proto: Number(proto) || 1, cam: false });
     socket.data.channel = ch.id;
     socket.join(ch.id);
     socket.to(ch.id).emit('peer-joined', { id: socket.id, name: nome });
@@ -226,6 +226,15 @@ io.on('connection', (socket) => {
     const ch = byId(socket.data.channel);
     if (ch && ch.sharers.delete(socket.id)) {
       io.to(ch.id).emit('share-stopped', { id: socket.id });
+      broadcastChannels();
+    }
+  });
+
+  // Câmera ligada/desligada (o vídeo vai direto entre os participantes)
+  socket.on('cam', ({ on } = {}) => {
+    const u = byId(socket.data.channel)?.users.get(socket.id);
+    if (u && u.cam !== !!on) {
+      u.cam = !!on;
       broadcastChannels();
     }
   });

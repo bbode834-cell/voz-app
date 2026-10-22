@@ -19,6 +19,8 @@ const ICON = {
   full: svg('<path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/>'),
   chat: svg('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>'),
   close: svg('<path d="M18 6 6 18M6 6l12 12"/>'),
+  cam: svg('<path d="M23 7l-7 5 7 5z"/><rect x="1" y="5" width="15" height="14" rx="2"/>'),
+  camOff: svg('<path d="M2 2l20 20"/><path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m5 0h4a2 2 0 0 1 2 2v3.3l1 1L23 7v10"/>'),
   pencil: svg('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>'),
 };
 
@@ -38,6 +40,7 @@ let currentChannel = null; // id do canal (c1, c2...)
 let channelsState = [];
 let localStream = null;   // microfone
 let screenStream = null;  // minha tela (quando eu transmito)
+let camStream = null;     // minha câmera (quando ligada)
 const watching = new Set(); // transmissões que estou assistindo (ids)
 let muted = false;
 let deafened = false;
@@ -96,6 +99,13 @@ const sharersNow = () => {
 const isSharing = (id) => sharersNow().includes(id);
 // Versão 1.0.2 do app não sabe pedir para assistir: recebe a primeira transmissão direto
 const isLegacy = (id) => (findUser(id)?.proto || 1) < 2;
+// Versões que sabem mostrar câmera (as antigas achariam que é uma tela)
+const seesCams = (id) => (findUser(id)?.proto || 1) >= 3;
+// Câmera de alguém (ou a minha), se estiver chegando imagem
+function camOf(id) {
+  const st = id === selfId ? camStream : peers.get(id)?.camStream;
+  return st && st.getVideoTracks().some((t) => t.readyState === 'live') ? st : null;
+}
 
 let toastTimer;
 function toast(msg) {
@@ -238,6 +248,7 @@ openProfile();
 $('#btn-mute').onclick = toggleMute;
 $('#btn-deafen').onclick = toggleDeafen;
 $('#btn-share').onclick = toggleShare;
+$('#btn-cam').onclick = toggleCam;
 $('#btn-leave').onclick = () => leaveChannel();
 $('#btn-leave .ico').innerHTML = ICON.hang;
 $('#btn-share .ico').innerHTML = ICON.screen;
@@ -278,7 +289,7 @@ async function joinChannel(id) {
     applyMicState();
     ensureAudioCtx();
 
-    const res = await emitAck('join', { channel: id, name: myName, avatar: myAvatar, proto: 2 });
+    const res = await emitAck('join', { channel: id, name: myName, avatar: myAvatar, proto: 3 });
     if (res.error) {
       toast(res.error);
       stopMic();
@@ -309,6 +320,7 @@ async function joinChannel(id) {
 function leaveChannel(switching = false) {
   if (!currentChannel) return;
   stopShare();
+  stopCam();
   [...peers.keys()].forEach(closePeer);
   socket.emit('leave');
   if (!switching) { stopMic(); soundLeave(); }
@@ -334,6 +346,7 @@ function createPeer(id, initiator = false) {
   if (peers.has(id)) return peers.get(id);
   const pc = new RTCPeerConnection({ iceServers: config.iceServers });
   const peer = {
+    id,
     pc,
     polite: selfId > id,
     makingOffer: false,
@@ -345,6 +358,9 @@ function createPeer(id, initiator = false) {
     micEl: null,
     screenStream: null,
     watchingMe: false,
+    camSenders: [],
+    camStreamId: null, // qual "stream" que chega dessa pessoa é a câmera
+    camStream: null,
   };
   peers.set(id, peer);
 
@@ -380,12 +396,18 @@ function createPeer(id, initiator = false) {
 
   pc.onconnectionstatechange = () => {
     if (pc.connectionState === 'failed') pc.restartIce();
-    if (pc.connectionState === 'connected') tuneScreenSenders(peer);
+    if (pc.connectionState === 'connected') { tuneScreenSenders(peer); tuneCamSenders(peer); }
   };
 
   pc.ontrack = ({ track, streams }) => {
     const stream = streams[0] || new MediaStream([track]);
     if (track.kind === 'video') {
+      if (stream.id === peer.camStreamId || (findUser(id)?.cam && !isSharing(id))) {
+        peer.camStream = stream;
+        track.onunmute = () => renderCams();
+        renderCams();
+        return;
+      }
       peer.screenStream = stream;
       // Chegou vídeo de quem está transmitindo: mostra (o app 1.0.2 envia sem pedirmos)
       if (isSharing(id) && !watching.has(id)) watching.add(id);
@@ -419,6 +441,92 @@ function addLocalTracks(peer) {
   if (screenStream && shouldSendTo(peer.id)) {
     peer.screenSenders = addScreenTracks(peer.pc, screenStream);
   }
+  if (camStream && seesCams(peer.id)) addCamTracks(peer);
+}
+
+// ---------- Câmera ----------
+// A câmera vai para todo mundo do canal (é leve: ~0,5 Mbps por amigo)
+function addCamTracks(peer) {
+  sendSignal(peer.id, { cam: camStream.id }); // avisa antes: "esse vídeo é a câmera"
+  peer.camSenders = camStream.getVideoTracks().map((t) => peer.pc.addTrack(t, camStream));
+  tuneCamSenders(peer);
+}
+
+function syncCamSenders() {
+  peers.forEach((peer, id) => {
+    if (!peer.tracksAdded) return;
+    const want = !!camStream && seesCams(id);
+    const has = peer.camSenders.length > 0;
+    if (want && !has) addCamTracks(peer);
+    else if (!want && has) {
+      peer.camSenders.forEach((sd) => { try { peer.pc.removeTrack(sd); } catch {} });
+      peer.camSenders = [];
+      sendSignal(id, { cam: null });
+    }
+  });
+}
+
+async function tuneCamSenders(peer) {
+  for (const sender of peer.camSenders) {
+    try {
+      const p = sender.getParameters();
+      if (!p.encodings || !p.encodings.length) continue;
+      p.encodings[0].maxBitrate = 600_000;
+      p.encodings[0].maxFramerate = 24;
+      await sender.setParameters(p);
+    } catch {}
+  }
+}
+
+async function toggleCam() {
+  if (camStream) return stopCam();
+  if (!currentChannel) return;
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24, max: 30 }, facingMode: 'user' },
+      audio: false,
+    });
+  } catch {
+    return toast('Não consegui abrir a câmera (sem câmera ou sem permissão).');
+  }
+  if (!currentChannel) { camStream.getTracks().forEach((t) => t.stop()); camStream = null; return; }
+  camStream.getVideoTracks()[0].onended = () => stopCam();
+  socket.emit('cam', { on: true });
+  syncCamSenders();
+  renderCams();
+  renderControls();
+}
+
+function stopCam() {
+  if (!camStream) return;
+  const st = camStream;
+  camStream = null;
+  syncCamSenders();
+  st.getTracks().forEach((t) => t.stop());
+  socket.emit('cam', { on: false });
+  renderCams();
+  renderControls();
+}
+
+// Vídeos da câmera ficam guardados para não piscar quando a tela é redesenhada
+const camVideos = new Map(); // id -> <video>
+function camVideoFor(id, stream) {
+  let v = camVideos.get(id);
+  if (!v) {
+    v = document.createElement('video');
+    v.autoplay = true; v.playsInline = true; v.muted = true;
+    v.className = 'cam-video';
+    camVideos.set(id, v);
+  }
+  if (v.srcObject !== stream) v.srcObject = stream;
+  v.classList.toggle('mirror', id === selfId);
+  return v;
+}
+
+function renderCams() {
+  camVideos.forEach((v, id) => { if (!camOf(id)) { v.srcObject = null; v.remove(); camVideos.delete(id); } });
+  renderMain();
+  renderScreens();
 }
 
 // Só envio minha tela para quem está assistindo (economiza internet e processador)
@@ -511,6 +619,10 @@ socket.on('signal', async ({ from, data }) => {
         sendSignal(from, { description: pc.localDescription });
       }
       tuneScreenSenders(peer);
+    } else if ('cam' in data) {
+      // Essa pessoa avisou qual vídeo é a câmera (ou que desligou)
+      peer.camStreamId = data.cam || null;
+      if (!data.cam) { peer.camStream = null; renderCams(); }
     } else if (data.stats) {
       // Diagnóstico enviado por quem transmite (como está saindo do lado dele)
       peer.remoteStats = { ...data.stats, at: Date.now() };
@@ -532,7 +644,10 @@ function closePeer(id) {
   clearInterval(peer.watchdog);
   peer.pc.close();
   peer.audioEls.forEach((el) => { el.srcObject = null; el.remove(); });
+  peer.camStream = null;
   peers.delete(id);
+  const cv = camVideos.get(id);
+  if (cv) { cv.srcObject = null; cv.remove(); camVideos.delete(id); }
   unwatchSpeaking(id);
 }
 
@@ -598,7 +713,10 @@ socket.on('channels', (data) => {
   }
   // Para de mostrar quem parou de transmitir ou saiu
   [...watching].forEach((id) => { if (!isSharing(id)) watching.delete(id); });
+  peers.forEach((p, id) => { if (p.camStream && !findUser(id)?.cam) p.camStream = null; });
   syncScreenSenders();
+  syncCamSenders();
+  camVideos.forEach((v, id) => { if (!camOf(id)) { v.srcObject = null; v.remove(); camVideos.delete(id); } });
   applyVolumes();
   renderAll();
   renderScreens();
@@ -669,6 +787,7 @@ socket.on('disconnect', () => {
   if (currentChannel) {
     toast('Conexão com o servidor perdida.');
     stopShare();
+    stopCam();
     [...peers.keys()].forEach(closePeer);
     stopMic();
     currentChannel = null;
@@ -831,6 +950,7 @@ function renderScreens() {
     if (!live && v.srcObject) v.srcObject = null;
     el.querySelector('.screen-waiting').hidden = live;
     el.querySelector('.owner').textContent = mine ? 'Sua tela' : `Tela de ${nameOf(id)}`;
+    updateCamPip(el, id);
   });
 
   applyLatencyMode();
@@ -839,6 +959,45 @@ function renderScreens() {
   $('#stage').classList.toggle('sharing', list.length > 0);
   // Marca d'água some quando tem transmissão na tela (não atrapalha a imagem)
   document.body.classList.toggle('has-stream', list.length > 0);
+}
+
+// Quadradinho da câmera por cima da tela de quem transmite (dá para arrastar
+// e mudar o tamanho puxando o canto)
+function updateCamPip(card, id) {
+  const st = camOf(id);
+  let pip = card.querySelector('.cam-pip');
+  if (!st) { if (pip) { pip.querySelector('video').srcObject = null; pip.remove(); } return; }
+  if (!pip) {
+    pip = document.createElement('div');
+    pip.className = 'cam-pip';
+    pip.title = 'Arraste para mover · puxe o canto para mudar o tamanho';
+    pip.innerHTML = '<video autoplay playsinline muted></video>';
+    card.appendChild(pip);
+    let drag = null;
+    pip.addEventListener('pointerdown', (e) => {
+      const r = pip.getBoundingClientRect();
+      // canto de baixo à direita = mudar tamanho (fica com o navegador)
+      if (e.clientX > r.right - 18 && e.clientY > r.bottom - 18) return;
+      const c = card.getBoundingClientRect();
+      drag = { dx: e.clientX - r.left, dy: e.clientY - r.top, c };
+      pip.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+    pip.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      const { c } = drag;
+      const x = Math.max(0, Math.min(e.clientX - c.left - drag.dx, c.width - pip.offsetWidth));
+      const y = Math.max(0, Math.min(e.clientY - c.top - drag.dy, c.height - pip.offsetHeight));
+      pip.style.left = `${x}px`; pip.style.top = `${y}px`;
+      pip.style.right = 'auto'; pip.style.bottom = 'auto';
+    });
+    const end = () => { drag = null; };
+    pip.addEventListener('pointerup', end);
+    pip.addEventListener('pointercancel', end);
+  }
+  const v = pip.querySelector('video');
+  if (v.srcObject !== st) { v.srcObject = st; v.play().catch(() => {}); }
+  v.classList.toggle('mirror', id === selfId);
 }
 
 // ---------- Chat do canal ----------
@@ -962,7 +1121,8 @@ async function updateScreenStats() {
         continue;
       }
       const peer = peers.get(id);
-      const recv = peer?.pc.getReceivers().find((r) => r.track?.kind === 'video' && r.track.readyState === 'live');
+      const scrIds = new Set(peer?.screenStream?.getVideoTracks().map((t) => t.id) || []);
+      const recv = peer?.pc.getReceivers().find((r) => r.track?.kind === 'video' && r.track.readyState === 'live' && scrIds.has(r.track.id));
       if (!peer || !recv) { box.textContent = ''; continue; }
       let fps = 0, h = 0, w = 0, jb = 0, rtt = 0, lost = 0, got = 0;
       (await recv.getStats()).forEach((r) => {
@@ -1225,6 +1385,7 @@ function renderChannels() {
         ${avatarHTML(u)}
         <span class="mname">${esc(u.name)}${u.id === selfId ? ' (você)' : ''}</span>
         ${(ch.sharers || [ch.sharer]).includes(u.id) ? '<span class="live">AO VIVO</span>' : ''}
+        ${u.cam ? `<span class="cam-ico" title="Câmera ligada">${ICON.cam}</span>` : ''}
         ${u.muted ? `<span class="muted-ico">${ICON.micOff}</span>` : ''}`;
       ul.appendChild(li);
     });
@@ -1247,10 +1408,11 @@ function renderMain() {
     const isMe = u.id === selfId;
     const vol = volumeOf(u.name);
     const t = document.createElement('div');
-    t.className = 'tile' + (speaking.has(u.id) ? ' speaking' : '') + (isMe ? '' : ' clickable');
+    const cam = camOf(u.id);
+    t.className = 'tile' + (speaking.has(u.id) ? ' speaking' : '') + (isMe ? '' : ' clickable') + (cam ? ' has-cam' : '');
     t.dataset.uid = u.id;
     t.innerHTML = `
-      ${avatarHTML(u)}
+      ${cam ? '' : avatarHTML(u)}
       <span class="tname">${u.muted ? ICON.micOff : ''}${esc(u.name)}${isMe ? ' (você)' : ''}</span>
       ${isSharing(u.id) ? '<span class="live">AO VIVO</span>' : ''}
       ${!isMe && isSharing(u.id) ? `<button class="watch-btn ${watching.has(u.id) ? 'on' : ''}">${watching.has(u.id) ? 'Assistindo' : 'Assistir'}</button>` : ''}
@@ -1264,6 +1426,11 @@ function renderMain() {
         wb.title = watching.has(u.id) ? 'Parar de assistir' : 'Assistir a transmissão';
         wb.onclick = (e) => { e.stopPropagation(); watching.has(u.id) ? unwatch(u.id) : watch(u.id); };
       }
+    }
+    if (cam) {
+      const v = camVideoFor(u.id, cam);
+      t.prepend(v);
+      v.play().catch(() => {});
     }
     tiles.appendChild(t);
   });
@@ -1292,4 +1459,10 @@ function renderControls() {
   bs.disabled = !navigator.mediaDevices?.getDisplayMedia;
   bs.classList.toggle('active', !!screenStream);
   bs.querySelector('.label').textContent = screenStream ? 'Parar transmissão' : 'Compartilhar tela';
+
+  const bc = $('#btn-cam');
+  bc.disabled = !navigator.mediaDevices?.getUserMedia;
+  bc.classList.toggle('active', !!camStream);
+  bc.querySelector('.ico').innerHTML = camStream ? ICON.cam : ICON.camOff;
+  bc.querySelector('.label').textContent = camStream ? 'Desligar câmera' : 'Câmera';
 }

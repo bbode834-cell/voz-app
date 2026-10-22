@@ -439,3 +439,20 @@ body.chat-open .main { margin-right: 340px; }
 .callbar .btn { white-space: nowrap; }
 body.chat-open .quality > span { display: none; }
 @media (max-width: 1250px) { body.chat-open .callbar .btn .label { display: none; } body.chat-open #btn-chat .label { display: inline; } }
+
+/* ---------- Câmera ---------- */
+.tile.has-cam { overflow: hidden; background: #000; }
+.tile .cam-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
+.mirror { transform: scaleX(-1); }
+.tile.has-cam .tname, .tile.has-cam .live, .tile.has-cam .watch-btn, .tile.has-cam .vol-badge { z-index: 1; }
+.member .cam-ico svg { width: 14px; height: 14px; color: var(--muted); }
+.member .cam-ico { display: inline-flex; }
+.cam-pip {
+  position: absolute; right: 12px; bottom: 56px; z-index: 3;
+  width: 22%; min-width: 96px; min-height: 72px; aspect-ratio: auto; height: auto;
+  max-width: 90%; max-height: 90%;
+  border: 2px solid #f5b82e; border-radius: 12px; overflow: hidden; background: #000;
+  resize: both; cursor: grab; touch-action: none; box-shadow: 0 4px 16px rgba(0,0,0,.5);
+}
+.cam-pip:active { cursor: grabbing; }
+.cam-pip video { position: static !important; display: block; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
