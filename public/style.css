@@ -226,7 +226,7 @@ svg { display: block; }
 /* Marca d'água por cima de tudo, bem clarinha e sem atrapalhar cliques */
 .watermark {
   position: fixed; inset: 0; z-index: 40; pointer-events: none;
-  background: url("logo.svg") center / min(62vw, 560px) no-repeat;
+  background: url("logo-fone.svg") center / min(62vw, 560px) no-repeat;
   opacity: .07;
 }
 
@@ -686,6 +686,40 @@ body.dm-open .main { margin-right: 340px; }
   background: linear-gradient(90deg, #9c0e0b, #d42a22 40%, #ff5a4a 55%, #c31d18 70%, #8e0b09); }
 .fx-drip::after { content: ''; position: absolute; left: 50%; bottom: -8px; width: 150%; aspect-ratio: 1 / 1.15; transform: translateX(-50%);
   border-radius: 50% 50% 50% 50% / 40% 40% 60% 60%; background: radial-gradient(circle at 35% 35%, #ff6b5b, #b3130f 70%); }
+.fx-bottle { display: block; width: 50px; height: 150px; margin: -15px auto 0; filter: drop-shadow(0 14px 12px rgba(0,0,0,.45)); }
+.fx-crack { position: absolute; filter: drop-shadow(0 0 2px rgba(255,255,255,.4)); }
+.fx-shard { position: absolute; clip-path: polygon(50% 0, 100% 35%, 70% 100%, 0 70%);
+  background: linear-gradient(135deg, rgba(255,214,150,.95), rgba(150,80,15,.9) 55%, rgba(70,35,5,.9)); }
+.fx-beer-drop { background: radial-gradient(circle at 35% 35%, #fff6cf, #e3a21b 60%, #a8650a); }
+.fx-beer-drip { background: linear-gradient(90deg, #a8650a, #e3a21b 40%, #ffd76a 55%, #d18f12 70%, #93560a); opacity: .92; }
+.fx-beer-drip::after { background: radial-gradient(circle at 35% 35%, #ffe9a0, #c98412 70%); }
+.fx-smoke { position: absolute; inset: 0; }
+.fx-fog { position: absolute; inset: 0; opacity: 0; }
+.fx-cloud { position: absolute; border-radius: 50%; filter: blur(30px);
+  background: radial-gradient(circle, rgba(232,232,228,.95) 0%, rgba(205,205,200,.75) 40%, rgba(190,190,185,0) 70%); }
+.fx-puff { position: fixed; left: 0; top: 0; border-radius: 50%; filter: blur(6px);
+  background: radial-gradient(circle, rgba(240,240,236,.9), rgba(210,210,205,.5) 50%, rgba(200,200,200,0) 72%); }
+.fx-ashbit { position: fixed; width: 5px; height: 4px; border-radius: 2px; background: #8d8d8d; }
+.fx-smoke-text { position: absolute; left: 50%; top: 14%; transform: translateX(-50%); z-index: 2; white-space: nowrap;
+  background: rgba(0,0,0,.72); color: #fff; padding: 10px 18px; border-radius: 20px; font-size: 17px; font-weight: 600;
+  animation: smoke-text 7.5s both; }
+@keyframes smoke-text { 0% { opacity: 0; transform: translate(-50%, -10px); } 6%, 85% { opacity: 1; transform: translate(-50%, 0); } 100% { opacity: 0; } }
+.fx-joint { position: absolute; left: 50%; bottom: 16%; width: min(78vw, 420px); height: calc(min(78vw, 420px) * .15); z-index: 1;
+  filter: drop-shadow(0 10px 10px rgba(0,0,0,.5)); opacity: 0; }
+.fx-joint-body { position: relative; height: 100%; width: 100%; overflow: visible; }
+.fx-joint-svg { position: absolute; left: 0; top: 0; height: 100%; width: min(78vw, 420px); clip-path: inset(0 0 0 0); }
+.fx-joint-body { overflow: hidden; }
+.fx-joint-body .fx-ember, .fx-joint-body .fx-ash { position: absolute; top: 50%; transform: translateY(-50%); border-radius: 40%; }
+.fx-ash { right: 0; width: 14px; height: 78%; background: linear-gradient(90deg, #6d6d6d, #bdbdbd 50%, #8a8a8a); opacity: 0; }
+.fx-ember { right: 0; width: 12px; height: 72%; background: radial-gradient(circle at 60% 50%, #fff3a0, #ff8c1a 35%, #d42a00 70%, #5a1200); opacity: 0;
+  box-shadow: 0 0 10px 3px rgba(255,120,20,.0); }
+.fx-smoke.lit .fx-ember { opacity: 1; animation: ember .7s ease-in-out infinite alternate; }
+.fx-smoke.lit .fx-ash { opacity: 1; right: 8px; }
+@keyframes ember { from { box-shadow: 0 0 8px 2px rgba(255,120,20,.6); filter: brightness(.9); } to { box-shadow: 0 0 22px 8px rgba(255,150,40,.9); filter: brightness(1.25); } }
+.fx-drip2 { position: absolute; z-index: -1; pointer-events: none; }
+.fx-drip2 svg { position: absolute; left: 0; overflow: visible; }
+.fx-drip-body { top: 0; filter: drop-shadow(0 2px 2px rgba(0,0,0,.25)); }
+.fx-drip-bulb { transform-origin: 50% 50%; filter: drop-shadow(0 3px 3px rgba(0,0,0,.3)); }
 .fx-nudge { position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; gap: 10px;
   transition: opacity .35s; }
 .fx-nudge.out { opacity: 0; }

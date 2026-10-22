@@ -18,7 +18,10 @@ const { banco, tipo: tipoBanco } = abreBanco();
 
 const app = express();
 app.use(express.json({ limit: '100kb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+// "no-cache": o navegador sempre confere se o arquivo mudou (atualizações aparecem na hora)
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache'),
+}));
 
 // O app do celular (e a versão de teste) chamam a API de outro endereço
 app.use('/api', (req, res, next) => {
@@ -327,6 +330,7 @@ async function enviaAmigos(uid) {
 
 // Tomate e "chamar atenção": cada botão pode ser usado de novo depois de 5 segundos
 const FUN_COOLDOWN = 5_000; // 5 segundos entre um uso e outro
+const FUN_KINDS = ['tomato', 'nudge', 'beer', 'smoke'];
 const funUsado = new Map(); // "uid|tipo" -> horário
 
 // Tira a conta de todos os lugares (banida ou apagada)
@@ -421,7 +425,7 @@ io.on('connection', (socket) => {
   // 🍅 Tomate / 👊 Chamar atenção — só entre amigos que estão na mesma chamada
   socket.on('fun', async ({ to, kind } = {}, ack = () => {}) => {
     try {
-      if (!['tomato', 'nudge'].includes(kind)) return ack({ error: 'Brincadeira desconhecida.' });
+      if (!FUN_KINDS.includes(kind)) return ack({ error: 'Brincadeira desconhecida.' });
       const target = io.sockets.sockets.get(to);
       const ch = byId(socket.data.channel);
       if (!ch || !target || target.data.channel !== ch.id || target.id === socket.id) {
@@ -445,7 +449,7 @@ io.on('connection', (socket) => {
   // Quanto falta para poder usar de novo (ao abrir o app/site)
   socket.on('fun-cooldown', (_ = {}, ack = () => {}) => {
     const out = {};
-    for (const kind of ['tomato', 'nudge']) {
+    for (const kind of FUN_KINDS) {
       const falta = (funUsado.get(`${me().id}|${kind}`) || 0) + FUN_COOLDOWN - Date.now();
       out[kind] = falta > 0 ? Math.ceil(falta / 1000) : 0;
     }

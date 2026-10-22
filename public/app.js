@@ -140,7 +140,7 @@ const emitAck = (ev, data) => new Promise((resolve) => socket.emit(ev, data, res
 const sendSignal = (to, data) => socket.emit('signal', { to, data });
 
 // ---------- Efeitos sonoros ----------
-const SONS = ['entrou', 'saiu', 'mic-on', 'mic-off', 'fone-on', 'fone-off', 'transmissao', 'mensagem', 'tomate', 'toctoc'];
+const SONS = ['entrou', 'saiu', 'mic-on', 'mic-off', 'fone-on', 'fone-off', 'transmissao', 'mensagem', 'tomate', 'toctoc', 'vidro', 'isqueiro'];
 const soundBuffers = {};
 let soundsLoaded = false;
 
@@ -149,7 +149,7 @@ async function loadSounds() {
   soundsLoaded = true;
   await Promise.all(SONS.map(async (n) => {
     try {
-      const r = await fetch(n === 'tomate' || n === 'toctoc' ? `fx/${n}.wav` : `sons/${n}.wav`);
+      const r = await fetch(['tomate', 'toctoc', 'vidro', 'isqueiro'].includes(n) ? `fx/${n}.wav` : `sons/${n}.wav`);
       soundBuffers[n] = await audioCtx.decodeAudioData(await r.arrayBuffer());
     } catch {}
   }));
@@ -2086,11 +2086,17 @@ document.addEventListener('visibilitychange', () => {
 
 // ---------- 🍅 Tomate e 👊 Chamar atenção ----------
 // Só entre amigos na mesma chamada; cada botão pode ser usado de novo depois de 5 segundos
-const funReadyAt = { tomato: 0, nudge: 0 };
+const FUN = {
+  tomato: { emoji: '🍅', label: 'Tomate', sent: (n) => `🍅 Tomate jogado em ${n}!`, got: (f) => `🍅 ${f} jogou um tomate em você!`, seen: (f, t) => `🍅 ${f} jogou um tomate em ${t}!` },
+  nudge: { emoji: '👊', label: 'Chamar atenção', sent: (n) => `👊 Você chamou a atenção de ${n}!`, got: (f) => `👊 ${f} está chamando sua atenção!`, seen: (f, t) => `👊 ${f} está chamando a atenção de ${t}!` },
+  beer: { emoji: '🍺', label: 'Garrafada', sent: (n) => `🍺 Garrafas jogadas em ${n}!`, got: (f) => `🍺 ${f} jogou garrafas de cerveja em você!`, seen: (f, t) => `🍺 ${f} jogou garrafas de cerveja em ${t}!` },
+  smoke: { emoji: '🌿', label: 'Hora de fumar', sent: (n) => `🌿 Hora de fumar com ${n}!`, got: (f) => `🌿 ${f}: hora de fumar!`, seen: (f, t) => `🌿 ${f} chamou ${t} pra fumar!` },
+};
+const funReadyAt = { tomato: 0, nudge: 0, beer: 0, smoke: 0 };
 let funTick = null;
 socket.on('connect', () => {
   emitAck('fun-cooldown', {}).then((r) => {
-    for (const k of ['tomato', 'nudge']) funReadyAt[k] = Date.now() + (r?.[k] || 0) * 1000;
+    for (const k of Object.keys(FUN)) funReadyAt[k] = Date.now() + (r?.[k] || 0) * 1000;
   });
 });
 const funLeft = (k) => Math.max(0, Math.ceil((funReadyAt[k] - Date.now()) / 1000));
@@ -2105,12 +2111,14 @@ function renderVolFriend() {
     box.innerHTML = `<button type="button" class="btn small ${st === 'incoming' ? 'ok' : ''}" data-fr="${st || 'none'}">${friendLabel(u.uid)}</button>`;
     return;
   }
-  const t = funLeft('tomato'), n = funLeft('nudge');
-  box.innerHTML = `<div class="fun-title">⭐ Amigo — brincadeiras</div><div class="fun-btns">
-    <button type="button" class="btn small fun-btn" data-fun="tomato" ${t ? 'disabled' : ''}>🍅 ${t ? fmtLeft(t) : 'Tomate'}</button>
-    <button type="button" class="btn small fun-btn" data-fun="nudge" ${n ? 'disabled' : ''}>👊 ${n ? fmtLeft(n) : 'Chamar atenção'}</button></div>`;
+  let algum = false;
+  box.innerHTML = `<div class="fun-title">⭐ Amigo — brincadeiras</div><div class="fun-btns">${Object.entries(FUN).map(([k, f]) => {
+    const l = funLeft(k);
+    if (l) algum = true;
+    return `<button type="button" class="btn small fun-btn" data-fun="${k}" ${l ? 'disabled' : ''}>${f.emoji} ${l ? fmtLeft(l) : f.label}</button>`;
+  }).join('')}</div>`;
   clearInterval(funTick);
-  if (t || n) funTick = setInterval(() => { if ($('#vol-pop').hidden) clearInterval(funTick); else renderVolFriend(); }, 1000);
+  if (algum) funTick = setInterval(() => { if ($('#vol-pop').hidden) clearInterval(funTick); else renderVolFriend(); }, 1000);
 }
 $('#vol-friend').addEventListener('click', async (e) => {
   const u = findUser(volTarget);
@@ -2129,7 +2137,7 @@ $('#vol-friend').addEventListener('click', async (e) => {
   const r = await emitAck('fun', { to: volTarget, kind });
   if (r?.wait) funReadyAt[kind] = Date.now() + r.wait * 1000;
   if (r?.error && !r.wait) toast(r.error);
-  else if (r?.ok) toast(kind === 'tomato' ? `🍅 Tomate jogado em ${u.name}!` : `👊 Você chamou a atenção de ${u.name}!`);
+  else if (r?.ok) toast(FUN[kind].sent(u.name));
   renderVolFriend();
 });
 
@@ -2142,6 +2150,18 @@ socket.on('fun', ({ kind, from }) => {
     toast(`🍅 ${from} jogou um tomate em você!`);
     notifyIfHidden('🍅 Tomatada!', `${from} jogou um tomate em você!`);
     flashTitle(`🍅 ${from} te acertou!`);
+  } else if (kind === 'beer') {
+    // 3 garrafas seguidas
+    throwBottle();
+    setTimeout(throwBottle, 320);
+    setTimeout(throwBottle, 640);
+    toast(FUN.beer.got(from));
+    notifyIfHidden('🍺 Garrafada!', `${from} jogou garrafas de cerveja em você!`);
+    flashTitle(`🍺 ${from} te acertou!`);
+  } else if (kind === 'smoke') {
+    smokeTime(from);
+    notifyIfHidden('🌿 Hora de fumar!', `${from} chamou você pra fumar!`);
+    flashTitle(`🌿 ${from}: hora de fumar!`);
   } else {
     nudge(from);
     notifyIfHidden('👊 Toc toc!', `${from} está chamando sua atenção!`);
@@ -2149,7 +2169,7 @@ socket.on('fun', ({ kind, from }) => {
   }
 });
 socket.on('fun-shown', ({ kind, from, to }) => {
-  toast(kind === 'tomato' ? `🍅 ${from} jogou um tomate em ${to}!` : `👊 ${from} está chamando a atenção de ${to}!`);
+  if (FUN[kind]) toast(FUN[kind].seen(from, to));
 });
 
 // O tomate voa em arco, achata ao bater, espirra gotinhas, mancha a tela e escorre
@@ -2185,6 +2205,55 @@ function throwTomato() {
     playSound('tomate', true);
     splatAt(layer, tx, ty, Math.min(W, H) * rnd(0.36, 0.5));
   }, DUR);
+}
+
+// Fio escorrendo "de verdade": sai largo da mancha, vai afinando e ondulando,
+// desce cada vez mais devagar e leva uma gota gorda e brilhante na ponta
+const DRIP_TOMATE = ['#7d0907', '#c41f19', '#ff6b5b', '#a3100c'];
+let dripSeq = 0;
+function makeDrip(x, y, w, L, pal, dur, delay) {
+  const id = `dr${++dripSeq}`;
+  const W = w * 3, cx = W / 2, H = L + w * 2;
+  const ph = rnd(0, 6.28), fq = rnd(1.5, 3.2), ph2 = rnd(0, 6.28);
+  const half = (t) => (w / 2) * (1 - 0.5 * t) * (1 + 0.14 * Math.sin(t * 9 + ph2)) + (t < 0.14 ? w * 0.75 * (1 - t / 0.14) ** 2 : 0);
+  const wob = (t, p) => Math.sin(t * fq * 6.28 + p) * w * 0.17 * Math.min(1, t * 4);
+  const N = 28, L1 = [], R1 = [];
+  for (let i = 0; i <= N; i++) {
+    const t = i / N, yy = t * L;
+    L1.push(`${(cx - half(t) + wob(t, ph)).toFixed(1)} ${yy.toFixed(1)}`);
+    R1.push(`${(cx + half(t) + wob(t, ph2)).toFixed(1)} ${yy.toFixed(1)}`);
+  }
+  const body = `M${L1.join(' L')} L${R1.reverse().join(' L')} Z`;
+  const hl = [];
+  for (let i = 3; i <= N - 2; i++) { const t = i / N; hl.push(`${(cx - half(t) * 0.35 + wob(t, ph) * 0.5).toFixed(1)} ${(t * L).toFixed(1)}`); }
+  const el = document.createElement('div');
+  el.className = 'fx-drip2';
+  el.style.left = `${x - cx}px`;
+  el.style.top = `${y}px`;
+  el.style.width = `${W}px`;
+  el.style.height = `${H}px`;
+  el.innerHTML = `<svg class="fx-drip-body" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+      <defs><linearGradient id="${id}" x1="0" x2="1"><stop offset="0" stop-color="${pal[0]}"/><stop offset=".38" stop-color="${pal[1]}"/>
+      <stop offset=".55" stop-color="${pal[1]}"/><stop offset="1" stop-color="${pal[0]}"/></linearGradient></defs>
+      <path d="${body}" fill="url(#${id})"/>
+      <path d="M${hl.join(' L')}" fill="none" stroke="#fff" stroke-opacity=".38" stroke-width="${(w * 0.16).toFixed(1)}" stroke-linecap="round"/>
+    </svg>
+    <svg class="fx-drip-bulb" width="${W}" height="${w * 2.4}" viewBox="0 0 ${W} ${w * 2.4}" style="top:${-w * 1.2}px">
+      <defs><radialGradient id="${id}b" cx="40%" cy="38%" r="65%"><stop offset="0" stop-color="${pal[2]}"/><stop offset=".45" stop-color="${pal[1]}"/><stop offset="1" stop-color="${pal[3]}"/></radialGradient></defs>
+      <path d="M${cx - w * 0.26} ${w * 0.35} C ${cx - w * 0.95} ${w * 1.2}, ${cx - w * 0.78} ${w * 2.3}, ${cx} ${w * 2.3}
+        C ${cx + w * 0.78} ${w * 2.3}, ${cx + w * 0.95} ${w * 1.2}, ${cx + w * 0.26} ${w * 0.35} Z" fill="url(#${id}b)"/>
+      <ellipse cx="${cx - w * 0.28}" cy="${w * 1.55}" rx="${w * 0.15}" ry="${w * 0.26}" fill="#fff" fill-opacity=".55"/>
+    </svg>`;
+  // desce rápido no começo e vai freando (como líquido grosso)
+  const ease = 'cubic-bezier(.25,.6,.35,1)';
+  el.firstElementChild.animate([{ clipPath: `inset(0 0 ${H}px 0)` }, { clipPath: `inset(0 0 ${H - L}px 0)` }],
+    { duration: dur, delay, easing: ease, fill: 'both' });
+  el.lastElementChild.animate([
+    { transform: `translateY(${w * 0.3}px) scale(.3)` },
+    { transform: `translateY(${L * 0.18}px) scale(1)`, offset: 0.18 },
+    { transform: `translateY(${L}px) scale(1.12)` },
+  ], { duration: dur, delay, easing: ease, fill: 'both' });
+  return el;
 }
 
 function splatAt(layer, x, y, size) {
@@ -2224,21 +2293,192 @@ function splatAt(layer, x, y, size) {
   // fios de molho escorrendo, com uma gota na ponta
   const n = 3 + Math.floor(Math.random() * 3);
   for (let k = 0; k < n; k++) {
-    const dr = document.createElement('i');
-    dr.className = 'fx-drip';
-    const w = rnd(8, 17);
-    dr.style.width = `${w}px`;
-    dr.style.left = `${rnd(-size * 0.3, size * 0.3) - w / 2}px`;
-    dr.style.top = `${rnd(size * 0.12, size * 0.3)}px`;
-    dr.animate([{ height: '0px' }, { height: `${rnd(70, size * 0.9)}px` }],
-      { duration: rnd(2200, 3400), delay: rnd(300, 900), easing: 'cubic-bezier(.5,0,.8,.6)', fill: 'forwards' });
-    wrap.appendChild(dr);
+    wrap.appendChild(makeDrip(rnd(-size * 0.3, size * 0.3), rnd(size * 0.08, size * 0.22), rnd(9, 17),
+      rnd(80, size * 0.95), DRIP_TOMATE, rnd(2600, 3800), rnd(250, 800)));
   }
   layer.appendChild(wrap);
   // vai escorregando e some
   wrap.animate([{ transform: 'translateY(0)', opacity: 1 }, { transform: 'translateY(0)', opacity: 1, offset: 0.7 },
     { transform: 'translateY(40px)', opacity: 0 }], { duration: 5600, easing: 'ease-in', fill: 'forwards' });
   setTimeout(() => wrap.remove(), 5700);
+}
+
+// 🍺 A garrafa voa girando e estoura na tela: vidro trincado, cacos e respingo de cerveja com espuma
+function throwBottle() {
+  const layer = $('#fun-layer');
+  const W = innerWidth, H = innerHeight;
+  const tx = W * rnd(0.2, 0.8), ty = H * rnd(0.2, 0.62);
+  const fromLeft = Math.random() < 0.5;
+  const x0 = fromLeft ? -120 : W + 40, y0 = H * rnd(0.55, 1);
+  const spin = (fromLeft ? 1 : -1) * rnd(600, 1000);
+  const fly = document.createElement('div');
+  fly.className = 'fx-fly fx-bottle-fly';
+  fly.innerHTML = '<img src="fx/garrafa.svg" class="fx-bottle" alt="">';
+  layer.appendChild(fly);
+  const frames = [];
+  for (let k = 0; k <= 16; k++) {
+    const p = k / 16;
+    const x = x0 + (tx - x0) * p, y = y0 + (ty - y0) * p - Math.sin(Math.PI * p) * H * 0.24;
+    frames.push({ transform: `translate(${x - 60}px, ${y - 60}px) rotate(${spin * p}deg) scale(${0.5 + p * 0.85})` });
+  }
+  const DUR = 540;
+  fly.animate(frames, { duration: DUR, easing: 'cubic-bezier(.35,.1,.55,1)', fill: 'forwards' });
+  setTimeout(() => {
+    fly.remove();
+    playSound('vidro', true);
+    const size = Math.min(W, H) * rnd(0.42, 0.56);
+    const wrap = document.createElement('div');
+    wrap.className = 'fx-splat-wrap';
+    wrap.style.left = `${tx}px`;
+    wrap.style.top = `${ty}px`;
+    // cerveja espalhada (atrás) e o vidro trincado (na frente)
+    const beer = document.createElement('img');
+    beer.src = `fx/cerveja${1 + Math.floor(Math.random() * 3)}.svg`;
+    beer.className = 'fx-splat';
+    const bs = size * 1.05;
+    beer.style.width = beer.style.height = `${bs}px`;
+    beer.style.left = beer.style.top = `${-bs / 2}px`;
+    const r1 = rnd(0, 360);
+    beer.animate([{ transform: `rotate(${r1}deg) scale(.2)` }, { transform: `rotate(${r1}deg) scale(1.1)`, offset: 0.6 },
+      { transform: `rotate(${r1}deg) scale(1)` }], { duration: 220, easing: 'ease-out', fill: 'forwards' });
+    wrap.appendChild(beer);
+    const crack = document.createElement('img');
+    crack.src = `fx/vidro${1 + Math.floor(Math.random() * 2)}.svg`;
+    crack.className = 'fx-crack';
+    crack.style.width = crack.style.height = `${size * 1.25}px`;
+    crack.style.left = crack.style.top = `${-size * 0.625}px`;
+    crack.style.transform = `rotate(${rnd(0, 360)}deg)`;
+    crack.animate([{ clipPath: 'circle(0% at 50% 50%)' }, { clipPath: 'circle(75% at 50% 50%)' }], { duration: 140, easing: 'ease-out', fill: 'forwards' });
+    wrap.appendChild(crack);
+    // cacos de vidro marrom voando com gravidade
+    for (let k = 0; k < 16; k++) {
+      const c = document.createElement('i');
+      c.className = 'fx-shard';
+      const w = rnd(8, 22), h = rnd(10, 30);
+      c.style.width = `${w}px`;
+      c.style.height = `${h}px`;
+      c.style.left = `${-w / 2}px`;
+      c.style.top = `${-h / 2}px`;
+      const a = rnd(0, Math.PI * 2), dist = rnd(size * 0.4, size * 1.1);
+      const dx = Math.cos(a) * dist, dy = Math.sin(a) * dist, rot = rnd(-720, 720);
+      c.animate([
+        { transform: 'translate(0,0) rotate(0deg)', opacity: 1 },
+        { transform: `translate(${dx * 0.7}px, ${dy * 0.7 - 40}px) rotate(${rot * 0.6}deg)`, opacity: 1, offset: 0.5 },
+        { transform: `translate(${dx}px, ${dy + 160}px) rotate(${rot}deg)`, opacity: 0 },
+      ], { duration: rnd(650, 1000), easing: 'cubic-bezier(.2,.7,.4,1)', fill: 'forwards' });
+      wrap.appendChild(c);
+    }
+    // gotas de cerveja com espuma
+    for (let k = 0; k < 12; k++) {
+      const d = document.createElement('i');
+      d.className = 'fx-drop fx-beer-drop';
+      const sz = rnd(6, 15);
+      d.style.width = d.style.height = `${sz}px`;
+      d.style.left = d.style.top = `${-sz / 2}px`;
+      const a = rnd(0, Math.PI * 2), dist = rnd(size * 0.4, size * 0.95);
+      const dx = Math.cos(a) * dist, dy = Math.sin(a) * dist;
+      d.animate([
+        { transform: 'translate(0,0) scale(1)', opacity: 1 },
+        { transform: `translate(${dx * 0.75}px, ${dy * 0.75 - 30}px) scale(.9)`, opacity: 1, offset: 0.55 },
+        { transform: `translate(${dx}px, ${dy + 70}px) scale(.5)`, opacity: 0 },
+      ], { duration: rnd(520, 760), easing: 'cubic-bezier(.2,.7,.4,1)', fill: 'forwards' });
+      wrap.appendChild(d);
+    }
+    layer.appendChild(wrap);
+    // tranco na tela
+    const app = document.querySelector('.app');
+    app.animate([{ transform: 'translate(0,0)' }, { transform: 'translate(-7px,4px)' }, { transform: 'translate(6px,-3px)' }, { transform: 'translate(0,0)' }], { duration: 180 });
+    wrap.animate([{ opacity: 1 }, { opacity: 1, offset: 0.72 }, { opacity: 0 }], { duration: 5800, easing: 'ease-in', fill: 'forwards' });
+    setTimeout(() => wrap.remove(), 5900);
+  }, DUR);
+}
+
+// 🌿 Hora de fumar: o baseado sobe, é aceso, queima até o fim e a fumaça toma conta da tela
+let smoking = false;
+function smokeTime(from) {
+  if (smoking) return;
+  smoking = true;
+  const layer = $('#fun-layer');
+  const box = document.createElement('div');
+  box.className = 'fx-smoke';
+  box.innerHTML = `<div class="fx-fog"></div>
+    <div class="fx-smoke-text">🌿 <b>${esc(from)}</b>: hora de fumar!</div>
+    <div class="fx-joint">
+      <div class="fx-joint-body"><svg viewBox="0 0 400 60" preserveAspectRatio="none" class="fx-joint-svg">
+        <defs>
+          <linearGradient id="jp" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#cfc6b4"/><stop offset=".3" stop-color="#fffdf6"/><stop offset=".65" stop-color="#ece5d6"/><stop offset="1" stop-color="#a99f8c"/></linearGradient>
+          <linearGradient id="jf" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#a8865a"/><stop offset=".35" stop-color="#e8cfa3"/><stop offset="1" stop-color="#8a6a40"/></linearGradient>
+        </defs>
+        <path d="M0 22 L400 6 L400 54 L0 38 Z" fill="url(#jp)"/>
+        <path d="M0 22 L70 19 L70 41 L0 38 Z" fill="url(#jf)"/>
+        <path d="M70 19 L70 41" stroke="#8a6a40" stroke-width="1.5"/>
+        <path d="M90 22 L400 10" stroke="#b9ae97" stroke-width="1.2" opacity=".7"/>
+        <path d="M120 33 L170 33 M210 30 L260 31 M300 36 L350 37" stroke="#7a9a3a" stroke-width="2" opacity=".18" stroke-linecap="round"/>
+      </svg><i class="fx-ash"></i><i class="fx-ember"></i></div>
+    </div>`;
+  layer.appendChild(box);
+  const joint = box.querySelector('.fx-joint');
+  const body = box.querySelector('.fx-joint-body');
+  const fog = box.querySelector('.fx-fog');
+  // nuvens grandes que vão tomando a tela
+  for (let k = 0; k < 14; k++) {
+    const c = document.createElement('i');
+    c.className = 'fx-cloud';
+    const s = rnd(0.45, 0.9) * Math.max(innerWidth, innerHeight);
+    c.style.width = c.style.height = `${s}px`;
+    c.style.left = `${rnd(-0.25, 0.95) * innerWidth - s / 2 + s * 0.25}px`;
+    c.style.top = `${rnd(-0.2, 1.0) * innerHeight - s / 2 + s * 0.2}px`;
+    c.animate([{ transform: 'translate(0,0) scale(.8)' }, { transform: `translate(${rnd(-80, 80)}px, ${rnd(-140, -40)}px) scale(1.15)` }],
+      { duration: rnd(9000, 12000), easing: 'ease-out', fill: 'forwards' });
+    fog.appendChild(c);
+  }
+  // o baseado sobe
+  joint.animate([{ transform: 'translate(-50%, 160px) rotate(-8deg)', opacity: 0 }, { transform: 'translate(-50%, 0) rotate(-8deg)', opacity: 1 }],
+    { duration: 600, easing: 'cubic-bezier(.2,.9,.3,1.2)', fill: 'forwards' });
+  setTimeout(() => playSound('isqueiro', true), 300);
+  const BURN0 = 800, BURN = 6800;
+  // acende e vai queimando até o filtro
+  setTimeout(() => box.classList.add('lit'), BURN0 - 200);
+  body.animate([{ width: '100%' }, { width: '24%' }], { duration: BURN, delay: BURN0, easing: 'linear', fill: 'forwards' });
+  fog.animate([{ opacity: 0 }, { opacity: 0, offset: 0.08 }, { opacity: 0.93, offset: 0.62 }, { opacity: 0.93, offset: 0.78 }, { opacity: 0 }],
+    { duration: 11500, easing: 'ease-in-out', fill: 'forwards' });
+  // fumacinha saindo da ponta
+  const ember = box.querySelector('.fx-ember');
+  const puff = setInterval(() => {
+    const r = ember.getBoundingClientRect();
+    if (!r.width) return;
+    const p = document.createElement('i');
+    p.className = 'fx-puff';
+    const s = rnd(30, 60);
+    p.style.width = p.style.height = `${s}px`;
+    p.style.left = `${r.left + r.width / 2 - s / 2}px`;
+    p.style.top = `${r.top - s / 2}px`;
+    const dx = rnd(-90, 90), up = rnd(220, 420);
+    p.animate([
+      { transform: 'translate(0,0) scale(.4)', opacity: 0 },
+      { transform: `translate(${dx * 0.3}px, ${-up * 0.25}px) scale(1.2)`, opacity: 0.75, offset: 0.2 },
+      { transform: `translate(${dx}px, ${-up}px) scale(${rnd(3, 4.5)})`, opacity: 0 },
+    ], { duration: rnd(2200, 3200), easing: 'ease-out', fill: 'forwards' });
+    box.appendChild(p);
+    setTimeout(() => p.remove(), 3300);
+  }, 110);
+  // cinza caindo
+  const ashTick = setInterval(() => {
+    const r = ember.getBoundingClientRect();
+    if (!r.width) return;
+    const a = document.createElement('i');
+    a.className = 'fx-ashbit';
+    a.style.left = `${r.left + rnd(-4, 4)}px`;
+    a.style.top = `${r.top + r.height * 0.6}px`;
+    a.animate([{ transform: 'translate(0,0)', opacity: 1 }, { transform: `translate(${rnd(-20, 20)}px, ${rnd(120, 220)}px) rotate(${rnd(-200, 200)}deg)`, opacity: 0 }],
+      { duration: rnd(900, 1400), easing: 'ease-in', fill: 'forwards' });
+    box.appendChild(a);
+    setTimeout(() => a.remove(), 1500);
+  }, 650);
+  setTimeout(() => { clearInterval(ashTick); box.classList.remove('lit'); box.classList.add('done'); }, BURN0 + BURN);
+  setTimeout(() => clearInterval(puff), BURN0 + BURN - 300);
+  setTimeout(() => joint.animate([{ opacity: 1 }, { opacity: 0, transform: 'translate(-50%, 140px) rotate(-14deg)' }], { duration: 600, easing: 'ease-in', fill: 'forwards' }), BURN0 + BURN + 300);
+  setTimeout(() => { box.remove(); smoking = false; }, 11600);
 }
 
 // Mão batendo "toc toc" e a tela tremendo (igual ao MSN)
