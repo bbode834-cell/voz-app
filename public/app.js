@@ -358,6 +358,7 @@ async function startSession(token, user, firstTime) {
   $('#auth').hidden = true;
   $('#auth-pass').value = '';
   try { config = await (await fetch('/config')).json(); } catch {}
+  if (config?.versao && !siteVersion) siteVersion = config.versao;
   ensureAudioCtx();
   loadSounds();
   socket.connect();
@@ -690,7 +691,24 @@ $('#btn-share .ico').innerHTML = ICON.screen;
 // ---------- Nomes dos canais ----------
 // O servidor grátis "dorme" e volta com os nomes padrão; quem lembra dos
 // nomes novos manda de volta para ele assim que conecta.
+// ---------- Atualização automática ----------
+// Quando sai uma versão nova do site (o servidor reinicia), a página percebe ao reconectar:
+// fora de chamada recarrega sozinha; em chamada mostra um aviso para atualizar.
+let siteVersion = null;
+async function checkSiteVersion() {
+  try {
+    const c = await (await fetch('/config', { cache: 'no-store' })).json();
+    if (!c?.versao) return;
+    if (!siteVersion) { siteVersion = c.versao; return; }
+    if (c.versao === siteVersion) return;
+    if (!currentChannel && !screenStream && !camStream) return location.reload();
+    $('#update-bar').hidden = false;
+  } catch {}
+}
+$('#update-bar').onclick = () => location.reload();
+
 socket.on('connect', () => {
+  checkSiteVersion();
   if (isMod()) socket.emit('admin-users', {}, (r) => { if (r?.users) { accounts = r.users; pendingCount = accounts.filter((u) => u.status === 'pending').length; updatePendingBadges(); } });
   const saved = store.get('voz-canais', null);
   if (saved?.version) socket.emit('sync-names', saved);

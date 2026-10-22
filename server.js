@@ -34,6 +34,15 @@ app.use('/api', (req, res, next) => {
 });
 
 // Configuração de STUN/TURN entregue ao navegador
+// "Impressão digital" do site: muda sempre que os arquivos mudam (nova atualização)
+const VERSAO_SITE = (() => {
+  const h = crypto.createHash('sha1');
+  for (const f of ['app.js', 'style.css', 'index.html']) {
+    try { h.update(require('fs').readFileSync(path.join(__dirname, 'public', f))); } catch {}
+  }
+  return h.digest('hex').slice(0, 12);
+})();
+
 app.get('/config', (req, res) => {
   res.set('Access-Control-Allow-Origin', '*');
   const iceServers = [
@@ -46,7 +55,7 @@ app.get('/config', (req, res) => {
       credential: process.env.TURN_PASS,
     });
   }
-  res.json({ iceServers, maxPerChannel: MAX_PER_CHANNEL, contas: true });
+  res.json({ iceServers, maxPerChannel: MAX_PER_CHANNEL, contas: true, versao: VERSAO_SITE });
 });
 
 // ---------- Contas ----------
