@@ -351,8 +351,8 @@ async function startSession(token, user, firstTime) {
   loadSounds();
   socket.connect();
   renderAll();
-  // Primeiro acesso: abre o menu para escolher foto e cor
-  if (firstTime || (!myAvatar && !store.get('voz-menu-visto', false))) {
+  // Só abre o menu sozinho para conta nova (ainda sem foto) e uma única vez
+  if (!myAvatar && !store.get('voz-menu-visto', false)) {
     store.set('voz-menu-visto', true);
     openSettings('perfil');
   }
@@ -2067,7 +2067,7 @@ $('#gif-grid').addEventListener('click', (e) => {
 // ---------- Avisos do navegador (quando a aba está escondida) ----------
 function notifyIfHidden(title, body) {
   if (!document.hidden || !('Notification' in window) || Notification.permission !== 'granted') return;
-  try { new Notification(title, { body, icon: 'logo.svg', silent: true }); } catch {}
+  try { new Notification(title, { body, icon: 'logo-fone.svg', silent: true }); } catch {}
 }
 function askNotifyPermission() {
   if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission().catch(() => {});
