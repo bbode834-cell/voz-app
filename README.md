@@ -2,8 +2,17 @@
 
 App parecido com o Discord, para grupos pequenos:
 
+- **Login com aprovação**: cada pessoa cria a conta (usuário e senha) e só entra depois que o **dono** aprovar
+- **Dono e moderadores**: fechar o microfone de alguém, parar transmissão/câmera, expulsar da chamada, banir, aprovar contas e dar o cargo de moderador (só o dono)
+- **Menu ⚙ de configurações**: cor do layout (cinza, preto, branco, roxo, rosa, verde, vermelho, azul, laranja ou qualquer cor), nome e avatar, supressor de ruído e conta
+- **Supressor de ruído** (RNNoise) que tira barulho de fundo do microfone
+- A transmissão **não abre sozinha**: cada um clica em **Assistir**
+- **Mensagens diretas** entre as contas, mesmo fora da chamada (quem estiver offline recebe quando entrar)
+- **Amigos**: pedir, aceitar e desfazer amizade; entre amigos na chamada: **🍅 tomate** e **👊 chamar atenção** (1 vez a cada 2 minutos)
+- **Emojis** (mais de 700) e **GIFs** (KLIPY) no chat do canal e nas mensagens
+
 - **Perfil** com nome e foto: 21 personagens prontos ou sua própria foto (clique na sua foto, embaixo à esquerda, para trocar)
-- **Trocar nome do canal**: passe o mouse no canal e clique no lápis ✏️
+- **Trocar nome do canal** (dono e moderadores): passe o mouse no canal e clique no lápis ✏️
 - **Volume separado de cada amigo**: clique no cartão do amigo; a transmissão tem o próprio controle de volume
 - **Som** quando alguém entra ou sai da chamada
 - **Marca d'água** com a logo King Launcher no fundo (some quando há transmissão na tela)
@@ -137,3 +146,39 @@ public/index.html  interface
 public/style.css   visual estilo Discord
 public/app.js      WebRTC: voz, tela, mute, indicador de fala
 ```
+
+
+---
+
+## Contas (login) — banco de dados grátis Neon
+
+As contas ficam guardadas no **Neon** (Postgres grátis, sem cartão).
+Sem ele, as contas ficam só na memória e **somem quando o Render reinicia**.
+
+1. Entre em **https://neon.com**, clique em **Sign up** e entre com o GitHub.
+2. Crie um projeto (qualquer nome, ex.: `king-launcher`) e deixe a região que ele sugerir.
+3. Na tela do projeto, clique em **Connect** e copie o endereço que começa com `postgresql://`.
+4. No **Render**, abra o serviço → **Environment** → **Add Environment Variable**:
+   - Key: `DATABASE_URL`
+   - Value: cole o endereço do Neon
+5. Clique em **Save, rebuild and deploy**.
+6. Assim que publicar, **crie a sua conta primeiro**: a primeira conta criada vira a do **dono**.
+
+Variável opcional: `SESSION_SECRET` (qualquer texto longo) para assinar os logins.
+Sem ela, o servidor usa uma chave derivada do `DATABASE_URL`.
+
+Créditos: supressor de ruído RNNoise (Xiph.Org/Mozilla, licença BSD) via
+@sapphi-red/web-noise-suppressor (licença MIT) — veja `public/vendor/supressor/LICENSE.txt`.
+
+
+## GIFs (KLIPY) — opcional
+
+O Google desligou o Tenor em junho de 2026; os GIFs usam a **KLIPY** (grátis).
+
+1. Entre em **https://klipy.com/developers**, crie uma conta e gere uma **API key** no painel.
+2. No **Render** → **Environment** → **Add Environment Variable**: Key `KLIPY_KEY`, Value: a chave.
+3. **Save, rebuild and deploy**.
+
+Sem a chave, o botão de GIF mostra um aviso e o resto funciona normalmente.
+A chave de teste da KLIPY permite 100 buscas por hora (para o grupo inteiro);
+para tirar o limite, peça a chave de produção no painel deles (também grátis).

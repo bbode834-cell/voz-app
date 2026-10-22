@@ -11,31 +11,105 @@
   <!-- Marca d'água no fundo de toda a tela -->
   <div class="watermark" aria-hidden="true"></div>
 
-  <!-- Perfil: nome + avatar (aparece ao entrar e ao clicar na sua foto) -->
-  <div id="profile" class="modal">
-    <form id="profile-form" class="modal-card">
+  <!-- Entrar / criar conta -->
+  <div id="auth" class="modal" hidden>
+    <form id="auth-form" class="modal-card auth-card" autocomplete="on">
       <img src="logo.svg" alt="King Launcher" class="modal-logo" />
-      <h1 id="profile-title">Bem-vindo</h1>
-
-      <label class="field-label" for="name-input">Seu nome</label>
-      <input id="name-input" maxlength="24" placeholder="Como quer ser chamado?" autocomplete="off" required />
-
-      <span class="field-label">Escolha sua foto de perfil</span>
-      <div class="avatar-preview-row">
-        <span id="avatar-preview" class="avatar big"></span>
-        <div class="upload-box">
-          <button type="button" id="btn-upload" class="btn small">Enviar minha foto</button>
-          <small>ou escolha um personagem abaixo</small>
-        </div>
-        <input id="file-input" type="file" accept="image/*" hidden />
+      <div class="auth-tabs" role="tablist">
+        <button type="button" data-tab="login" class="on">Entrar</button>
+        <button type="button" data-tab="register">Criar conta</button>
       </div>
-      <div id="avatar-grid" class="avatar-grid"></div>
-
-      <button type="submit" class="btn primary">Salvar e entrar</button>
+      <label class="field-label" for="auth-user">Usuário</label>
+      <input id="auth-user" maxlength="20" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="ex.: king" required />
+      <div id="auth-name-row" class="field" hidden>
+        <label class="field-label" for="auth-name">Nome que aparece para os amigos</label>
+        <input id="auth-name" maxlength="24" placeholder="Como quer ser chamado?" />
+      </div>
+      <label class="field-label" for="auth-pass">Senha</label>
+      <input id="auth-pass" type="password" minlength="6" autocomplete="current-password" placeholder="Mínimo 6 caracteres" required />
+      <p id="auth-msg" class="auth-msg" hidden></p>
+      <button type="submit" id="auth-submit" class="btn primary">Entrar</button>
+      <p id="auth-hint" class="auth-hint">Ainda não tem conta? Toque em <b>Criar conta</b>. O dono precisa aprovar antes do primeiro acesso.</p>
       <p id="secure-warning" class="warning" hidden>
         Atenção: o microfone só funciona em <b>https://</b> ou em <b>localhost</b>.
       </p>
     </form>
+  </div>
+
+  <!-- Menu de configurações -->
+  <div id="settings" class="modal" hidden>
+    <div class="modal-card settings-card">
+      <header class="settings-head">
+        <strong>Configurações</strong>
+        <button type="button" id="settings-close" class="icon-btn" title="Fechar"></button>
+      </header>
+      <nav class="settings-tabs">
+        <button type="button" data-sec="tema">🎨 Cor do layout</button>
+        <button type="button" data-sec="perfil">👤 Nome e avatar</button>
+        <button type="button" data-sec="voz">🎙️ Voz</button>
+        <button type="button" data-sec="mod" id="tab-mod" hidden>🛡️ Moderação <span id="mod-badge" class="chat-badge" hidden></span></button>
+        <button type="button" data-sec="conta">🔑 Conta</button>
+      </nav>
+      <div class="settings-body">
+        <section data-sec="tema">
+          <h2>Cor do layout</h2>
+          <p class="sec-hint">Escolha a cor do King Launcher. Fica salvo só neste aparelho.</p>
+          <div id="theme-grid" class="theme-grid"></div>
+          <label class="custom-color">
+            <input type="color" id="theme-custom" value="#5865f2" />
+            <span>Escolher qualquer cor…</span>
+          </label>
+        </section>
+
+        <section data-sec="perfil">
+          <h2>Nome e avatar</h2>
+          <label class="field-label" for="name-input">Seu nome</label>
+          <input id="name-input" maxlength="24" placeholder="Como quer ser chamado?" autocomplete="off" />
+          <span class="field-label">Sua foto de perfil</span>
+          <div class="avatar-preview-row">
+            <span id="avatar-preview" class="avatar big"></span>
+            <div class="upload-box">
+              <button type="button" id="btn-upload" class="btn small">Enviar minha foto</button>
+              <small>ou escolha um personagem abaixo</small>
+            </div>
+            <input id="file-input" type="file" accept="image/*" hidden />
+          </div>
+          <div id="avatar-grid" class="avatar-grid"></div>
+          <button type="button" id="profile-save" class="btn primary">Salvar nome e avatar</button>
+        </section>
+
+        <section data-sec="voz">
+          <h2>Voz</h2>
+          <label class="switch-row">
+            <span>
+              <strong>Supressor de ruído</strong>
+              <small>Tira barulho de fundo do seu microfone (teclado, ventilador, rua…), como no Discord.</small>
+            </span>
+            <input type="checkbox" id="ns-toggle" class="switch" />
+          </label>
+          <p id="ns-status" class="sec-hint"></p>
+        </section>
+
+        <section data-sec="mod">
+          <h2>Contas esperando aprovação</h2>
+          <div id="mod-pending" class="acc-list"></div>
+          <h2>Todas as contas</h2>
+          <div id="mod-users" class="acc-list"></div>
+        </section>
+
+        <section data-sec="conta">
+          <h2>Sua conta</h2>
+          <p class="acc-me"><span id="acc-username"></span> · <span id="acc-role"></span></p>
+          <form id="pass-form" class="pass-form">
+            <span class="field-label">Trocar a senha</span>
+            <input id="pass-old" type="password" placeholder="Senha atual" autocomplete="current-password" required />
+            <input id="pass-new" type="password" placeholder="Senha nova (mínimo 6)" minlength="6" autocomplete="new-password" required />
+            <button type="submit" class="btn small">Trocar senha</button>
+          </form>
+          <button type="button" id="btn-logout" class="btn danger">Sair da conta</button>
+        </section>
+      </div>
+    </div>
   </div>
 
   <div class="app">
@@ -44,6 +118,9 @@
         <img src="logo.svg" alt="" class="side-logo" />
         <span>Canais de voz</span>
       </header>
+      <button id="btn-dm" class="dm-open-btn" title="Mensagens diretas">
+        <span class="ico"></span><span>Mensagens</span><span id="dm-badge" class="dm-count" hidden></span>
+      </button>
       <div id="channels" class="channels"></div>
 
       <div class="userbar">
@@ -57,6 +134,7 @@
         <div class="userbar-controls">
           <button id="btn-mute" class="icon-btn" title="Mutar microfone"></button>
           <button id="btn-deafen" class="icon-btn" title="Ensurdecer"></button>
+          <button id="btn-settings" class="icon-btn gear" title="Configurações"><span id="gear-badge" class="chat-badge" hidden></span></button>
         </div>
       </div>
     </aside>
@@ -110,10 +188,58 @@
     </header>
     <div id="chat-list" class="chat-list"></div>
     <form id="chat-form" class="chat-form" autocomplete="off">
+      <button type="button" class="pick-btn" data-for="chat" title="Emojis e GIFs">😀</button>
       <input id="chat-input" maxlength="500" placeholder="Escreva uma mensagem…" />
       <button type="submit" class="btn primary small">Enviar</button>
     </form>
   </aside>
+
+  <!-- Mensagens diretas (funciona fora da chamada também) -->
+  <aside id="dm" class="chat dm" hidden>
+    <div id="dm-list-view" class="dm-view">
+      <header class="chat-head">
+        <strong>Mensagens</strong>
+        <button id="dm-close" class="icon-btn" title="Fechar"></button>
+      </header>
+      <div class="dm-search"><input id="dm-search" placeholder="Procurar amigo…" autocomplete="off" /></div>
+      <div id="dm-contacts" class="dm-contacts"></div>
+    </div>
+    <div id="dm-convo-view" class="dm-view" hidden>
+      <header class="chat-head dm-convo-head">
+        <button id="dm-back" class="icon-btn" title="Voltar"></button>
+        <span id="dm-who-avatar" class="avatar"></span>
+        <div class="dm-who"><strong id="dm-who-name"></strong><small id="dm-who-status"></small></div>
+        <button id="dm-friend" class="btn small dm-friend" type="button"></button>
+        <button id="dm-close2" class="icon-btn" title="Fechar"></button>
+      </header>
+      <div id="dm-msgs" class="chat-list"></div>
+      <form id="dm-form" class="chat-form" autocomplete="off">
+        <button type="button" class="pick-btn" data-for="dm" title="Emojis e GIFs">😀</button>
+        <input id="dm-input" maxlength="1000" placeholder="Mensagem…" />
+        <button type="submit" class="btn primary small">Enviar</button>
+      </form>
+    </div>
+  </aside>
+
+  <!-- Emojis e GIFs -->
+  <div id="picker" class="picker" hidden>
+    <div class="picker-tabs">
+      <button type="button" data-tab="emoji" class="on">😀 Emojis</button>
+      <button type="button" data-tab="gif">GIF</button>
+    </div>
+    <div id="picker-emoji" class="picker-pane">
+      <div id="emoji-cats" class="emoji-cats"></div>
+      <div id="emoji-grid" class="emoji-grid"></div>
+    </div>
+    <div id="picker-gif" class="picker-pane" hidden>
+      <input id="gif-search" placeholder="Procurar GIFs…" autocomplete="off" />
+      <div id="gif-grid" class="gif-grid"></div>
+      <small class="gif-credit">GIFs por KLIPY</small>
+    </div>
+  </div>
+
+  <!-- Brincadeiras: tomate e chamar atenção -->
+  <div id="fun-layer" class="fun-layer" aria-hidden="true"></div>
 
   <!-- Volume de um amigo -->
   <div id="vol-pop" class="vol-pop" hidden>
@@ -129,6 +255,9 @@
       <button id="vol-mute" class="btn small"></button>
       <button id="vol-reset" class="btn small">Voltar a 100%</button>
     </div>
+    <button id="vol-dm" class="btn small" type="button">✉️ Mandar mensagem</button>
+    <div id="vol-friend" class="vol-friend"></div>
+    <div id="mod-tools" class="mod-tools" hidden></div>
   </div>
 
   <div id="audio-sink" hidden></div>

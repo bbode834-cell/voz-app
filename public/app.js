@@ -3,7 +3,9 @@
 // Ideal para grupos pequenos (até 6) com uma transmissão de tela por vez.
 
 const $ = (s) => document.querySelector(s);
-const socket = io();
+// Só conecta depois do login (o servidor confere o "crachá" de acesso)
+let authToken = null;
+const socket = io({ autoConnect: false, auth: (cb) => cb({ token: authToken }) });
 
 // ---------- Ícones ----------
 const svg = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
@@ -21,6 +23,8 @@ const ICON = {
   close: svg('<path d="M18 6 6 18M6 6l12 12"/>'),
   cam: svg('<path d="M23 7l-7 5 7 5z"/><rect x="1" y="5" width="15" height="14" rx="2"/>'),
   camOff: svg('<path d="M2 2l20 20"/><path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m5 0h4a2 2 0 0 1 2 2v3.3l1 1L23 7v10"/>'),
+  gear: svg('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
+  exitFull: svg('<path d="M8 3v3a2 2 0 0 1-2 2H3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M16 21v-3a2 2 0 0 1 2-2h3"/>'),
   pencil: svg('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>'),
 };
 
@@ -32,9 +36,12 @@ const store = {
 
 // ---------- Estado ----------
 let config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }], maxPerChannel: 6 };
-let myName = store.get('voz-nome', '');
-let myAvatar = store.get('voz-avatar', '');
+let myName = '';
+let myAvatar = '';
+let me = null;            // minha conta { id, username, name, avatar, role }
 let loggedIn = false;
+let modMuted = false;     // um moderador fechou meu microfone
+authToken = store.get('voz-token', null);
 let selfId = null;
 let currentChannel = null; // id do canal (c1, c2...)
 let channelsState = [];
@@ -124,7 +131,7 @@ const emitAck = (ev, data) => new Promise((resolve) => socket.emit(ev, data, res
 const sendSignal = (to, data) => socket.emit('signal', { to, data });
 
 // ---------- Efeitos sonoros ----------
-const SONS = ['entrou', 'saiu', 'mic-on', 'mic-off', 'fone-on', 'fone-off', 'transmissao', 'mensagem'];
+const SONS = ['entrou', 'saiu', 'mic-on', 'mic-off', 'fone-on', 'fone-off', 'transmissao', 'mensagem', 'tomate', 'toctoc'];
 const soundBuffers = {};
 let soundsLoaded = false;
 
@@ -133,7 +140,7 @@ async function loadSounds() {
   soundsLoaded = true;
   await Promise.all(SONS.map(async (n) => {
     try {
-      const r = await fetch(`sons/${n}.wav`);
+      const r = await fetch(n === 'tomate' || n === 'toctoc' ? `fx/${n}.wav` : `sons/${n}.wav`);
       soundBuffers[n] = await audioCtx.decodeAudioData(await r.arrayBuffer());
     } catch {}
   }));
@@ -155,9 +162,239 @@ function playSound(name, force = false) {
 const soundJoin = () => playSound('entrou');
 const soundLeave = () => playSound('saiu');
 
-// ---------- Perfil (nome + avatar) ----------
+// ---------- Cargos ----------
+const RANK = { member: 0, mod: 1, owner: 2 };
+const ROLE_LABEL = { owner: 'Dono', mod: 'Moderador', member: 'Membro' };
+const isMod = () => RANK[me?.role] >= RANK.mod;
+// Posso moderar essa pessoa? (só quem tem cargo menor que o meu)
+const canModerate = (u) => !!u && u.id !== selfId && isMod() && RANK[me.role] > (RANK[u.role] ?? 0);
+const roleBadge = (role) =>
+  role === 'owner' ? '<span class="role-badge owner" title="Dono">👑</span>'
+  : role === 'mod' ? '<span class="role-badge mod" title="Moderador">🛡️</span>' : '';
+
+// ---------- Cores do layout ----------
+// Cada pessoa escolhe a sua; fica salvo neste navegador
+const THEMES = [
+  { id: 'cinza', nome: 'Cinza', cor: '#5865f2', amostra: '#313338' },
+  { id: 'preto', nome: 'Preto', cor: '#5865f2', amostra: '#000000' },
+  { id: 'branco', nome: 'Branco', cor: '#5865f2', amostra: '#ffffff' },
+  { id: 'roxo', nome: 'Roxo', cor: '#9b59ff' },
+  { id: 'rosa', nome: 'Rosa', cor: '#ff4fa3' },
+  { id: 'verde', nome: 'Verde', cor: '#23c55e' },
+  { id: 'vermelho', nome: 'Vermelho', cor: '#ef4444' },
+  { id: 'azul', nome: 'Azul', cor: '#3b82f6' },
+  { id: 'laranja', nome: 'Laranja', cor: '#f97316' },
+];
+const BASE_DARK = {
+  bg: '#1e1f22', panel: '#2b2d31', 'panel-2': '#313338', 'panel-3': '#383a40', hover: '#35373c',
+  'hover-strong': '#42444b', 'btn-hover': '#45474e', text: '#dbdee1', 'text-strong': '#f2f3f5', muted: '#949ba4',
+  line: '#1f2023', 'line-strong': '#111', userbar: '#232428', pop: '#111214', stage: '#000', link: '#7aa7ff',
+  accent: '#5865f2', 'accent-hover': '#4752c4',
+};
+function hexToHsl(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return [235, 86, 65];
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2;
+  let h = 0, s = 0;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    h = max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    h *= 60;
+  }
+  return [Math.round(h), Math.round(s * 100), Math.round(l * 100)];
+}
+function paletteFor(theme) {
+  if (theme.id === 'cinza') return { ...BASE_DARK };
+  if (theme.id === 'preto') {
+    return { ...BASE_DARK, bg: '#000000', panel: '#0c0c0e', 'panel-2': '#111113', 'panel-3': '#1c1c20', hover: '#18181b',
+      'hover-strong': '#232327', 'btn-hover': '#2a2a2f', line: '#000', 'line-strong': '#000', userbar: '#060607', pop: '#0c0c0e' };
+  }
+  if (theme.id === 'branco') {
+    return { bg: '#e3e5e8', panel: '#f2f3f5', 'panel-2': '#ffffff', 'panel-3': '#ebedef', hover: '#e3e5e8',
+      'hover-strong': '#d7d9dc', 'btn-hover': '#d7d9dc', text: '#313338', 'text-strong': '#060607', muted: '#5c5e66',
+      line: '#d4d7dc', 'line-strong': '#c4c9ce', userbar: '#ebedef', pop: '#ffffff', stage: '#f2f3f5', link: '#0068e0',
+      accent: '#5865f2', 'accent-hover': '#4752c4' };
+  }
+  // Cor escolhida: fundo escuro puxado para essa cor + destaque nela
+  const [h, sRaw, l] = hexToHsl(theme.cor);
+  const s = Math.max(sRaw, 10);
+  const t = (sat, lig) => `hsl(${h} ${Math.round(s * sat)}% ${lig}%)`;
+  const accentL = Math.min(Math.max(l, 45), 62);
+  return {
+    bg: t(0.28, 8), panel: t(0.26, 12), 'panel-2': t(0.24, 15), 'panel-3': t(0.24, 20), hover: t(0.24, 18),
+    'hover-strong': t(0.26, 24), 'btn-hover': t(0.28, 27), text: t(0.15, 86), 'text-strong': t(0.1, 96),
+    muted: t(0.14, 64), line: t(0.3, 7), 'line-strong': t(0.3, 5), userbar: t(0.28, 10), pop: t(0.3, 7),
+    stage: t(0.35, 4), link: `hsl(${h} 90% 75%)`,
+    accent: `hsl(${h} ${Math.min(s, 85)}% ${accentL}%)`, 'accent-hover': `hsl(${h} ${Math.min(s, 85)}% ${accentL - 9}%)`,
+  };
+}
+let themeChoice = store.get('voz-tema', { id: 'cinza' });
+function applyTheme(choice) {
+  themeChoice = choice;
+  const base = THEMES.find((t) => t.id === choice.id) || { id: 'custom', cor: choice.cor };
+  const pal = paletteFor(base.id === 'custom' ? { id: 'custom', cor: choice.cor } : base);
+  for (const [k, v] of Object.entries(pal)) document.documentElement.style.setProperty(`--${k}`, v);
+  document.documentElement.dataset.theme = base.id === 'branco' ? 'light' : 'dark';
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', pal.panel);
+}
+function renderThemeGrid() {
+  const grid = $('#theme-grid');
+  grid.innerHTML = '';
+  THEMES.forEach((t) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'theme-opt' + (themeChoice.id === t.id ? ' selected' : '');
+    b.innerHTML = `<span class="swatch" style="background:${t.amostra || t.cor}"></span><span>${t.nome}</span>`;
+    b.onclick = () => { applyTheme({ id: t.id }); store.set('voz-tema', themeChoice); renderThemeGrid(); };
+    grid.appendChild(b);
+  });
+  $('.custom-color').classList.toggle('selected', themeChoice.id === 'custom');
+  if (themeChoice.id === 'custom') $('#theme-custom').value = themeChoice.cor;
+}
+$('#theme-custom').addEventListener('input', (e) => {
+  applyTheme({ id: 'custom', cor: e.target.value });
+  store.set('voz-tema', themeChoice);
+  renderThemeGrid();
+});
+applyTheme(themeChoice);
+
+// ---------- Entrar / criar conta ----------
 if (!window.isSecureContext) $('#secure-warning').hidden = false;
-let draftAvatar = myAvatar;
+let authMode = 'login';
+
+function setAuthMode(mode) {
+  authMode = mode;
+  document.querySelectorAll('.auth-tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === mode));
+  $('#auth-name-row').hidden = mode !== 'register';
+  $('#auth-submit').textContent = mode === 'register' ? 'Criar conta' : 'Entrar';
+  $('#auth-pass').autocomplete = mode === 'register' ? 'new-password' : 'current-password';
+  $('#auth-hint').innerHTML = mode === 'register'
+    ? 'Depois de criar, o dono precisa <b>aprovar</b> sua conta. Aí é só entrar.'
+    : 'Ainda não tem conta? Toque em <b>Criar conta</b>. O dono precisa aprovar antes do primeiro acesso.';
+  authMsg('');
+}
+document.querySelectorAll('.auth-tabs button').forEach((b) => (b.onclick = () => setAuthMode(b.dataset.tab)));
+
+function authMsg(text, kind = 'error') {
+  const el = $('#auth-msg');
+  el.hidden = !text;
+  el.textContent = text;
+  el.className = 'auth-msg ' + kind;
+}
+
+function showAuth(msg, kind) {
+  $('#auth').hidden = false;
+  $('#settings').hidden = true;
+  if (msg) authMsg(msg, kind);
+  setTimeout(() => $('#auth-user').focus(), 50);
+}
+
+async function api(path, body) {
+  const r = await fetch(path, {
+    method: body ? 'POST' : 'GET',
+    headers: { 'Content-Type': 'application/json', ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let data = {};
+  try { data = await r.json(); } catch {}
+  return { status: r.status, ...data, httpStatus: r.status };
+}
+
+$('#auth-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const username = $('#auth-user').value.trim();
+  const password = $('#auth-pass').value;
+  const btn = $('#auth-submit');
+  btn.disabled = true;
+  try {
+    if (authMode === 'register') {
+      const r = await api('/api/register', { username, password, name: $('#auth-name').value.trim() });
+      if (r.error) return authMsg(r.error);
+      if (r.token) return startSession(r.token, r.user, true); // primeira conta = dono
+      setAuthMode('login');
+      authMsg('Conta criada! Agora é só esperar o dono aprovar. Depois entre com seu usuário e senha.', 'ok');
+    } else {
+      const r = await api('/api/login', { username, password });
+      if (r.error) return authMsg(r.error, r.httpStatus === 403 ? 'wait' : 'error');
+      startSession(r.token, r.user, false);
+    }
+  } catch {
+    authMsg('Não consegui falar com o servidor. Se ninguém usou nos últimos minutos, ele pode levar até 1 minuto para acordar. Tente de novo.');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+async function startSession(token, user, firstTime) {
+  authToken = token;
+  store.set('voz-token', token);
+  me = user;
+  myName = user.name;
+  myAvatar = user.avatar || '';
+  loggedIn = true;
+  $('#auth').hidden = true;
+  $('#auth-pass').value = '';
+  try { config = await (await fetch('/config')).json(); } catch {}
+  ensureAudioCtx();
+  loadSounds();
+  socket.connect();
+  renderAll();
+  // Primeiro acesso: abre o menu para escolher foto e cor
+  if (firstTime || (!myAvatar && !store.get('voz-menu-visto', false))) {
+    store.set('voz-menu-visto', true);
+    openSettings('perfil');
+  }
+}
+
+function logout(msg, kind) {
+  if (currentChannel) leaveChannel();
+  if (dmOpen) setDmOpen(false);
+  dmContacts = []; dmUnread = {}; updateDmBadge();
+  socket.disconnect();
+  authToken = null;
+  store.set('voz-token', null);
+  me = null;
+  loggedIn = false;
+  renderAll();
+  showAuth(msg, kind);
+}
+
+// O servidor recusou a conexão (conta não aprovada, banida ou login vencido)
+socket.on('connect_error', (err) => {
+  const m = err?.message;
+  if (m === 'login') logout('Entre de novo com seu usuário e senha.');
+  else if (m === 'pending') logout('Sua conta ainda está esperando a aprovação do dono.', 'wait');
+  else if (m === 'banned') logout('Esta conta foi banida.');
+});
+
+socket.on('me', (u) => {
+  me = { ...me, ...u };
+  myName = me.name;
+  myAvatar = me.avatar || '';
+  renderAll();
+  renderSettings();
+});
+
+// Ao abrir: se já entrou antes, continua logado
+(async function boot() {
+  if (!authToken) return showAuth();
+  try {
+    const r = await api('/api/me');
+    if (r.user) return startSession(authToken, r.user, false);
+    authToken = null;
+    store.set('voz-token', null);
+    showAuth(r.error, r.status === 'pending' ? 'wait' : 'error');
+  } catch {
+    showAuth('Não consegui falar com o servidor. Ele pode estar acordando: tente entrar em alguns segundos.');
+  }
+})();
+
+// ---------- Menu de configurações ----------
+let draftAvatar = '';
+let settingsSec = 'tema';
 
 async function loadAvatarList() {
   try { avatarList = await (await fetch('avatars/lista.json')).json(); } catch { avatarList = []; }
@@ -182,14 +419,36 @@ function updatePreview() {
   fillAvatar($('#avatar-preview'), $('#name-input').value.trim() || '?', draftAvatar);
 }
 
-function openProfile() {
+function openSettings(sec) {
+  if (!loggedIn) return;
   draftAvatar = myAvatar;
   $('#name-input').value = myName;
-  $('#profile-title').textContent = loggedIn ? 'Editar perfil' : 'Bem-vindo';
   renderAvatarGrid();
   updatePreview();
-  $('#profile').hidden = false;
-  setTimeout(() => $('#name-input').focus(), 50);
+  renderThemeGrid();
+  $('#settings').hidden = false;
+  showSettingsSec(sec || settingsSec);
+}
+
+function showSettingsSec(sec) {
+  if (sec === 'mod' && !isMod()) sec = 'tema';
+  settingsSec = sec;
+  document.querySelectorAll('.settings-tabs button').forEach((b) => b.classList.toggle('on', b.dataset.sec === sec));
+  document.querySelectorAll('.settings-body section').forEach((el) => (el.hidden = el.dataset.sec !== sec));
+  renderSettings();
+  if (sec === 'mod') loadAccounts();
+}
+document.querySelectorAll('.settings-tabs button').forEach((b) => (b.onclick = () => showSettingsSec(b.dataset.sec)));
+$('#settings-close').onclick = () => ($('#settings').hidden = true);
+$('#settings').addEventListener('pointerdown', (e) => { if (e.target.id === 'settings') $('#settings').hidden = true; });
+
+function renderSettings() {
+  $('#tab-mod').hidden = !isMod();
+  $('#acc-username').textContent = me ? `@${me.username}` : '';
+  $('#acc-role').textContent = me ? ROLE_LABEL[me.role] || '' : '';
+  $('#ns-toggle').checked = nsOn;
+  $('#ns-status').textContent = nsStatusText();
+  updatePendingBadges();
 }
 
 $('#name-input').addEventListener('input', updatePreview);
@@ -228,29 +487,107 @@ function shrinkImage(file, size) {
   });
 }
 
-$('#profile-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  myName = $('#name-input').value.trim().slice(0, 24) || 'Anônimo';
+$('#profile-save').onclick = async () => {
+  const name = $('#name-input').value.trim().slice(0, 24) || myName;
+  const res = await emitAck('profile', { name, avatar: draftAvatar });
+  if (res?.error) return toast(res.error);
+  myName = name;
   myAvatar = draftAvatar;
-  store.set('voz-nome', myName);
-  store.set('voz-avatar', myAvatar);
-  $('#profile').hidden = true;
-  if (!loggedIn) {
-    loggedIn = true;
-    try { config = await (await fetch('/config')).json(); } catch {}
-  }
-  ensureAudioCtx();
-  loadSounds();
-  if (currentChannel) socket.emit('profile', { name: myName, avatar: myAvatar });
+  toast('Nome e avatar salvos!');
   renderAll();
+};
+
+$('#pass-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const r = await api('/api/password', { old: $('#pass-old').value, password: $('#pass-new').value });
+  if (r.error) return toast(r.error);
+  $('#pass-old').value = $('#pass-new').value = '';
+  toast('Senha trocada!');
+});
+$('#btn-logout').onclick = () => logout('Você saiu da conta.', 'ok');
+
+// ---------- Moderação: contas ----------
+let pendingCount = 0;
+let accounts = [];
+
+function updatePendingBadges() {
+  const show = isMod() && pendingCount > 0;
+  for (const id of ['#gear-badge', '#mod-badge']) {
+    const b = $(id);
+    b.hidden = !show;
+    b.textContent = String(pendingCount);
+  }
+}
+
+socket.on('pending', ({ count }) => {
+  if (count > pendingCount && loggedIn) {
+    toast(`🛡️ ${count === 1 ? 'Uma conta nova está' : `${count} contas estão`} esperando sua aprovação (menu ⚙).`);
+    playSound('mensagem');
+  }
+  pendingCount = count;
+  updatePendingBadges();
+  if (!$('#settings').hidden && settingsSec === 'mod') loadAccounts();
 });
 
-$('#btn-profile').onclick = openProfile;
+async function loadAccounts() {
+  const r = await emitAck('admin-users', {});
+  if (r?.error) return;
+  accounts = r.users || [];
+  renderAccounts();
+}
+
+const fmtDate = (d) => { try { return new Date(d).toLocaleDateString('pt-BR'); } catch { return ''; } };
+
+function renderAccounts() {
+  const pend = accounts.filter((u) => u.status === 'pending');
+  const rest = accounts.filter((u) => u.status !== 'pending');
+  const row = (u, buttons) => `
+    <div class="acc" data-id="${u.id}">
+      ${avatarHTML(u)}
+      <div class="acc-info"><strong>${esc(u.name)} ${roleBadge(u.role)}</strong>
+        <small>@${esc(u.username)} · ${u.status === 'banned' ? '<b class="ban">banido</b>' : u.status === 'pending' ? 'esperando' : ROLE_LABEL[u.role]} · desde ${fmtDate(u.createdAt)}</small></div>
+      <div class="acc-actions">${buttons}</div>
+    </div>`;
+  const btn = (act, label, cls = '') => `<button class="btn small ${cls}" data-act="${act}">${label}</button>`;
+  $('#mod-pending').innerHTML = pend.length
+    ? pend.map((u) => row(u, btn('approve', '✔ Aprovar', 'ok') + btn('reject', '✖ Recusar', 'danger'))).join('')
+    : '<p class="sec-hint">Ninguém esperando agora.</p>';
+  const souDono = me?.role === 'owner';
+  $('#mod-users').innerHTML = rest.map((u) => {
+    if (u.id === me?.id || RANK[u.role] >= RANK[me?.role]) return row(u, '');
+    let b = '';
+    if (souDono && u.status === 'approved') b += u.role === 'mod' ? btn('make-member', 'Tirar moderador') : btn('make-mod', '🛡️ Tornar moderador');
+    b += u.status === 'banned' ? btn('unban', 'Desbanir', 'ok') : btn('ban', 'Banir', 'danger');
+    if (souDono) b += btn('delete', 'Apagar', 'danger');
+    return row(u, b);
+  }).join('');
+}
+
+const ACT_CONFIRM = {
+  reject: 'Recusar o pedido de {n}?',
+  ban: 'Banir {n}? A pessoa sai na hora e não consegue mais entrar.',
+  delete: 'Apagar a conta de {n}? Ela some para sempre.',
+};
+$('.settings-body section[data-sec="mod"]').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-act]');
+  if (!b) return;
+  const id = Number(b.closest('.acc').dataset.id);
+  const u = accounts.find((x) => x.id === id);
+  const q = ACT_CONFIRM[b.dataset.act];
+  if (q && !confirm(q.replace('{n}', u?.name || 'essa pessoa'))) return;
+  const r = await emitAck('admin-set', { userId: id, action: b.dataset.act });
+  if (r?.error) toast(r.error);
+  loadAccounts();
+});
+
 loadAvatarList();
-openProfile();
 
 // ---------- Botões ----------
 $('#btn-mute').onclick = toggleMute;
+$('#btn-settings').onclick = () => openSettings();
+$('#btn-settings').insertAdjacentHTML('afterbegin', ICON.gear);
+$('#btn-profile').onclick = () => openSettings('perfil');
+$('#settings-close').innerHTML = ICON.close;
 $('#btn-deafen').onclick = toggleDeafen;
 $('#btn-share').onclick = toggleShare;
 $('#btn-cam').onclick = toggleCam;
@@ -263,6 +600,7 @@ $('#btn-share .ico').innerHTML = ICON.screen;
 // O servidor grátis "dorme" e volta com os nomes padrão; quem lembra dos
 // nomes novos manda de volta para ele assim que conecta.
 socket.on('connect', () => {
+  if (isMod()) socket.emit('admin-users', {}, (r) => { if (r?.users) { accounts = r.users; pendingCount = accounts.filter((u) => u.status === 'pending').length; updatePendingBadges(); } });
   const saved = store.get('voz-canais', null);
   if (saved?.version) socket.emit('sync-names', saved);
 });
@@ -294,7 +632,8 @@ async function joinChannel(id) {
     applyMicState();
     ensureAudioCtx();
 
-    const res = await emitAck('join', { channel: id, name: myName, avatar: myAvatar, proto: 3 });
+    await setupMicPipeline();
+    const res = await emitAck('join', { channel: id, proto: 3 });
     if (res.error) {
       toast(res.error);
       stopMic();
@@ -303,6 +642,8 @@ async function joinChannel(id) {
 
     currentChannel = id;
     selfId = res.selfId;
+    modMuted = !!res.modMuted;
+    if (modMuted) { muted = true; applyMicState(); }
     chatMsgs = Array.isArray(res.chat) ? res.chat.slice() : [];
     chatUnread = 0;
     renderChat(true);
@@ -313,10 +654,7 @@ async function joinChannel(id) {
     res.peers.forEach((p) => createPeer(p.id, true));
     soundJoin();
     renderAll();
-    // Já tem gente transmitindo: começa assistindo a primeira
-    const already = res.sharers || (res.sharer ? [res.sharer] : []);
-    const other = already.filter((x) => x !== selfId);
-    if (other.length) watch(other[0]);
+    // Quem já está transmitindo aparece com o botão "Assistir" (não abre sozinho)
   } finally {
     joining = false;
   }
@@ -341,7 +679,79 @@ function leaveChannel(switching = false) {
 function stopMic() {
   if (localStream) localStream.getTracks().forEach((t) => t.stop());
   localStream = null;
+  teardownNs();
 }
+
+// ---------- Supressor de ruído (como o do Discord) ----------
+// O som do microfone passa por uma inteligência artificial (RNNoise) que tira
+// o barulho de fundo antes de ir para os amigos. Roda no próprio navegador.
+let nsOn = store.get('voz-supressor', true);
+let nsState = 'off'; // 'off' | 'loading' | 'on' | 'error'
+let nsLib = null, nsWasm = null, nsCtx = null;
+let nsGraph = null; // { src, node, dest, track }
+
+const nsStatusText = () => !nsOn ? 'Desligado: o som vai como o microfone capta (com a redução básica do navegador).'
+  : nsState === 'on' ? '✅ Ligado e funcionando.'
+  : nsState === 'error' ? '⚠ Seu navegador não conseguiu ligar o supressor. Use o Chrome ou o Edge atualizados.'
+  : 'Ligado: começa a funcionar quando você entrar num canal.';
+
+// O som que vai para os amigos: com supressor (se ligado) ou direto do microfone
+const micSendTrack = () => (nsOn && nsGraph?.track) || localStream?.getAudioTracks()[0] || null;
+
+async function setupMicPipeline() {
+  if (!localStream || !nsOn) return teardownNs();
+  if (nsGraph) return;
+  nsState = 'loading';
+  try {
+    if (!nsLib) {
+      nsLib = await import('./vendor/supressor/supressor.js');
+      nsWasm = await nsLib.loadRnnoise({ url: 'vendor/supressor/rnnoise.wasm', simdUrl: 'vendor/supressor/rnnoise_simd.wasm' });
+    }
+    if (!nsCtx) {
+      nsCtx = new AudioContext({ sampleRate: 48000 }); // a IA trabalha em 48 kHz
+      await nsCtx.audioWorklet.addModule('vendor/supressor/rnnoise-worklet.js');
+    }
+    if (nsCtx.state === 'suspended') nsCtx.resume().catch(() => {});
+    const src = nsCtx.createMediaStreamSource(localStream);
+    const node = new nsLib.RnnoiseWorkletNode(nsCtx, { wasmBinary: nsWasm, maxChannels: 1 });
+    const dest = nsCtx.createMediaStreamDestination();
+    src.connect(node).connect(dest);
+    nsGraph = { src, node, dest, track: dest.stream.getAudioTracks()[0] };
+    nsState = 'on';
+  } catch (err) {
+    console.warn('supressor:', err);
+    nsState = 'error';
+    teardownNs(true);
+  }
+  if (!$('#settings').hidden) renderSettings();
+}
+
+function teardownNs(keepState = false) {
+  if (nsGraph) {
+    try { nsGraph.src.disconnect(); nsGraph.node.disconnect(); nsGraph.node.destroy?.(); } catch {}
+    nsGraph.track?.stop();
+    nsGraph = null;
+  }
+  if (!keepState) nsState = 'off';
+}
+
+// Troca o som enviado na hora, sem desligar a chamada
+function swapMicSenders() {
+  const t = micSendTrack();
+  peers.forEach((peer) => {
+    if (peer.micSender && t && peer.micSender.track !== t) peer.micSender.replaceTrack(t).catch(() => {});
+  });
+}
+
+$('#ns-toggle').addEventListener('change', async (e) => {
+  nsOn = e.target.checked;
+  store.set('voz-supressor', nsOn);
+  if (nsOn) await setupMicPipeline();
+  swapMicSenders();
+  if (!nsOn) teardownNs();
+  renderSettings();
+  toast(nsOn ? 'Supressor de ruído ligado.' : 'Supressor de ruído desligado.');
+});
 
 // ---------- WebRTC (negociação "perfeita") ----------
 // Quem acabou de entrar (initiator) faz a primeira oferta; quem já estava
@@ -442,7 +852,8 @@ function createPeer(id, initiator = false) {
 function addLocalTracks(peer) {
   if (peer.tracksAdded) return;
   peer.tracksAdded = true;
-  if (localStream) localStream.getTracks().forEach((t) => peer.pc.addTrack(t, localStream));
+  const mic = micSendTrack();
+  if (mic) peer.micSender = peer.pc.addTrack(mic, localStream);
   if (screenStream && shouldSendTo(peer.id)) {
     peer.screenSenders = addScreenTracks(peer.pc, screenStream);
   }
@@ -804,6 +1215,10 @@ socket.on('channels', (data) => {
   // Para de mostrar quem parou de transmitir ou saiu
   [...watching].forEach((id) => { if (!isSharing(id)) watching.delete(id); });
   peers.forEach((p, id) => { if (p.camStream && !findUser(id)?.cam) p.camStream = null; });
+  const meEntry = currentChannel && findUser(selfId);
+  if (meEntry) modMuted = !!meEntry.modMuted;
+  // Janelinha de um amigo aberta: atualiza os botões de moderação
+  if (volTarget && !$('#vol-pop').hidden) { const vu = findUser(volTarget); if (vu) renderModTools(vu); else closeVolume(); }
   syncScreenSenders();
   syncCamSenders();
   camVideos.forEach((v, id) => { if (!camOf(id)) { v.srcObject = null; v.remove(); camVideos.delete(id); } });
@@ -829,11 +1244,9 @@ socket.on('peer-left', ({ id }) => {
 
 socket.on('share-started', ({ id }) => {
   if (id === selfId || !currentChannel) return;
-  toast(`${nameOf(id)} começou a transmitir a tela.`);
+  toast(`${nameOf(id)} começou a transmitir a tela. Clique em "Assistir" para ver.`);
   playSound('transmissao');
   renderAll();
-  // Se não estou vendo nada, já abro essa
-  if (watching.size === 0) watch(id);
 });
 
 socket.on('share-stopped', ({ id }) => {
@@ -872,6 +1285,33 @@ function unwatch(id) {
   renderScreens();
   renderMain();
 }
+
+// ---------- Ações de moderadores em mim ----------
+socket.on('kicked', ({ by }) => {
+  leaveChannel();
+  toast(`🚪 ${by} tirou você da chamada.`);
+});
+socket.on('banned', ({ by, motivo }) => {
+  logout(motivo === 'apagada' ? 'Sua conta foi apagada.' : `Sua conta foi banida por ${by}.`);
+});
+socket.on('mod-muted', ({ on, by }) => {
+  modMuted = on;
+  if (on) {
+    muted = true;
+    applyMicState();
+    socket.emit('mute', { muted: true });
+    toast(`🔇 ${by} fechou seu microfone.`);
+  } else {
+    toast(`🎙️ ${by} liberou seu microfone. Clique no microfone para falar.`);
+  }
+  renderControls();
+});
+socket.on('mod-stop-share', ({ by }) => {
+  if (screenStream) { stopShare(); toast(`⏹ ${by} parou a sua transmissão.`); }
+});
+socket.on('mod-stop-cam', ({ by }) => {
+  if (camStream) { stopCam(); toast(`📷 ${by} desligou a sua câmera.`); }
+});
 
 socket.on('disconnect', () => {
   if (currentChannel) {
@@ -1016,7 +1456,26 @@ function renderScreens() {
           ${mine ? '<button class="float-cam" title="Abre sua câmera numa janelinha por cima de tudo, que aparece na transmissão">📌 Câmera flutuante</button>' : ''}
           <button class="icon-btn fs" title="Tela cheia">${ICON.full}</button>
           <button class="icon-btn close" title="${mine ? 'Parar de transmitir' : 'Parar de assistir'}">${ICON.close}</button>
+        </div>
+        <div class="fs-bar">
+          <button class="fs-btn fs-mic" title="Microfone"></button>
+          <button class="fs-btn fs-deaf" title="Ouvir"></button>
+          ${mine ? '' : `<label class="fs-vol" title="Volume desta transmissão"><span class="ico">${ICON.speaker}</span>
+            <input type="range" min="0" max="100"><span class="fs-vol-val"></span></label>`}
+          <button class="fs-btn fs-exit" title="Sair da tela cheia">${ICON.exitFull}</button>
         </div>`;
+      el.querySelector('.fs-mic').onclick = toggleMute;
+      el.querySelector('.fs-deaf').onclick = toggleDeafen;
+      el.querySelector('.fs-exit').onclick = () => document.exitFullscreen?.();
+      // Controles aparecem ao mexer o mouse/tocar e somem sozinhos
+      const wake = () => {
+        el.classList.remove('idle');
+        clearTimeout(el._idle);
+        el._idle = setTimeout(() => { if (document.fullscreenElement === el) el.classList.add('idle'); }, 3000);
+      };
+      el.addEventListener('pointermove', wake);
+      el.addEventListener('pointerdown', wake);
+      el.addEventListener('fullscreenchange', () => { el.classList.remove('idle'); if (document.fullscreenElement === el) wake(); });
       el.querySelector('.fs').onclick = () => {
         if (document.fullscreenElement) document.exitFullscreen();
         else el.requestFullscreen?.();
@@ -1029,20 +1488,26 @@ function renderScreens() {
       };
       const lat = el.querySelector('.lat');
       if (lat) { lat.onclick = toggleLatency; updateLatencyButton(el); }
-      const range = el.querySelector('.screen-vol input');
-      if (range) {
-        range.value = Math.round(screenVolumeOf(nameOf(id)) * 100);
-        range.addEventListener('input', (e) => {
-          const name = nameOf(id);
-          const v = e.target.value / 100;
-          if (v === 1) delete screenVolumes[name]; else screenVolumes[name] = v;
-          store.set('voz-volume-telas', screenVolumes);
-          el.querySelector('.screen-vol .ico').innerHTML = v > 0 ? ICON.speaker : ICON.speakerOff;
-          applyVolumes();
-        });
-      }
+      // Volume da transmissão: a barra de cima e a da tela cheia andam juntas
+      const ranges = el.querySelectorAll('.screen-vol input, .fs-vol input');
+      const showVol = (v) => {
+        ranges.forEach((r) => { r.value = Math.round(v * 100); });
+        el.querySelectorAll('.screen-vol .ico, .fs-vol .ico').forEach((i) => { i.innerHTML = v > 0 ? ICON.speaker : ICON.speakerOff; });
+        const t = el.querySelector('.fs-vol-val');
+        if (t) t.textContent = `${Math.round(v * 100)}%`;
+      };
+      showVol(screenVolumeOf(nameOf(id)));
+      ranges.forEach((range) => range.addEventListener('input', (e) => {
+        const name = nameOf(id);
+        const v = e.target.value / 100;
+        if (v === 1) delete screenVolumes[name]; else screenVolumes[name] = v;
+        store.set('voz-volume-telas', screenVolumes);
+        showVol(v);
+        applyVolumes();
+      }));
       screenCards.set(id, el);
       box.appendChild(el);
+      setTimeout(renderControls, 0);
     }
     const stream = mine ? screenStream : peers.get(id)?.screenStream;
     const live = !!stream && stream.getVideoTracks().some((t) => t.readyState === 'live');
@@ -1114,6 +1579,7 @@ $('#chat-close').onclick = () => setChatOpen(false);
 
 function setChatOpen(v) {
   chatOpen = v && !!currentChannel;
+  if (chatOpen && dmOpen) setDmOpen(false);
   $('#chat').hidden = !chatOpen;
   document.body.classList.toggle('chat-open', chatOpen);
   if (chatOpen) {
@@ -1130,6 +1596,14 @@ function updateChatBadge() {
   b.textContent = chatUnread > 99 ? '99+' : String(chatUnread);
   $('#btn-chat').classList.toggle('active', chatOpen);
 }
+
+// Mensagem que é só um GIF (dos serviços de GIF conhecidos) vira imagem
+const GIF_RE = /^https:\/\/([a-z0-9-]+\.)*(klipy\.com|giphy\.com|tenor\.com|imgur\.com)\/\S+\.(gif|webp)(\?\S*)?$/i;
+const isGif = (t) => GIF_RE.test(String(t).trim());
+const msgHTML = (t) => isGif(t)
+  ? `<img class="chat-gif" src="${esc(String(t).trim())}" alt="GIF" loading="lazy">`
+  : linkify(t);
+const msgPreview = (t) => (isGif(t) ? '🎞️ GIF' : t);
 
 // Texto com links clicáveis (sem permitir HTML de ninguém)
 function linkify(text) {
@@ -1150,10 +1624,10 @@ function renderChat(scrollDown = false) {
       const live = findUser(m.from);
       const u = { name: m.name, avatar: live?.avatar || m.avatar };
       html += grouped
-        ? `<div class="chat-msg cont"><div class="chat-text">${linkify(m.text)}</div></div>`
+        ? `<div class="chat-msg cont"><div class="chat-text">${msgHTML(m.text)}</div></div>`
         : `<div class="chat-msg">${avatarHTML(u)}<div class="chat-body">
              <div class="chat-meta"><strong>${esc(m.name)}</strong><time>${hhmm(m.ts)}</time></div>
-             <div class="chat-text">${linkify(m.text)}</div></div></div>`;
+             <div class="chat-text">${msgHTML(m.text)}</div></div></div>`;
       prev = m;
     }
     list.innerHTML = html;
@@ -1169,7 +1643,9 @@ socket.on('chat', (m) => {
     if (!chatOpen) {
       chatUnread++;
       updateChatBadge();
-      toast(`💬 ${m.name}: ${m.text.length > 60 ? m.text.slice(0, 60) + '…' : m.text}`);
+      const pv = msgPreview(m.text);
+    toast(`💬 ${m.name}: ${pv.length > 60 ? pv.slice(0, 60) + '…' : pv}`);
+    notifyIfHidden(`💬 ${m.name} (chat do canal)`, pv);
     }
     playSound('mensagem');
   }
@@ -1185,6 +1661,535 @@ $('#chat-form').addEventListener('submit', async (e) => {
   const res = await emitAck('chat-send', { text });
   if (res?.error) { toast(res.error); input.value = text; }
 });
+async function sendChatText(text) {
+  if (!currentChannel) return;
+  const res = await emitAck('chat-send', { text });
+  if (res?.error) toast(res.error);
+}
+
+// ---------- Mensagens diretas ----------
+// Conversa particular entre duas contas. Funciona mesmo fora da chamada, e quem
+// estiver offline recebe quando voltar.
+let dmContacts = [];
+let dmUnread = {};      // id da conta -> não lidas
+let dmOpen = false;
+let dmWith = null;      // id da conta da conversa aberta
+let dmMsgs = [];
+let dmMore = false;
+const back = svg('<path d="M15 18l-6-6 6-6"/>');
+$('#btn-dm .ico').innerHTML = ICON.chat;
+$('#dm-close').innerHTML = ICON.close;
+$('#dm-close2').innerHTML = ICON.close;
+$('#dm-back').innerHTML = back;
+$('#btn-dm').onclick = () => (dmOpen ? setDmOpen(false) : setDmOpen(true));
+$('#dm-close').onclick = $('#dm-close2').onclick = () => setDmOpen(false);
+$('#dm-back').onclick = () => { dmWith = null; showDmList(); };
+$('#dm-search').addEventListener('input', renderDmContacts);
+
+const dmTotal = () => Object.values(dmUnread).reduce((a, b) => a + b, 0);
+function updateDmBadge() {
+  const n = dmTotal() + incomingCount();
+  const b = $('#dm-badge');
+  b.hidden = n === 0;
+  b.textContent = n > 99 ? '99+' : String(n);
+  $('#btn-dm').classList.toggle('active', dmOpen);
+}
+
+function setDmOpen(v, withId = null) {
+  if (!loggedIn) return;
+  if (v) askNotifyPermission();
+  dmOpen = v;
+  $('#dm').hidden = !v;
+  document.body.classList.toggle('dm-open', v);
+  if (v && chatOpen) setChatOpen(false); // os dois ficam no mesmo lugar
+  if (v) {
+    loadDmContacts().then(() => (withId ? openDm(withId) : showDmList()));
+  } else {
+    dmWith = null;
+  }
+  updateDmBadge();
+}
+
+async function loadDmContacts() {
+  const r = await emitAck('dm-contacts', {});
+  if (r?.error) return toast(r.error);
+  dmContacts = r.contacts || [];
+  dmContacts.forEach((c) => { if (c.friend) friends[c.id] = c.friend; });
+  dmUnread = {};
+  dmContacts.forEach((c) => { if (c.unread) dmUnread[c.id] = c.unread; });
+  renderDmContacts();
+  updateDmBadge();
+}
+
+const dmTime = (ts) => {
+  const d = new Date(ts), now = new Date();
+  return d.toDateString() === now.toDateString()
+    ? hhmm(ts)
+    : d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+};
+
+function renderDmContacts() {
+  const q = $('#dm-search').value.trim().toLowerCase();
+  const list = dmContacts
+    .filter((c) => !q || c.name.toLowerCase().includes(q) || c.username.includes(q))
+    .sort((a, b) => (b.last?.ts || 0) - (a.last?.ts || 0) || b.online - a.online || a.name.localeCompare(b.name));
+  const box = $('#dm-contacts');
+  if (!list.length) {
+    box.innerHTML = `<div class="chat-empty">${dmContacts.length ? 'Ninguém com esse nome.' : 'Ainda não tem outros amigos aprovados.'}</div>`;
+    return;
+  }
+  const reqs = list.filter((c) => friends[c.id] === 'incoming');
+  const reqHTML = reqs.length ? `<div class="dm-section">Pedidos de amizade</div>` + reqs.map((c) => `
+    <div class="dm-req" data-id="${c.id}">${avatarHTML(c)}<span class="dm-info"><strong>${esc(c.name)}</strong><small>quer ser seu amigo</small></span>
+      <button type="button" class="btn small ok" data-req="accept">Aceitar</button><button type="button" class="btn small" data-req="remove">Recusar</button></div>`).join('')
+    + '<div class="dm-section">Conversas</div>' : '';
+  box.innerHTML = reqHTML + list.map((c) => {
+    const n = dmUnread[c.id] || 0;
+    const prev = c.last ? `${c.last.from === me?.id ? 'Você: ' : ''}${msgPreview(c.last.text)}` : (c.online ? 'Online agora' : 'Toque para conversar');
+    return `<button class="dm-contact ${n ? 'unread' : ''}" data-id="${c.id}">
+      <span class="dm-av">${avatarHTML(c)}<i class="dot ${c.online ? 'on' : ''}"></i></span>
+      <span class="dm-info"><strong>${esc(c.name)} ${roleBadge(c.role)}${friends[c.id] === 'friend' ? ' <span class="star" title="Amigo">⭐</span>' : ''}</strong><small>${esc(prev.length > 60 ? prev.slice(0, 60) + '…' : prev)}</small></span>
+      <span class="dm-meta">${c.last ? `<time>${dmTime(c.last.ts)}</time>` : ''}${n ? `<b class="dm-count">${n}</b>` : ''}</span>
+    </button>`;
+  }).join('');
+}
+$('#dm-contacts').addEventListener('click', (e) => {
+  const rq = e.target.closest('[data-req]');
+  if (rq) return friendAction(Number(rq.closest('.dm-req').dataset.id), rq.dataset.req);
+  const b = e.target.closest('.dm-contact');
+  if (b) openDm(Number(b.dataset.id));
+});
+
+function showDmList() {
+  $('#dm-list-view').hidden = false;
+  $('#dm-convo-view').hidden = true;
+  renderDmContacts();
+}
+
+function dmContact(id) { return dmContacts.find((c) => c.id === id); }
+
+async function openDm(id) {
+  const c = dmContact(id);
+  if (!c) return toast('Essa pessoa não está disponível para conversar.');
+  dmWith = id;
+  $('#dm-list-view').hidden = true;
+  $('#dm-convo-view').hidden = false;
+  fillAvatar($('#dm-who-avatar'), c.name, c.avatar);
+  $('#dm-who-name').innerHTML = `${esc(c.name)} ${roleBadge(c.role)}`;
+  updateDmStatus();
+  updateFriendButton();
+  dmMsgs = [];
+  $('#dm-msgs').innerHTML = '<div class="chat-empty">Carregando…</div>';
+  const r = await emitAck('dm-history', { with: id });
+  if (dmWith !== id) return;
+  if (r?.error) return toast(r.error);
+  dmMsgs = r.messages || [];
+  dmMore = !!r.more;
+  delete dmUnread[id];
+  c.unread = 0;
+  updateDmBadge();
+  renderDm(true);
+  setTimeout(() => $('#dm-input').focus(), 30);
+}
+
+function updateDmStatus() {
+  const c = dmContact(dmWith);
+  const st = $('#dm-who-status');
+  if (!c) return;
+  st.textContent = c.online ? 'Online' : 'Offline — recebe quando entrar';
+  st.classList.toggle('on', !!c.online);
+}
+
+async function loadOlderDm() {
+  if (!dmWith || !dmMsgs.length) return;
+  const list = $('#dm-msgs');
+  const h0 = list.scrollHeight;
+  const r = await emitAck('dm-history', { with: dmWith, before: dmMsgs[0].id });
+  if (r?.error) return;
+  dmMsgs = [...(r.messages || []), ...dmMsgs];
+  dmMore = !!r.more;
+  renderDm();
+  list.scrollTop = list.scrollHeight - h0;
+}
+
+function renderDm(scrollDown = false) {
+  const list = $('#dm-msgs');
+  const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 60;
+  const c = dmContact(dmWith);
+  if (!dmMsgs.length) {
+    list.innerHTML = `<div class="chat-empty">Comece a conversa com ${esc(c?.name || '')}! 👋</div>`;
+    return;
+  }
+  let html = dmMore ? '<button class="btn small dm-older" type="button">Carregar mensagens antigas</button>' : '';
+  let prev = null;
+  const lastMine = [...dmMsgs].reverse().find((m) => m.from === me?.id);
+  for (const m of dmMsgs) {
+    const mine = m.from === me?.id;
+    const u = mine ? { name: myName, avatar: myAvatar } : { name: c?.name || '?', avatar: c?.avatar || '' };
+    const grouped = prev && prev.from === m.from && m.ts - prev.ts < 5 * 60 * 1000;
+    html += grouped
+      ? `<div class="chat-msg cont"><div class="chat-text">${msgHTML(m.text)}</div></div>`
+      : `<div class="chat-msg">${avatarHTML(u)}<div class="chat-body">
+           <div class="chat-meta"><strong>${esc(u.name)}</strong><time>${dmTime(m.ts)}${new Date(m.ts).toDateString() !== new Date().toDateString() ? ' ' + hhmm(m.ts) : ''}</time></div>
+           <div class="chat-text">${msgHTML(m.text)}</div></div></div>`;
+    if (m === lastMine && m.read) html += '<div class="dm-seen">✓✓ Visto</div>';
+    prev = m;
+  }
+  list.innerHTML = html;
+  list.querySelector('.dm-older')?.addEventListener('click', loadOlderDm);
+  if (scrollDown || atBottom) list.scrollTop = list.scrollHeight;
+}
+
+async function sendDmText(text) {
+  if (!dmWith) return;
+  const to = dmWith;
+  const r = await emitAck('dm-send', { to, text });
+  if (r?.error) return toast(r.error);
+  const c = dmContact(to);
+  if (c) c.last = r.message;
+  if (dmWith === to) { dmMsgs.push(r.message); renderDm(true); }
+}
+
+$('#dm-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = $('#dm-input');
+  const text = input.value.trim();
+  if (!text || !dmWith) return;
+  input.value = '';
+  const to = dmWith;
+  const r = await emitAck('dm-send', { to, text });
+  if (r?.error) { toast(r.error); input.value = text; return; }
+  const c = dmContact(to);
+  if (c) c.last = r.message;
+  if (dmWith === to) { dmMsgs.push(r.message); renderDm(true); }
+});
+
+socket.on('dm-unread', (u) => {
+  dmUnread = {};
+  Object.entries(u || {}).forEach(([k, v]) => { dmUnread[Number(k)] = v; });
+  updateDmBadge();
+});
+
+socket.on('dm', (m) => {
+  const other = m.from === me?.id ? m.to : m.from;
+  let c = dmContact(other);
+  if (!c && m.fromUser && m.from !== me?.id) {
+    c = { ...m.fromUser, online: true, unread: 0, last: null };
+    dmContacts.push(c);
+  }
+  if (c) c.last = m;
+  const viewing = dmOpen && dmWith === other && !document.hidden;
+  if (viewing) {
+    dmMsgs.push(m);
+    renderDm(m.from === me?.id);
+    if (m.from !== me?.id) socket.emit('dm-read', { with: other });
+  } else if (m.from !== me?.id) {
+    dmUnread[other] = (dmUnread[other] || 0) + 1;
+    const pv = msgPreview(m.text);
+    toast(`✉️ ${m.fromUser?.name || 'Mensagem'}: ${pv.length > 60 ? pv.slice(0, 60) + '…' : pv}`);
+    notifyIfHidden(`✉️ ${m.fromUser?.name || 'Mensagem nova'}`, pv);
+    playSound('mensagem', true);
+  }
+  if (dmOpen && !dmWith) renderDmContacts();
+  updateDmBadge();
+});
+
+// Quem estava com a conversa aberta e voltou para a aba: marca como lida
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && dmOpen && dmWith && dmUnread[dmWith]) openDm(dmWith);
+});
+
+socket.on('dm-read', ({ by }) => {
+  if (dmWith !== by) return;
+  dmMsgs.forEach((m) => { if (m.from === me?.id) m.read = true; });
+  renderDm();
+});
+
+socket.on('presence', ({ uid, online }) => {
+  const c = dmContact(uid);
+  if (!c) return;
+  c.online = online;
+  if (dmOpen && !dmWith) renderDmContacts();
+  if (dmWith === uid) updateDmStatus();
+});
+
+// ---------- Amigos ----------
+let friends = {}; // id da conta -> 'friend' | 'incoming' | 'outgoing'
+const incomingCount = () => Object.values(friends).filter((v) => v === 'incoming').length;
+
+socket.on('friends', (m) => {
+  friends = {};
+  Object.entries(m || {}).forEach(([k, v]) => { friends[Number(k)] = v; });
+  dmContacts.forEach((c) => { c.friend = friends[c.id] || null; });
+  updateDmBadge();
+  if (dmOpen && !dmWith) renderDmContacts();
+  if (dmWith) updateFriendButton();
+  if (volTarget && !$('#vol-pop').hidden) renderVolFriend();
+});
+socket.on('friend-request', ({ name }) => {
+  toast(`🤝 ${name} quer ser seu amigo! Veja em Mensagens.`);
+  playSound('mensagem', true);
+  notifyIfHidden('🤝 Pedido de amizade', `${name} quer ser seu amigo`);
+});
+socket.on('friend-accepted', ({ name }) => {
+  toast(`🎉 Você e ${name} agora são amigos!`);
+});
+
+async function friendAction(uid, action) {
+  const ev = { add: 'friend-request', accept: 'friend-accept', remove: 'friend-remove' }[action];
+  const r = await emitAck(ev, { userId: uid });
+  if (r?.error) toast(r.error);
+}
+
+function friendLabel(uid) {
+  return { friend: '⭐ Amigos', incoming: '✔ Aceitar amizade', outgoing: '⏳ Pedido enviado' }[friends[uid]] || '➕ Adicionar amigo';
+}
+
+function updateFriendButton() {
+  const b = $('#dm-friend');
+  if (!dmWith) return;
+  const st = friends[dmWith];
+  b.textContent = friendLabel(dmWith);
+  b.className = 'btn small dm-friend ' + (st === 'friend' ? 'is-friend' : st === 'incoming' ? 'ok' : st === 'outgoing' ? '' : 'primary');
+  b.title = st === 'friend' ? 'Clique para desfazer a amizade' : st === 'outgoing' ? 'Clique para cancelar o pedido' : '';
+}
+$('#dm-friend').onclick = () => {
+  const st = friends[dmWith];
+  const c = dmContact(dmWith);
+  if (st === 'friend') { if (confirm(`Desfazer a amizade com ${c?.name}?`)) friendAction(dmWith, 'remove'); }
+  else if (st === 'outgoing') friendAction(dmWith, 'remove');
+  else if (st === 'incoming') friendAction(dmWith, 'accept');
+  else friendAction(dmWith, 'add');
+};
+
+// ---------- Seletor de emojis e GIFs ----------
+const EMOJI_CAT_NAMES = { rostos: 'Carinhas', gestos: 'Gestos', coracoes: 'Corações e festa', jogos: 'Jogos', comida: 'Comida', animais: 'Animais e natureza', objetos: 'Objetos', simbolos: 'Símbolos' };
+let emojiCats = [];
+let emojiCat = 'rostos';
+let pickerFor = null; // 'chat' | 'dm'
+let gifTimer = null;
+let gifLoaded = '';
+fetch('emojis.json').then((r) => r.json()).then((d) => { emojiCats = d; }).catch(() => {});
+
+function openPicker(target, anchor) {
+  if (pickerFor === target && !$('#picker').hidden) return closePicker();
+  pickerFor = target;
+  const p = $('#picker');
+  p.hidden = false;
+  renderEmojiCats();
+  const r = anchor.getBoundingClientRect();
+  const w = p.offsetWidth, h = p.offsetHeight;
+  p.style.left = `${Math.max(8, Math.min(r.left, innerWidth - w - 8))}px`;
+  p.style.top = `${Math.max(8, r.top - h - 8)}px`;
+}
+function closePicker() { $('#picker').hidden = true; pickerFor = null; }
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#picker').hidden) closePicker(); });
+document.querySelectorAll('.pick-btn').forEach((b) => (b.onclick = () => openPicker(b.dataset.for, b)));
+document.addEventListener('pointerdown', (e) => {
+  if ($('#picker').hidden) return;
+  if (e.target.closest('#picker') || e.target.closest('.pick-btn')) return;
+  closePicker();
+});
+document.querySelectorAll('.picker-tabs button').forEach((b) => (b.onclick = () => {
+  document.querySelectorAll('.picker-tabs button').forEach((x) => x.classList.toggle('on', x === b));
+  $('#picker-emoji').hidden = b.dataset.tab !== 'emoji';
+  $('#picker-gif').hidden = b.dataset.tab !== 'gif';
+  if (b.dataset.tab === 'gif') { loadGifs($('#gif-search').value.trim()); setTimeout(() => $('#gif-search').focus(), 30); }
+}));
+
+function renderEmojiCats() {
+  $('#emoji-cats').innerHTML = emojiCats.map((c) =>
+    `<button type="button" data-cat="${c.id}" class="${c.id === emojiCat ? 'on' : ''}" title="${EMOJI_CAT_NAMES[c.id] || ''}">${c.icon}</button>`).join('');
+  const cat = emojiCats.find((c) => c.id === emojiCat) || emojiCats[0];
+  $('#emoji-grid').innerHTML = cat ? cat.emojis.map((e) => `<button type="button" class="emo">${e}</button>`).join('') : '';
+}
+$('#emoji-cats').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-cat]');
+  if (b) { emojiCat = b.dataset.cat; renderEmojiCats(); $('#emoji-grid').scrollTop = 0; }
+});
+$('#emoji-grid').addEventListener('click', (e) => {
+  const b = e.target.closest('.emo');
+  if (!b) return;
+  const input = pickerFor === 'dm' ? $('#dm-input') : $('#chat-input');
+  const a = input.selectionStart ?? input.value.length, z = input.selectionEnd ?? input.value.length;
+  input.value = input.value.slice(0, a) + b.textContent + input.value.slice(z);
+  input.focus();
+  input.selectionStart = input.selectionEnd = a + b.textContent.length;
+});
+
+async function loadGifs(q) {
+  if (gifLoaded === q && $('#gif-grid').children.length) return;
+  gifLoaded = q;
+  const grid = $('#gif-grid');
+  grid.innerHTML = '<div class="gif-msg">Carregando…</div>';
+  try {
+    const r = await fetch(`/api/gifs?q=${encodeURIComponent(q)}`, { headers: { Authorization: `Bearer ${authToken}` } });
+    const d = await r.json();
+    if (gifLoaded !== q) return;
+    if (d.error) { grid.innerHTML = `<div class="gif-msg">${esc(d.error)}</div>`; gifLoaded = ''; return; }
+    grid.innerHTML = d.gifs.length
+      ? d.gifs.map((g) => `<button type="button" class="gif" data-url="${esc(g.url)}" title="${esc(g.title)}"><img src="${esc(g.preview)}" alt="${esc(g.title)}" loading="lazy"></button>`).join('')
+      : '<div class="gif-msg">Nenhum GIF encontrado.</div>';
+  } catch {
+    grid.innerHTML = '<div class="gif-msg">Não consegui buscar GIFs agora.</div>';
+    gifLoaded = '';
+  }
+}
+$('#gif-search').addEventListener('input', (e) => {
+  clearTimeout(gifTimer);
+  gifTimer = setTimeout(() => loadGifs(e.target.value.trim()), 400);
+});
+$('#gif-grid').addEventListener('click', (e) => {
+  const b = e.target.closest('.gif');
+  if (!b) return;
+  const url = b.dataset.url;
+  const target = pickerFor;
+  closePicker();
+  if (target === 'dm') sendDmText(url); else sendChatText(url);
+});
+
+// ---------- Avisos do navegador (quando a aba está escondida) ----------
+function notifyIfHidden(title, body) {
+  if (!document.hidden || !('Notification' in window) || Notification.permission !== 'granted') return;
+  try { new Notification(title, { body, icon: 'logo.svg', silent: true }); } catch {}
+}
+function askNotifyPermission() {
+  if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission().catch(() => {});
+}
+// Título da aba pisca quando alguém chama atenção com ela escondida
+let titleFlash = null;
+function flashTitle(text) {
+  if (!document.hidden) return;
+  clearInterval(titleFlash);
+  let on = false;
+  titleFlash = setInterval(() => { document.title = (on = !on) ? text : 'King Launcher'; }, 900);
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) { clearInterval(titleFlash); document.title = 'King Launcher'; }
+});
+
+// ---------- 🍅 Tomate e 👊 Chamar atenção ----------
+// Só entre amigos na mesma chamada; cada botão pode ser usado 1 vez a cada 2 minutos
+const funReadyAt = { tomato: 0, nudge: 0 };
+let funTick = null;
+socket.on('connect', () => {
+  emitAck('fun-cooldown', {}).then((r) => {
+    for (const k of ['tomato', 'nudge']) funReadyAt[k] = Date.now() + (r?.[k] || 0) * 1000;
+  });
+});
+const funLeft = (k) => Math.max(0, Math.ceil((funReadyAt[k] - Date.now()) / 1000));
+const fmtLeft = (sec) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+
+function renderVolFriend() {
+  const box = $('#vol-friend');
+  const u = findUser(volTarget);
+  if (!u || !u.uid || u.uid === me?.id) { box.innerHTML = ''; return; }
+  const st = friends[u.uid];
+  if (st !== 'friend') {
+    box.innerHTML = `<button type="button" class="btn small ${st === 'incoming' ? 'ok' : ''}" data-fr="${st || 'none'}">${friendLabel(u.uid)}</button>`;
+    return;
+  }
+  const t = funLeft('tomato'), n = funLeft('nudge');
+  box.innerHTML = `<div class="fun-title">⭐ Amigo — brincadeiras</div><div class="fun-btns">
+    <button type="button" class="btn small fun-btn" data-fun="tomato" ${t ? 'disabled' : ''}>🍅 ${t ? fmtLeft(t) : 'Tomate'}</button>
+    <button type="button" class="btn small fun-btn" data-fun="nudge" ${n ? 'disabled' : ''}>👊 ${n ? fmtLeft(n) : 'Chamar atenção'}</button></div>`;
+  clearInterval(funTick);
+  if (t || n) funTick = setInterval(() => { if ($('#vol-pop').hidden) clearInterval(funTick); else renderVolFriend(); }, 1000);
+}
+$('#vol-friend').addEventListener('click', async (e) => {
+  const u = findUser(volTarget);
+  if (!u) return;
+  const fr = e.target.closest('[data-fr]');
+  if (fr) {
+    const st = fr.dataset.fr;
+    if (st === 'incoming') friendAction(u.uid, 'accept');
+    else if (st === 'outgoing') friendAction(u.uid, 'remove');
+    else { await friendAction(u.uid, 'add'); toast(`Pedido de amizade enviado para ${u.name}.`); }
+    return;
+  }
+  const b = e.target.closest('[data-fun]');
+  if (!b) return;
+  const kind = b.dataset.fun;
+  const r = await emitAck('fun', { to: volTarget, kind });
+  if (r?.wait) funReadyAt[kind] = Date.now() + r.wait * 1000;
+  if (r?.error && !r.wait) toast(r.error);
+  else if (r?.ok) toast(kind === 'tomato' ? `🍅 Tomate jogado em ${u.name}!` : `👊 Você chamou a atenção de ${u.name}!`);
+  renderVolFriend();
+});
+
+socket.on('fun', ({ kind, from }) => {
+  if (kind === 'tomato') {
+    throwTomato();
+    toast(`🍅 ${from} jogou um tomate em você!`);
+    notifyIfHidden('🍅 Tomatada!', `${from} jogou um tomate em você!`);
+    flashTitle(`🍅 ${from} te acertou!`);
+  } else {
+    nudge(from);
+    notifyIfHidden('👊 Toc toc!', `${from} está chamando sua atenção!`);
+    flashTitle(`👊 ${from} chamou você!`);
+  }
+});
+socket.on('fun-shown', ({ kind, from, to }) => {
+  toast(kind === 'tomato' ? `🍅 ${from} jogou um tomate em ${to}!` : `👊 ${from} está chamando a atenção de ${to}!`);
+});
+
+// O tomate voa de um canto, esborracha na tela e escorre devagar
+function throwTomato() {
+  const layer = $('#fun-layer');
+  const W = innerWidth, H = innerHeight;
+  const tx = W * (0.25 + Math.random() * 0.5), ty = H * (0.25 + Math.random() * 0.45);
+  const fromLeft = Math.random() < 0.5;
+  const t = document.createElement('img');
+  t.src = 'fx/tomate.svg';
+  t.className = 'fx-tomato';
+  t.style.left = `${fromLeft ? -120 : W + 20}px`;
+  t.style.top = `${H * (0.6 + Math.random() * 0.4)}px`;
+  layer.appendChild(t);
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    t.style.transform = `translate(${tx - (fromLeft ? -120 : W + 20) - 50}px, ${ty - parseFloat(t.style.top) - 50}px) rotate(${fromLeft ? 540 : -540}deg) scale(1.3)`;
+  }));
+  setTimeout(() => {
+    t.remove();
+    playSound('tomate', true);
+    const sp = document.createElement('img');
+    sp.src = 'fx/splat.svg';
+    sp.className = 'fx-splat';
+    const size = Math.min(W, H) * 0.42;
+    sp.style.width = sp.style.height = `${size}px`;
+    sp.style.left = `${tx - size / 2}px`;
+    sp.style.top = `${ty - size / 2}px`;
+    sp.style.setProperty('--rot', `${Math.round(Math.random() * 360)}deg`);
+    layer.appendChild(sp);
+    setTimeout(() => sp.classList.add('drip'), 900);
+    setTimeout(() => sp.remove(), 5200);
+  }, 520);
+}
+
+// Mão batendo "toc toc" e a tela tremendo (igual ao MSN)
+function nudge(from) {
+  const layer = $('#fun-layer');
+  const box = document.createElement('div');
+  box.className = 'fx-nudge';
+  box.innerHTML = `<img src="fx/mao.svg" alt=""><div class="fx-nudge-text"><b>${esc(from)}</b> está chamando sua atenção!</div>`;
+  layer.appendChild(box);
+  playSound('toctoc', true);
+  setTimeout(() => {
+    const app = document.querySelector('.app');
+    app.classList.remove('shake');
+    void app.offsetWidth;
+    app.classList.add('shake');
+    setTimeout(() => app.classList.remove('shake'), 650);
+  }, 780);
+  setTimeout(() => box.classList.add('out'), 2300);
+  setTimeout(() => box.remove(), 2700);
+}
+
+// Do cartão de um amigo na chamada: "Mandar mensagem"
+$('#vol-dm').onclick = () => {
+  const u = findUser(volTarget);
+  closeVolume();
+  if (u?.uid) setDmOpen(true, u.uid);
+};
 
 // ---------- Medidor da transmissão (FPS, resolução, atraso) ----------
 // Mostra em cada transmissão como ela está chegando de verdade, para saber
@@ -1311,6 +2316,10 @@ function applyMicState() {
 }
 
 function toggleMute() {
+  if (modMuted && (muted || deafened)) {
+    if (deafened) { deafened = false; playSound('fone-on'); applyVolumes(); renderControls(); }
+    return toast('🛡️ Um moderador fechou seu microfone. Só ele pode liberar.');
+  }
   if (deafened) { deafened = false; muted = false; playSound('fone-on'); }
   else { muted = !muted; playSound(muted ? 'mic-off' : 'mic-on'); }
   applyMicState();
@@ -1335,9 +2344,11 @@ const screenVolumeOf = (name) => (name in screenVolumes ? screenVolumes[name] : 
 function applyVolumes() {
   peers.forEach((p, id) => {
     const v = volumeOf(nameOf(id));
+    // Mutado por moderador: ninguém ouve o microfone dessa pessoa
+    const silenced = !!findUser(id)?.modMuted;
     p.audioEls.forEach((el) => {
       el.muted = deafened;
-      el.volume = el.dataset.kind === 'screen' ? screenVolumeOf(nameOf(id)) : v;
+      el.volume = el.dataset.kind === 'screen' ? screenVolumeOf(nameOf(id)) : (silenced ? 0 : v);
     });
   });
 }
@@ -1352,6 +2363,9 @@ function openVolume(id, anchor) {
   fillAvatar($('#vol-avatar'), u.name, u.avatar);
   $('#vol-name').textContent = `Volume de ${u.name}`;
   syncVolumeUI();
+  renderModTools(u);
+  $('#vol-dm').hidden = !u.uid || u.uid === me?.id;
+  renderVolFriend();
   pop.hidden = false;
   const r = anchor.getBoundingClientRect();
   const w = pop.offsetWidth, h = pop.offsetHeight;
@@ -1363,6 +2377,33 @@ function openVolume(id, anchor) {
   pop.style.left = `${left}px`;
   pop.style.top = `${top}px`;
 }
+// Botões de moderador dentro da janelinha de volume
+function renderModTools(u) {
+  const box = $('#mod-tools');
+  box.hidden = !canModerate(u);
+  if (box.hidden) return;
+  const b = (act, label, cls = '') => `<button class="btn small ${cls}" data-mod="${act}">${label}</button>`;
+  box.innerHTML = `<div class="mod-title">🛡️ Moderação</div><div class="mod-btns">
+    ${u.modMuted ? b('unmute', '🎙️ Liberar microfone', 'ok') : b('mute', '🔇 Fechar microfone')}
+    ${isSharing(u.id) ? b('stop-share', '⏹ Parar transmissão') : ''}
+    ${u.cam ? b('stop-cam', '📷 Desligar câmera') : ''}
+    ${b('kick', '🚪 Expulsar da chamada', 'danger')}
+    ${b('ban', '⛔ Banir', 'danger')}</div>`;
+}
+$('#mod-tools').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-mod]');
+  if (!btn || !volTarget) return;
+  const act = btn.dataset.mod, name = nameOf(volTarget);
+  if (act === 'ban' && !confirm(`Banir ${name}? A pessoa sai na hora e não consegue mais entrar.`)) return;
+  if (act === 'kick' && !confirm(`Expulsar ${name} da chamada?`)) return;
+  const r = await emitAck('mod-action', { action: act, id: volTarget });
+  if (r?.error) return toast(r.error);
+  const msg = { mute: `Microfone de ${name} fechado.`, unmute: `Microfone de ${name} liberado.`, 'stop-share': `Transmissão de ${name} parada.`,
+    'stop-cam': `Câmera de ${name} desligada.`, kick: `${name} foi expulso da chamada.`, ban: `${name} foi banido.` }[act];
+  toast(msg);
+  if (act === 'kick' || act === 'ban') closeVolume();
+});
+
 function syncVolumeUI() {
   const v = volumeOf(nameOf(volTarget));
   $('#vol-range').value = Math.round(v * 100);
@@ -1474,10 +2515,11 @@ function renderChannels() {
     el.innerHTML = `
       <div class="channel-row">
         <button class="channel-btn">${ICON.speaker}<span>${esc(ch.name)}</span><small>${ch.users.length}/${config.maxPerChannel}</small></button>
-        <button class="rename-btn" title="Trocar nome do canal">${ICON.pencil}</button>
+        ${isMod() ? `<button class="rename-btn" title="Trocar nome do canal">${ICON.pencil}</button>` : ''}
       </div>`;
     el.querySelector('.channel-btn').onclick = () => joinChannel(ch.id);
-    el.querySelector('.rename-btn').onclick = () => renameChannel(ch);
+    const rb = el.querySelector('.rename-btn');
+    if (rb) rb.onclick = () => renameChannel(ch);
 
     const ul = document.createElement('ul');
     ch.users.forEach((u) => {
@@ -1486,7 +2528,7 @@ function renderChannels() {
       li.dataset.uid = u.id;
       li.innerHTML = `
         ${avatarHTML(u)}
-        <span class="mname">${esc(u.name)}${u.id === selfId ? ' (você)' : ''}</span>
+        <span class="mname">${esc(u.name)}${u.id === selfId ? ' (você)' : ''}</span>${roleBadge(u.role)}
         ${(ch.sharers || [ch.sharer]).includes(u.id) ? '<span class="live">AO VIVO</span>' : ''}
         ${u.cam ? `<span class="cam-ico" title="Câmera ligada">${ICON.cam}</span>` : ''}
         ${u.muted ? `<span class="muted-ico">${ICON.micOff}</span>` : ''}`;
@@ -1516,7 +2558,8 @@ function renderMain() {
     t.dataset.uid = u.id;
     t.innerHTML = `
       ${cam ? '' : avatarHTML(u)}
-      <span class="tname">${u.muted ? ICON.micOff : ''}${esc(u.name)}${isMe ? ' (você)' : ''}</span>
+      <span class="tname">${u.muted ? ICON.micOff : ''}${esc(u.name)}${isMe ? ' (você)' : ''}${roleBadge(u.role)}</span>
+      ${u.modMuted ? '<span class="modmute-badge" title="Microfone fechado por um moderador">🔇 mutado</span>' : ''}
       ${isSharing(u.id) ? '<span class="live">AO VIVO</span>' : ''}
       ${!isMe && isSharing(u.id) ? `<button class="watch-btn ${watching.has(u.id) ? 'on' : ''}">${watching.has(u.id) ? 'Assistindo' : 'Assistir'}</button>` : ''}
       ${!isMe && vol !== 1 ? `<span class="vol-badge">${vol === 0 ? 'Silenciado' : Math.round(vol * 100) + '%'}</span>` : ''}`;
@@ -1562,6 +2605,20 @@ function renderControls() {
   bs.disabled = !navigator.mediaDevices?.getDisplayMedia;
   bs.classList.toggle('active', !!screenStream);
   bs.querySelector('.label').textContent = screenStream ? 'Parar transmissão' : 'Compartilhar tela';
+
+  // Botões da tela cheia (microfone e fone)
+  document.querySelectorAll('.fs-mic').forEach((b) => {
+    const off = muted || deafened;
+    b.innerHTML = off ? ICON.micOff : ICON.mic;
+    b.classList.toggle('off', off);
+    b.title = modMuted ? 'Microfone fechado por um moderador' : off ? 'Abrir microfone' : 'Fechar microfone';
+  });
+  document.querySelectorAll('.fs-deaf').forEach((b) => {
+    b.innerHTML = deafened ? ICON.headOff : ICON.head;
+    b.classList.toggle('off', deafened);
+    b.title = deafened ? 'Voltar a ouvir' : 'Desligar o som';
+  });
+  bm.title = modMuted ? 'Microfone fechado por um moderador' : bm.title;
 
   const bc = $('#btn-cam');
   bc.disabled = !navigator.mediaDevices?.getUserMedia;
