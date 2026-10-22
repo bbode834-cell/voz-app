@@ -3,6 +3,15 @@
 // Ideal para grupos pequenos (até 6) com uma transmissão de tela por vez.
 
 const $ = (s) => document.querySelector(s);
+
+// ---------- Abertura (logo + fone caindo na coroa) ----------
+(function intro() {
+  const el = document.getElementById('intro');
+  if (!el) return;
+  const end = () => { el.classList.add('out'); setTimeout(() => el.remove(), 450); };
+  const t = setTimeout(end, 2100);
+  el.addEventListener('click', () => { clearTimeout(t); end(); });
+})();
 // Só conecta depois do login (o servidor confere o "crachá" de acesso)
 let authToken = null;
 const socket = io({ autoConnect: false, auth: (cb) => cb({ token: authToken }) });
