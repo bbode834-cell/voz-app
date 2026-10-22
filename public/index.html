@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>King Launcher</title>
   <link rel="icon" href="logo-fone.svg" />
-  <link rel="stylesheet" href="style.css?v=151" />
+  <link rel="stylesheet" href="style.css?v=153" />
 </head>
 <body>
   <!-- Abertura: a logo parada e o fone caindo em cima da coroa (clique para pular) -->
@@ -35,6 +35,7 @@
       </div>
       <label class="field-label" for="auth-pass">Senha</label>
       <input id="auth-pass" type="password" minlength="6" autocomplete="current-password" placeholder="Mínimo 6 caracteres" required />
+      <label class="remember-row"><input type="checkbox" id="auth-remember" /> Lembrar usuário e senha</label>
       <p id="auth-msg" class="auth-msg" hidden></p>
       <button type="submit" id="auth-submit" class="btn primary">Entrar</button>
       <p id="auth-hint" class="auth-hint">Ainda não tem conta? Toque em <b>Criar conta</b>. O dono precisa aprovar antes do primeiro acesso.</p>
@@ -280,8 +281,18 @@
   <div id="toast" class="toast" role="status"></div>
 
   <input id="photo-input" type="file" accept="image/*" hidden />
+  <!-- Recorte da foto de perfil -->
+  <div id="crop" class="modal crop-modal" hidden>
+    <div class="modal-card crop-card">
+      <h3>Ajustar foto de perfil</h3>
+      <canvas id="crop-cv" width="300" height="300"></canvas>
+      <input type="range" id="crop-zoom" min="1" max="4" step="0.01" value="1" aria-label="Aproximar" />
+      <small>Arraste a foto para posicionar · use a barra (ou a rodinha do mouse) para aproximar</small>
+      <div class="crop-actions"><button type="button" id="crop-cancel" class="btn">Cancelar</button><button type="button" id="crop-ok" class="btn primary">Usar foto</button></div>
+    </div>
+  </div>
   <div id="photo-view" class="photo-view" hidden><img alt="Foto" /></div>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=151"></script>
+  <script src="app.js?v=153"></script>
 </body>
 </html>

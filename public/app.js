@@ -294,7 +294,17 @@ function authMsg(text, kind = 'error') {
   el.className = 'auth-msg ' + kind;
 }
 
+// "Lembrar usuário e senha" (fica guardado só neste navegador)
+function fillRemembered() {
+  const saved = store.get('voz-lembrar', null);
+  $('#auth-remember').checked = !!saved;
+  if (saved) {
+    if (!$('#auth-user').value) $('#auth-user').value = saved.u || '';
+    if (!$('#auth-pass').value && $('#auth-user').value === saved.u) $('#auth-pass').value = saved.p || '';
+  }
+}
 function showAuth(msg, kind) {
+  fillRemembered();
   $('#auth').hidden = false;
   $('#settings').hidden = true;
   if (msg) authMsg(msg, kind);
@@ -328,6 +338,7 @@ $('#auth-form').addEventListener('submit', async (e) => {
     } else {
       const r = await api('/api/login', { username, password });
       if (r.error) return authMsg(r.error, r.httpStatus === 403 ? 'wait' : 'error');
+      store.set('voz-lembrar', $('#auth-remember').checked ? { u: username, p: password } : null);
       startSession(r.token, r.user, false);
     }
   } catch {
@@ -390,14 +401,20 @@ socket.on('me', (u) => {
 // Ao abrir: se já entrou antes, continua logado
 (async function boot() {
   if (!authToken) return showAuth();
-  try {
-    const r = await api('/api/me');
-    if (r.user) return startSession(authToken, r.user, false);
-    authToken = null;
-    store.set('voz-token', null);
-    showAuth(r.error, r.status === 'pending' ? 'wait' : 'error');
-  } catch {
-    showAuth('Não consegui falar com o servidor. Ele pode estar acordando: tente entrar em alguns segundos.');
+  // Só pede login de novo se o servidor disser que o acesso acabou.
+  // Servidor acordando ou internet caindo: espera e tenta de novo sozinho.
+  for (let i = 0; ; i++) {
+    try {
+      const r = await api('/api/me');
+      if (r.user) return startSession(authToken, r.user, false);
+      if (r.httpStatus === 401 || r.httpStatus === 403) {
+        authToken = null;
+        store.set('voz-token', null);
+        return showAuth(r.error, r.status === 'pending' ? 'wait' : 'error');
+      }
+    } catch {}
+    if (i === 0) toast('Conectando ao servidor… (se ninguém usou nos últimos minutos, leva até 1 minuto)');
+    await new Promise((ok) => setTimeout(ok, 4000));
   }
 })();
 
@@ -467,31 +484,89 @@ $('#file-input').addEventListener('change', async (e) => {
   e.target.value = '';
   if (!file) return;
   try {
-    draftAvatar = await shrinkImage(file, 96);
+    const out = await cropImage(file);
+    if (!out) return;
+    draftAvatar = out;
     renderAvatarGrid();
     updatePreview();
+    toast('Foto pronta! Clique em "Salvar nome e avatar".');
   } catch {
-    toast('Não consegui abrir essa imagem.');
+    toast('Não consegui abrir essa imagem. Tente uma foto JPG ou PNG.');
   }
 });
 
-// Reduz a foto para um quadradinho de 96px (fica leve para mandar aos amigos)
-function shrinkImage(file, size) {
+// Recorte da foto de perfil: arraste para posicionar e use a barra (ou a rodinha) para aproximar
+function cropImage(file) {
   return new Promise((resolve, reject) => {
-    const img = new Image();
     const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('img')); };
     img.onload = () => {
-      const c = document.createElement('canvas');
-      c.width = c.height = size;
-      const g = c.getContext('2d');
-      const s = Math.min(img.width, img.height);
-      g.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size);
       URL.revokeObjectURL(url);
-      let q = 0.85, out = c.toDataURL('image/jpeg', q);
-      while (out.length > 38000 && q > 0.3) { q -= 0.15; out = c.toDataURL('image/jpeg', q); }
-      resolve(out);
+      const box = $('#crop'), cv = $('#crop-cv'), zoom = $('#crop-zoom');
+      const S = cv.width; // área de recorte (quadrada), o círculo mostra como vai ficar
+      const base = S / Math.min(img.width, img.height);
+      let z = 1, cx = img.width / 2, cy = img.height / 2; // centro da foto que fica no meio
+      zoom.value = '1';
+      const clamp = () => {
+        const half = S / 2 / (base * z);
+        cx = Math.min(img.width - half, Math.max(half, cx));
+        cy = Math.min(img.height - half, Math.max(half, cy));
+      };
+      const paint = (g, size) => {
+        const k = (base * z * size) / S;
+        g.drawImage(img, size / 2 - cx * k, size / 2 - cy * k, img.width * k, img.height * k);
+      };
+      const draw = () => {
+        clamp();
+        const g = cv.getContext('2d');
+        g.clearRect(0, 0, S, S);
+        paint(g, S);
+        g.fillStyle = 'rgba(0,0,0,.55)';
+        g.beginPath();
+        g.rect(0, 0, S, S);
+        g.arc(S / 2, S / 2, S / 2 - 2, 0, Math.PI * 2, true);
+        g.fill('evenodd');
+        g.strokeStyle = 'rgba(255,255,255,.9)';
+        g.lineWidth = 2;
+        g.beginPath();
+        g.arc(S / 2, S / 2, S / 2 - 2, 0, Math.PI * 2);
+        g.stroke();
+      };
+      let drag = null;
+      cv.onpointerdown = (e) => { drag = { x: e.clientX, y: e.clientY }; cv.setPointerCapture(e.pointerId); };
+      cv.onpointermove = (e) => {
+        if (!drag) return;
+        const r = cv.getBoundingClientRect(), k = (S / r.width) / (base * z);
+        cx -= (e.clientX - drag.x) * k;
+        cy -= (e.clientY - drag.y) * k;
+        drag = { x: e.clientX, y: e.clientY };
+        draw();
+      };
+      cv.onpointerup = cv.onpointercancel = () => { drag = null; };
+      cv.onwheel = (e) => {
+        e.preventDefault();
+        z = Math.min(4, Math.max(1, z * (e.deltaY < 0 ? 1.08 : 1 / 1.08)));
+        zoom.value = String(z);
+        draw();
+      };
+      zoom.oninput = () => { z = Number(zoom.value); draw(); };
+      const close = (val) => { box.hidden = true; resolve(val); };
+      $('#crop-cancel').onclick = () => close(null);
+      $('#crop-ok').onclick = () => {
+        const c = document.createElement('canvas');
+        c.width = c.height = 128;
+        const g = c.getContext('2d');
+        g.fillStyle = '#fff';
+        g.fillRect(0, 0, 128, 128);
+        paint(g, 128);
+        let q = 0.88, out = c.toDataURL('image/jpeg', q);
+        while (out.length > 38000 && q > 0.3) { q -= 0.12; out = c.toDataURL('image/jpeg', q); }
+        close(out);
+      };
+      box.hidden = false;
+      draw();
     };
-    img.onerror = () => { URL.revokeObjectURL(url); reject(); };
     img.src = url;
   });
 }
@@ -1639,7 +1714,7 @@ const msgPreview = (t) => (isAud(t) ? `🎤 Áudio (${fmtSec(Number(String(t).tr
 
 // ---------- Mandar fotos (chat da chamada e mensagens diretas) ----------
 // A foto é diminuída aqui mesmo (no máximo 1600 px) antes de subir para o servidor
-function shrinkImage(file) {
+function shrinkPhoto(file) {
   return new Promise((resolve, reject) => {
     // GIF animado vai do jeito que está (se não for enorme)
     if (file.type === 'image/gif' && file.size < 2.5 * 1024 * 1024) return resolve(file);
@@ -1787,7 +1862,7 @@ async function sendPhoto(file, where) {
   photoBusy = true;
   document.querySelectorAll('.photo-btn').forEach((b) => b.classList.add('busy'));
   try {
-    const blob = await shrinkImage(file);
+    const blob = await shrinkPhoto(file);
     const id = await uploadMedia(blob);
     if (id) await sendMediaText(`img:${id}`, where, dmTo);
   } catch {
@@ -3202,7 +3277,8 @@ function renderMain() {
     const isMe = u.id === selfId;
     const vol = volumeOf(u.name);
     const t = document.createElement('div');
-    const cam = camOf(u.id);
+    // Transmitindo a tela: a câmera aparece só dentro da transmissão (não repete no quadradinho)
+    const cam = isSharing(u.id) ? null : camOf(u.id);
     t.className = 'tile' + (speaking.has(u.id) ? ' speaking' : '') + (isMe ? '' : ' clickable') + (cam ? ' has-cam' : '');
     t.dataset.uid = u.id;
     t.innerHTML = `

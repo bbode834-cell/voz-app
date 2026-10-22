@@ -797,3 +797,14 @@ body.dm-open .main { margin-right: 340px; }
 @keyframes intro-glow { 0% { opacity: 0; transform: translate(-50%, -50%) scale(.4); } 25% { opacity: 1; }
   100% { opacity: 0; transform: translate(-50%, -50%) scale(1.5); } }
 @media (prefers-reduced-motion: reduce) { .intro-fone, .intro-logo, .intro-glow { animation-duration: .01s !important; animation-delay: 0s !important; } }
+
+/* ---------- Recorte da foto e "lembrar senha" ---------- */
+.crop-modal { z-index: 60; }
+.crop-card h3 { margin: 0; color: var(--text-strong); text-align: center; }
+#crop-cv { width: min(300px, 100%); aspect-ratio: 1; margin: 0 auto; display: block; border-radius: 10px; background: var(--bg); cursor: grab; touch-action: none; }
+#crop-cv:active { cursor: grabbing; }
+#crop-zoom { width: 100%; accent-color: var(--accent); padding: 0; border: 0; background: none; }
+.crop-card small { color: var(--muted); text-align: center; }
+.crop-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.remember-row { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 14px; cursor: pointer; user-select: none; }
+.remember-row input { width: 16px; height: 16px; accent-color: var(--accent); margin: 0; padding: 0; flex: none; }
