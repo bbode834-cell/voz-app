@@ -547,10 +547,83 @@ function djResume() {
   djArmTimer();
 }
 
+// ---------- 📺 TV King: bot de TV ao vivo ----------
+// Lista pública de canais (projeto IPTV-org, a mesma fonte de sites como o Famelack).
+// Cada aparelho toca o canal escolhido; o servidor só guarda qual canal está ligado.
+const IPTV = 'https://iptv-org.github.io/api';
+const tvCat = { at: 0, items: [], byId: new Map(), carregando: null };
+async function carregaTv() {
+  if (tvCat.carregando) return tvCat.carregando;
+  tvCat.carregando = (async () => {
+    try {
+      const [chs, sts, logos] = await Promise.all([fetchJson(`${IPTV}/channels.json`), fetchJson(`${IPTV}/streams.json`), fetchJson(`${IPTV}/logos.json`).catch(() => [])]);
+      const logo = new Map();
+      for (const l of logos) if (l.channel && !l.feed && /^https:/.test(l.url || '') && !logo.has(l.channel)) logo.set(l.channel, l.url);
+      const chMap = new Map(chs.filter((c) => !c.is_nsfw && !c.closed).map((c) => [c.id, c]));
+      const items = new Map();
+      for (const st of sts) {
+        if (!st.channel || !/^https:\/\//i.test(st.url || '')) continue;
+        if (st.user_agent || st.referrer) continue; // precisa de cabeçalho especial: o navegador não consegue
+        const c = chMap.get(st.channel);
+        if (!c) continue;
+        const prev = items.get(c.id);
+        if (prev && prev.q >= qual(st.quality)) continue;
+        items.set(c.id, { id: c.id, name: c.name, country: c.country || '', cats: c.categories || [], logo: logo.get(c.id) || '', url: st.url, q: qual(st.quality), web: prev?.web ?? null });
+      }
+      const antigo = tvCat.byId;
+      const lista = [...items.values()].map((i) => ({ ...i, web: antigo.get(i.id)?.web ?? null }));
+      const peso = (cc) => (cc === 'BR' ? 0 : cc === 'PT' ? 1 : 2);
+      lista.sort((a, b) => peso(a.country) - peso(b.country) || a.country.localeCompare(b.country) || a.name.localeCompare(b.name));
+      tvCat.items = lista;
+      tvCat.byId = new Map(lista.map((i) => [i.id, i]));
+      tvCat.at = Date.now();
+      console.log(`TV: ${lista.length} canais (${lista.filter((i) => i.country === 'BR').length} do Brasil)`);
+      checaTvWeb().catch(() => {});
+    } catch (e) {
+      console.error('TV lista:', e.message);
+    } finally {
+      tvCat.carregando = null;
+    }
+  })();
+  return tvCat.carregando;
+}
+function qual(q) { const n = parseInt(q || '0', 10); return Number.isFinite(n) ? n : 0; }
+// Confere quais canais do Brasil tocam dentro do navegador (precisam liberar "CORS"); no app todos tentam
+async function checaTvWeb() {
+  const alvo = tvCat.items.filter((i) => i.country === 'BR' && i.web == null);
+  let k = 0;
+  async function worker() {
+    while (k < alvo.length) {
+      const it = alvo[k++];
+      try {
+        const ctl = new AbortController();
+        const t = setTimeout(() => ctl.abort(), 8000);
+        const r = await fetch(it.url, { method: 'GET', headers: { Origin: 'https://king-laucher.onrender.com', 'User-Agent': 'Mozilla/5.0' }, signal: ctl.signal, redirect: 'follow' });
+        clearTimeout(t);
+        try { ctl.abort(); } catch {}
+        it.web = r.ok && !!r.headers.get('access-control-allow-origin');
+      } catch {
+        it.web = false;
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: 8 }, worker));
+  console.log(`TV: ${tvCat.items.filter((i) => i.web).length} canais do Brasil tocam no navegador`);
+}
+const tvPublicItem = (i) => ({ id: i.id, name: i.name, country: i.country, cats: i.cats, logo: i.logo, url: i.url, web: i.web });
+setTimeout(() => carregaTv(), 3000);
+setInterval(() => carregaTv(), 12 * 60 * 60 * 1000);
+
+const tv = { id: 'bot-tv', name: 'TV King', avatar: 'p:tv', room: null, channel: null, since: 0 };
+function tvPublic() { return { id: tv.id, name: tv.name, avatar: tv.avatar, room: tv.room }; }
+function tvState() { return { id: tv.id, name: tv.name, avatar: tv.avatar, room: tv.room, channel: tv.channel ? tvPublicItem(tv.channel) : null, since: tv.since, serverNow: Date.now() }; }
+function broadcastTv() { io.emit('tv', tvState()); }
+
 function snapshot() {
   return {
     namesVersion,
     bot: djPublic(),
+    bots: [djPublic(), tvPublic()],
     channels: channels.map((c) => ({
       id: c.id,
       name: c.name,
@@ -580,6 +653,10 @@ function leave(socket) {
     dj.room = null;
     djPause();
     broadcastDj();
+  }
+  if (tv.room === ch.id && ch.users.size === 0) {
+    tv.room = null;
+    broadcastTv();
   }
   broadcastChannels();
 }
@@ -989,6 +1066,69 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ---------- 📺 TV King ----------
+  socket.emit('tv', tvState());
+  const podeTv = () => isMod() || (socket.data.channel && socket.data.channel === tv.room);
+  socket.on('tv-move', ({ to } = {}, ack = () => {}) => {
+    if (to === BOTS_ROOM || to == null) {
+      if (!podeTv() && tv.room) return ack({ error: 'Só quem está na chamada com a TV pode devolver ela.' });
+      const from = tv.room;
+      tv.room = null;
+      ack({ ok: true });
+      broadcastChannels();
+      broadcastTv();
+      if (from) io.to(from).emit('dj-info', { text: `📺 ${me().name} devolveu a TV King para a sala Bots.` });
+      return;
+    }
+    const ch = byId(to);
+    if (!ch) return ack({ error: 'Sala não encontrada.' });
+    if (socket.data.channel !== ch.id && !isMod()) return ack({ error: 'Entre na chamada primeiro e puxe a TV para ela.' });
+    const from = tv.room;
+    tv.room = ch.id;
+    ack({ ok: true });
+    broadcastChannels();
+    broadcastTv();
+    if (from && from !== ch.id) io.to(from).emit('dj-info', { text: `📺 ${me().name} levou a TV King para a sala ${ch.name}.` });
+    socket.to(ch.id).emit('dj-info', { text: `📺 ${me().name} chamou a TV King para a chamada.` });
+  });
+  // Lista de canais: { q, country } → até 150 (países: lista de códigos com quantidade)
+  socket.on('tv-list', async ({ q, country } = {}, ack = () => {}) => {
+    try {
+      if (!tvCat.items.length) await carregaTv();
+      const ql = String(q || '').trim().toLowerCase().slice(0, 40);
+      const cc = String(country || '').toUpperCase().slice(0, 2);
+      let lista = tvCat.items;
+      if (cc) lista = lista.filter((i) => i.country === cc);
+      if (ql) lista = lista.filter((i) => i.name.toLowerCase().includes(ql));
+      const paises = {};
+      for (const i of tvCat.items) paises[i.country] = (paises[i.country] || 0) + 1;
+      ack({ ok: true, total: lista.length, items: lista.slice(0, 150).map(tvPublicItem), countries: paises });
+    } catch (e) {
+      ack({ error: 'Não consegui carregar a lista de canais agora.' });
+    }
+  });
+  socket.on('tv-set', ({ id } = {}, ack = () => {}) => {
+    if (!podeTv()) return ack({ error: 'Puxe a TV King para a sua chamada primeiro.' });
+    const it = tvCat.byId.get(String(id || ''));
+    if (!it) return ack({ error: 'Canal não encontrado.' });
+    tv.channel = it;
+    tv.since = Date.now();
+    ack({ ok: true });
+    broadcastTv();
+    if (tv.room) io.to(tv.room).emit('dj-info', { text: `📺 ${me().name} colocou no canal ${it.name}.` });
+  });
+  socket.on('tv-off', (_d, ack = () => {}) => {
+    if (!podeTv()) return ack({ error: 'Só quem está na chamada com a TV pode desligar.' });
+    tv.channel = null;
+    ack({ ok: true });
+    broadcastTv();
+  });
+  // Um aparelho não conseguiu abrir o canal no navegador: anota para avisar os outros
+  socket.on('tv-fail', ({ id } = {}) => {
+    const it = tvCat.byId.get(String(id || ''));
+    if (it && it.web == null) { it.web = false; }
+  });
+
   // Criar uma sala nova
   socket.on('create-channel', ({ name } = {}, ack = () => {}) => {
     if (!isMod()) return ack({ error: 'Só o dono e os moderadores podem criar salas.' });
@@ -1019,6 +1159,7 @@ io.on('connection', (socket) => {
     }
     channels.splice(channels.indexOf(ch), 1);
     if (dj.room === ch.id) { dj.room = null; djPause(); broadcastDj(); }
+    if (tv.room === ch.id) { tv.room = null; broadcastTv(); }
     namesVersion = Date.now();
     ack({ ok: true });
     broadcastChannels();

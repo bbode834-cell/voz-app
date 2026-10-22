@@ -766,7 +766,7 @@ async function joinChannel(id) {
 
     currentChannel = id;
     selfId = res.selfId;
-    setTimeout(() => { syncDjAudio(); renderDj(); }, 0);
+    setTimeout(() => { syncDjAudio(); renderDj(); syncTv(); renderTv(); }, 0);
     modMuted = !!res.modMuted;
     if (modMuted) { muted = true; applyMicState(); }
     chatMsgs = Array.isArray(res.chat) ? res.chat.slice() : [];
@@ -795,7 +795,7 @@ function leaveChannel(switching = false) {
   if (!switching) { stopMic(); soundLeave(); }
   unwatchSpeaking(selfId);
   currentChannel = null;
-  setTimeout(() => { syncDjAudio(); renderDj(); }, 0);
+  setTimeout(() => { syncDjAudio(); renderDj(); syncTv(); renderTv(); }, 0);
   watching.clear();
   renderScreens();
   closeVolume();
@@ -1583,7 +1583,7 @@ socket.on('disconnect', () => {
     [...peers.keys()].forEach(closePeer);
     stopMic();
     currentChannel = null;
-    setTimeout(() => { syncDjAudio(); renderDj(); }, 0);
+    setTimeout(() => { syncDjAudio(); renderDj(); syncTv(); renderTv(); }, 0);
     watching.clear();
     renderScreens();
     closeVolume();
@@ -1901,6 +1901,7 @@ function syncDjAudio() {
   }
   djAudio.volume = djVolume;
   djAudio.muted = deafened || djMuted;
+  tvVideo.muted = deafened || tvMuted;
   if (n.pausedAt) { djAudio.pause(); return; }
   if (!n.live) {
     const want = djPos();
@@ -2288,6 +2289,155 @@ $('#dj-file').addEventListener('change', async (e) => {
     btn.disabled = false;
     btn.textContent = '⬆️ Enviar MP3';
   }
+});
+
+// ---------- 📺 TV King (bot de TV ao vivo) ----------
+let tv = null;
+let tvVolume = store.get('voz-tv-vol', 0.7);
+let tvMuted = !!store.get('voz-tv-mute', false);
+let hlsObj = null;
+let tvLoadedId = '';
+let tvFailed = false;
+let tvMediaErr = 0;
+const tvVideo = $('#tv-video');
+const tvHere = () => !!(tv && currentChannel && tv.room === currentChannel);
+const flag = (cc) => (cc && cc.length === 2 ? String.fromCodePoint(...[...cc.toUpperCase()].map((c) => 0x1f1a5 + c.charCodeAt(0))) : '🌐');
+const PAISES = { BR: 'Brasil', PT: 'Portugal', US: 'Estados Unidos', AR: 'Argentina', ES: 'Espanha', IT: 'Itália', FR: 'França', DE: 'Alemanha', GB: 'Reino Unido', MX: 'México', JP: 'Japão', KR: 'Coreia do Sul', CL: 'Chile', CO: 'Colômbia', UY: 'Uruguai', PY: 'Paraguai', CA: 'Canadá', AO: 'Angola', MZ: 'Moçambique', RU: 'Rússia', CN: 'China', IN: 'Índia', TR: 'Turquia', NL: 'Holanda', BE: 'Bélgica', CH: 'Suíça', AU: 'Austrália', PE: 'Peru', VE: 'Venezuela', BO: 'Bolívia', EC: 'Equador', CU: 'Cuba', DO: 'Rep. Dominicana', SA: 'Arábia Saudita', AE: 'Emirados Árabes', EG: 'Egito', ZA: 'África do Sul', GR: 'Grécia', PL: 'Polônia', SE: 'Suécia', NO: 'Noruega', DK: 'Dinamarca', FI: 'Finlândia', IE: 'Irlanda', AT: 'Áustria', CZ: 'Tchéquia', RO: 'Romênia', HU: 'Hungria', UA: 'Ucrânia', IL: 'Israel', ID: 'Indonésia', TH: 'Tailândia', PH: 'Filipinas', VN: 'Vietnã', MY: 'Malásia', TW: 'Taiwan', HK: 'Hong Kong', NG: 'Nigéria', KE: 'Quênia', MA: 'Marrocos', PK: 'Paquistão', IR: 'Irã', IQ: 'Iraque', QA: 'Catar' };
+const nomePais = (cc) => PAISES[cc] || cc || 'Outros';
+
+socket.on('tv', (st) => {
+  tv = st;
+  syncTv();
+  renderTv();
+  renderChannels();
+});
+
+function loadHls() {
+  if (window.Hls) return Promise.resolve();
+  if (!loadHls.p) loadHls.p = new Promise((ok, bad) => { const sc = document.createElement('script'); sc.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js'; sc.onload = ok; sc.onerror = bad; document.head.appendChild(sc); });
+  return loadHls.p;
+}
+function tvStop() {
+  if (hlsObj) { try { hlsObj.destroy(); } catch {} hlsObj = null; }
+  if (tvVideo.src || tvLoadedId) { tvVideo.pause(); tvVideo.removeAttribute('src'); tvVideo.load(); }
+  tvLoadedId = '';
+}
+function tvErro(msg) {
+  tvFailed = true;
+  $('#tv-msg').textContent = msg;
+  $('#tv-msg').hidden = false;
+  if (tv?.channel) socket.emit('tv-fail', { id: tv.channel.id });
+}
+async function syncTv() {
+  const c = tvHere() ? tv?.channel : null;
+  if (!c) { tvStop(); return; }
+  tvVideo.volume = tvVolume;
+  tvVideo.muted = deafened || tvMuted;
+  if (tvLoadedId === c.id) { if (tvVideo.paused && !tvFailed) tvVideo.play().catch(() => {}); return; }
+  tvStop();
+  tvLoadedId = c.id;
+  tvFailed = false;
+  tvMediaErr = 0;
+  $('#tv-msg').hidden = true;
+  try {
+    if (tvVideo.canPlayType('application/vnd.apple.mpegurl')) {
+      tvVideo.src = c.url;
+    } else {
+      await loadHls();
+      if (tvLoadedId !== c.id) return;
+      if (!Hls.isSupported()) return tvErro('Este navegador não consegue tocar TV ao vivo.');
+      hlsObj = new Hls({ enableWorker: true, lowLatencyMode: false, liveSyncDurationCount: 3 });
+      hlsObj.on(Hls.Events.ERROR, (_e, data) => {
+        if (!data.fatal) return;
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR && data.details === 'manifestLoadError') tvErro('Esse canal não toca no navegador (bloqueia sites). Tente pelo celular ou escolha outro.');
+        else if (data.type === Hls.ErrorTypes.NETWORK_ERROR) { try { hlsObj.startLoad(); } catch {} }
+        else if (data.details === 'manifestIncompatibleCodecsError') tvErro('Esse canal usa um formato de vídeo que este computador não reproduz (HEVC). Tente pelo celular ou escolha outro.');
+        else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) { if (++tvMediaErr > 4) tvErro('Este navegador não consegue reproduzir o vídeo desse canal. Tente pelo celular ou escolha outro.'); else { try { hlsObj.recoverMediaError(); } catch {} } }
+        else tvErro('Esse canal não está abrindo agora. Escolha outro.');
+      });
+      hlsObj.loadSource(c.url);
+      hlsObj.attachMedia(tvVideo);
+    }
+    tvVideo.play().catch(() => {});
+  } catch (e) {
+    tvErro('Não consegui abrir esse canal.');
+  }
+}
+tvVideo.addEventListener('error', () => { if (tvLoadedId && !hlsObj) tvErro('Esse canal não toca no navegador. Tente pelo celular ou escolha outro.'); });
+// O navegador só libera som/vídeo depois de um clique
+document.addEventListener('click', () => { if (tvHere() && tv?.channel && tvVideo.paused && !tvFailed) tvVideo.play().catch(() => {}); }, { capture: true });
+
+async function tvMove(to) {
+  if (!to) return toast('Entre numa sala primeiro, depois chame a TV.');
+  const r = await emitAck('tv-move', { to });
+  if (r?.error) toast(r.error);
+}
+const TV_MIN = 'voz-tv-min';
+function renderTv() {
+  const panel = $('#tv-panel');
+  const call = $('#btn-tv');
+  if (!tv || !currentChannel) { panel.hidden = true; call.hidden = true; return; }
+  const here = tvHere();
+  call.hidden = here;
+  panel.hidden = !here;
+  if (!here) return;
+  const min = !!store.get(TV_MIN, false);
+  panel.classList.toggle('min', min);
+  $('#tv-min').textContent = min ? '⤢' : '▁';
+  $('#tv-min').title = min ? 'Abrir o painel da TV' : 'Minimizar o painel da TV';
+  const c = tv.channel;
+  $('#tv-now').innerHTML = c
+    ? `${c.logo ? `<img class="dj-art tv-logo" src="${esc(c.logo)}" alt="">` : '<span class="dj-art dj-art-empty">📺</span>'}<div class="dj-meta"><strong>${esc(c.name)}</strong><small>${flag(c.country)} ${esc(nomePais(c.country))}${c.cats?.length ? ' · ' + esc(c.cats.join(', ')) : ''} · ● AO VIVO</small></div>`
+    : `<span class="dj-art dj-art-empty">📺</span><div class="dj-meta"><strong>Nenhum canal ligado</strong><small>Toque em "Canais" para escolher.</small></div>`;
+  $('#tv-mini-now').textContent = c ? `· ${c.name}` : '· desligada';
+  $('#tv-off').hidden = !c;
+  $('#tv-video-wrap').hidden = !c;
+  $('#tv-vol').value = Math.round(tvVolume * 100);
+  document.querySelectorAll('.tv-mute').forEach((b) => { b.textContent = tvMuted ? '🔇' : '🔊'; b.classList.toggle('on', tvMuted); b.title = tvMuted ? 'Ligar o som da TV (só para você)' : 'Silenciar a TV (só para você)'; });
+}
+$('#btn-tv').onclick = () => tvMove(currentChannel);
+$('#tv-back').onclick = () => tvMove('bots');
+$('#tv-off').onclick = async () => { const r = await emitAck('tv-off', {}); if (r?.error) toast(r.error); };
+$('#tv-min').onclick = () => { store.set(TV_MIN, !store.get(TV_MIN, false)); renderTv(); };
+$('#tv-vol').addEventListener('input', (e) => { tvVolume = Number(e.target.value) / 100; store.set('voz-tv-vol', tvVolume); tvVideo.volume = tvVolume; });
+document.querySelectorAll('.tv-mute').forEach((b) => (b.onclick = () => { tvMuted = !tvMuted; store.set('voz-tv-mute', tvMuted); tvVideo.muted = deafened || tvMuted; renderTv(); }));
+
+// ----- Escolher canal -----
+let tvCountry = 'BR';
+let tvListTimer = null;
+function openTvPick() { $('#tv-pick').hidden = false; setTimeout(() => $('#tv-q').focus(), 30); tvList(); }
+$('#tv-channels').onclick = openTvPick;
+$('#tv-pick-close').onclick = () => { $('#tv-pick').hidden = true; };
+$('#tv-q').addEventListener('input', () => { clearTimeout(tvListTimer); tvListTimer = setTimeout(tvList, 300); });
+$('#tv-country').addEventListener('change', (e) => { tvCountry = e.target.value; tvList(); });
+async function tvList() {
+  const box = $('#tv-results');
+  box.innerHTML = '<div class="chat-empty">Carregando canais…</div>';
+  const q = $('#tv-q').value.trim();
+  const r = await emitAck('tv-list', { q, country: q ? '' : tvCountry });
+  if (r?.error) { box.innerHTML = `<div class="chat-empty">${esc(r.error)}</div>`; return; }
+  const sel = $('#tv-country');
+  if (r.countries && sel.options.length <= 1) {
+    const cods = Object.keys(r.countries).sort((a, b) => (a === 'BR' ? -1 : b === 'BR' ? 1 : (a === 'PT' ? -1 : b === 'PT' ? 1 : nomePais(a).localeCompare(nomePais(b)))));
+    sel.innerHTML = cods.map((c) => `<option value="${c}">${flag(c)} ${esc(nomePais(c))} (${r.countries[c]})</option>`).join('');
+    sel.value = tvCountry;
+  }
+  const items = r.items || [];
+  if (!items.length) { box.innerHTML = '<div class="chat-empty">Nenhum canal encontrado.</div>'; return; }
+  box.innerHTML = items.map((c, i) => `<div class="dj-res tv-res ${c.web === false ? 'tv-only-app' : ''}" data-i="${i}">
+      ${c.logo ? `<img class="dj-art tv-logo" src="${esc(c.logo)}" alt="" loading="lazy">` : '<span class="dj-art dj-art-empty">📺</span>'}
+      <span class="dj-meta"><strong>${esc(c.name)}</strong><small>${flag(c.country)} ${esc(nomePais(c.country))}${c.cats?.length ? ' · ' + esc(c.cats.slice(0, 2).join(', ')) : ''}${c.web === false ? ' · <b>só no celular</b>' : c.web ? ' · ✓ PC' : ''}</small></span>
+      <button type="button" class="btn small primary" data-tv="${i}">Assistir</button></div>`).join('') + (r.total > items.length ? `<div class="chat-empty">Mostrando ${items.length} de ${r.total}. Digite para procurar.</div>` : '');
+  box._items = items;
+}
+$('#tv-results').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-tv]');
+  if (!b) return;
+  const c = $('#tv-results')._items?.[Number(b.dataset.tv)];
+  if (!c) return;
+  const r = await emitAck('tv-set', { id: c.id });
+  if (r?.error) return toast(r.error);
+  $('#tv-pick').hidden = true;
 });
 
 // ---------- Chat do canal ----------
@@ -3933,6 +4083,7 @@ function updateSpeakingClasses() {
 
 // ---------- Renderização ----------
 function renderAll() {
+  renderTv();
   renderChannels();
   renderMain();
   renderControls();
@@ -3970,6 +4121,12 @@ function renderChannels() {
         ${u.muted ? `<span class="muted-ico">${ICON.micOff}</span>` : ''}`;
       ul.appendChild(li);
     });
+    if (tv && tv.room === ch.id) {
+      const li = document.createElement('li');
+      li.className = 'member bot';
+      li.innerHTML = `${avatarHTML({ name: tv.name, avatar: tv.avatar })}<span class="mname">${esc(tv.name)}</span><span class="bot-badge">BOT</span>${tv.channel ? '<span class="cam-ico" title="No ar">📺</span>' : ''}`;
+      ul.appendChild(li);
+    }
     if (dj && dj.room === ch.id) {
       const li = document.createElement('li');
       li.className = 'member bot';
@@ -3986,15 +4143,27 @@ function renderChannels() {
     add.onclick = createChannel;
     wrap.appendChild(add);
   }
-  // Sala dos bots: o DJ fica aqui esperando alguém chamar
-  if (dj) {
+  // Sala dos bots: o DJ e a TV ficam aqui esperando alguém chamar
+  if (dj || tv) {
     const bots = document.createElement('div');
     bots.className = 'channel bots-room';
-    const inBots = !dj.room;
-    bots.innerHTML = `<div class="channel-row"><div class="channel-btn static">🤖<span>Bots</span><small>${inBots ? 1 : 0}/1</small></div></div>
-      <ul>${inBots ? `<li class="member bot clickable" title="${currentChannel ? 'Chamar o DJ King para a sua chamada' : 'Entre numa sala para chamar o DJ'}">${avatarHTML({ name: dj.name, avatar: dj.avatar })}<span class="mname">${esc(dj.name)}</span><span class="bot-hint">${currentChannel ? 'chamar ›' : 'DJ de música'}</span></li>` : `<li class="member empty-bot">O DJ King está na sala ${esc(channelsState.find((c) => c.id === dj.room)?.name || '')}</li>`}</ul>`;
-    const b = bots.querySelector('.member.clickable');
-    if (b) b.onclick = () => djMove(currentChannel);
+    const lista = [dj && { ...dj, move: () => djMove(currentChannel), hint: 'DJ de música' }, tv && { ...tv, move: () => tvMove(currentChannel), hint: 'TV ao vivo' }].filter(Boolean);
+    const emCasa = lista.filter((b) => !b.room);
+    bots.innerHTML = `<div class="channel-row"><div class="channel-btn static">🤖<span>Bots</span><small>${emCasa.length}/${lista.length}</small></div></div><ul></ul>`;
+    const ul = bots.querySelector('ul');
+    lista.forEach((b) => {
+      const li = document.createElement('li');
+      if (!b.room) {
+        li.className = 'member bot clickable';
+        li.title = currentChannel ? `Chamar ${b.name} para a sua chamada` : 'Entre numa sala para chamar';
+        li.innerHTML = `${avatarHTML({ name: b.name, avatar: b.avatar })}<span class="mname">${esc(b.name)}</span><span class="bot-hint">${currentChannel ? 'chamar ›' : b.hint}</span>`;
+        li.onclick = b.move;
+      } else {
+        li.className = 'member empty-bot';
+        li.textContent = `${b.name} está na sala ${channelsState.find((c) => c.id === b.room)?.name || ''}`;
+      }
+      ul.appendChild(li);
+    });
     wrap.appendChild(bots);
   }
 }
@@ -4052,7 +4221,7 @@ function renderControls() {
   const bmu = $('#btn-music');
   bmu.classList.toggle('active', !!musicStream);
   bmu.querySelector('.label').textContent = musicStream ? 'Parar música' : 'Música';
-  bmu.hidden = !navigator.mediaDevices?.getDisplayMedia || /Android|iPhone|iPad/i.test(navigator.userAgent);
+  bmu.hidden = true; // botão "Música" (som de uma aba) desligado: o DJ King faz esse papel agora
 
   const bm = $('#btn-mute');
   bm.innerHTML = muted || deafened ? ICON.micOff : ICON.mic;
