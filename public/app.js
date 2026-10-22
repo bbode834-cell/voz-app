@@ -998,11 +998,10 @@ async function toggleCam() {
   }
   if (!currentChannel) { camStream.getTracks().forEach((t) => t.stop()); camStream = null; return; }
   camStream.getVideoTracks()[0].onended = () => stopCam();
-  // Transmitindo a tela: abre a janelinha flutuante; senão manda aos amigos
-  if (!(screenStream && await openFloatingCam())) {
-    socket.emit('cam', { on: true });
-    syncCamSenders();
-  }
+  // A câmera vai separada da tela: não fica na frente do seu jogo, e quem assiste
+  // vê ela dentro da transmissão e coloca onde quiser
+  socket.emit('cam', { on: true });
+  syncCamSenders();
   renderCams();
   renderControls();
 }
@@ -1453,9 +1452,6 @@ async function toggleShare() {
   syncScreenSenders(); // envia para quem já pediu para assistir
   renderScreens();
   renderAll();
-  // Câmera ligada: tenta virar a janelinha flutuante (se o navegador deixar
-  // agora; senão aparece o botão "Câmera flutuante" na sua tela)
-  if (camStream && !camFloating) await openFloatingCam();
   renderScreens();
 }
 
@@ -1544,7 +1540,7 @@ function renderScreens() {
           ${mine ? '' : `<label class="screen-vol" title="Volume do som desta transmissão">
             <span class="ico">${ICON.speaker}</span><input type="range" min="0" max="100"></label>`}
           ${mine ? '' : '<button class="lat"></button>'}
-          ${mine ? '<button class="float-cam" title="Abre sua câmera numa janelinha por cima de tudo, que aparece na transmissão">📌 Câmera flutuante</button>' : ''}
+
           <button class="icon-btn fs" title="Tela cheia">${ICON.full}</button>
           <button class="icon-btn close" title="${mine ? 'Parar de transmitir' : 'Parar de assistir'}">${ICON.close}</button>
         </div>
@@ -1650,9 +1646,28 @@ function updateCamPip(card, id) {
       pip.style.left = `${x}px`; pip.style.top = `${y}px`;
       pip.style.right = 'auto'; pip.style.bottom = 'auto';
     });
-    const end = () => { drag = null; };
+    // guarda onde você deixou (e o tamanho), em % da tela, para as próximas vezes
+    const save = () => {
+      const c = card.getBoundingClientRect(), r = pip.getBoundingClientRect();
+      if (!c.width || !r.width) return;
+      store.set('voz-campip', { x: (r.left - c.left) / c.width, y: (r.top - c.top) / c.height, w: r.width / c.width });
+    };
+    const end = () => { if (drag) save(); drag = null; };
     pip.addEventListener('pointerup', end);
     pip.addEventListener('pointercancel', end);
+    new ResizeObserver(() => { if (!drag && pip.dataset.placed) save(); }).observe(pip);
+    // volta para onde você deixou da última vez
+    requestAnimationFrame(() => {
+      const sv = store.get('voz-campip', null);
+      const c = card.getBoundingClientRect();
+      if (sv && c.width) {
+        pip.style.width = `${Math.max(90, sv.w * c.width)}px`;
+        pip.style.left = `${Math.max(0, Math.min(sv.x, 0.95)) * c.width}px`;
+        pip.style.top = `${Math.max(0, Math.min(sv.y, 0.95)) * c.height}px`;
+        pip.style.right = 'auto'; pip.style.bottom = 'auto';
+      }
+      pip.dataset.placed = '1';
+    });
   }
   const v = pip.querySelector('video');
   if (v.srcObject !== st) { v.srcObject = st; v.play().catch(() => {}); }
