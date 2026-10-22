@@ -2076,7 +2076,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // ---------- 🍅 Tomate e 👊 Chamar atenção ----------
-// Só entre amigos na mesma chamada; cada botão pode ser usado 1 vez a cada 2 minutos
+// Só entre amigos na mesma chamada; cada botão pode ser usado de novo depois de 5 segundos
 const funReadyAt = { tomato: 0, nudge: 0 };
 let funTick = null;
 socket.on('connect', () => {
@@ -2085,7 +2085,7 @@ socket.on('connect', () => {
   });
 });
 const funLeft = (k) => Math.max(0, Math.ceil((funReadyAt[k] - Date.now()) / 1000));
-const fmtLeft = (sec) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+const fmtLeft = (sec) => (sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`);
 
 function renderVolFriend() {
   const box = $('#vol-friend');
@@ -2126,7 +2126,10 @@ $('#vol-friend').addEventListener('click', async (e) => {
 
 socket.on('fun', ({ kind, from }) => {
   if (kind === 'tomato') {
+    // 3 tomates seguidos, cada um de um lado
     throwTomato();
+    setTimeout(throwTomato, 300);
+    setTimeout(throwTomato, 600);
     toast(`🍅 ${from} jogou um tomate em você!`);
     notifyIfHidden('🍅 Tomatada!', `${from} jogou um tomate em você!`);
     flashTitle(`🍅 ${from} te acertou!`);
@@ -2140,36 +2143,93 @@ socket.on('fun-shown', ({ kind, from, to }) => {
   toast(kind === 'tomato' ? `🍅 ${from} jogou um tomate em ${to}!` : `👊 ${from} está chamando a atenção de ${to}!`);
 });
 
-// O tomate voa de um canto, esborracha na tela e escorre devagar
+// O tomate voa em arco, achata ao bater, espirra gotinhas, mancha a tela e escorre
+const rnd = (a, b) => a + Math.random() * (b - a);
 function throwTomato() {
   const layer = $('#fun-layer');
   const W = innerWidth, H = innerHeight;
-  const tx = W * (0.25 + Math.random() * 0.5), ty = H * (0.25 + Math.random() * 0.45);
+  const tx = W * rnd(0.2, 0.8), ty = H * rnd(0.2, 0.65);
   const fromLeft = Math.random() < 0.5;
-  const t = document.createElement('img');
-  t.src = 'fx/tomate.svg';
-  t.className = 'fx-tomato';
-  t.style.left = `${fromLeft ? -120 : W + 20}px`;
-  t.style.top = `${H * (0.6 + Math.random() * 0.4)}px`;
-  layer.appendChild(t);
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    t.style.transform = `translate(${tx - (fromLeft ? -120 : W + 20) - 50}px, ${ty - parseFloat(t.style.top) - 50}px) rotate(${fromLeft ? 540 : -540}deg) scale(1.3)`;
-  }));
+  const x0 = fromLeft ? -140 : W + 40, y0 = H * rnd(0.55, 1);
+  const spin = (fromLeft ? 1 : -1) * rnd(540, 900);
+
+  // voo: anda em linha reta para o lado, sobe e desce em arco, gira e cresce (vem na sua direção)
+  const fly = document.createElement('div');
+  fly.className = 'fx-fly';
+  fly.innerHTML = '<span class="fx-tom">🍅</span>';
+  layer.appendChild(fly);
+  const frames = [];
+  for (let k = 0; k <= 16; k++) {
+    const p = k / 16;
+    const x = x0 + (tx - x0) * p, y = y0 + (ty - y0) * p - Math.sin(Math.PI * p) * H * 0.22;
+    frames.push({ transform: `translate(${x - 60}px, ${y - 60}px) rotate(${spin * p}deg) scale(${0.55 + p * 0.9})` });
+  }
+  const DUR = 560;
+  fly.animate(frames, { duration: DUR, easing: 'cubic-bezier(.35,.1,.55,1)', fill: 'forwards' });
+
   setTimeout(() => {
-    t.remove();
+    // achata ao bater
+    fly.firstElementChild.animate(
+      [{ transform: 'scale(1)', opacity: 1 }, { transform: 'scale(1.7, .45)', opacity: 0.9 }, { transform: 'scale(1.9, .3)', opacity: 0 }],
+      { duration: 110, fill: 'forwards' });
+    setTimeout(() => fly.remove(), 120);
     playSound('tomate', true);
-    const sp = document.createElement('img');
-    sp.src = 'fx/splat.svg';
-    sp.className = 'fx-splat';
-    const size = Math.min(W, H) * 0.42;
-    sp.style.width = sp.style.height = `${size}px`;
-    sp.style.left = `${tx - size / 2}px`;
-    sp.style.top = `${ty - size / 2}px`;
-    sp.style.setProperty('--rot', `${Math.round(Math.random() * 360)}deg`);
-    layer.appendChild(sp);
-    setTimeout(() => sp.classList.add('drip'), 900);
-    setTimeout(() => sp.remove(), 5200);
-  }, 520);
+    splatAt(layer, tx, ty, Math.min(W, H) * rnd(0.36, 0.5));
+  }, DUR);
+}
+
+function splatAt(layer, x, y, size) {
+  const wrap = document.createElement('div');
+  wrap.className = 'fx-splat-wrap';
+  wrap.style.left = `${x}px`;
+  wrap.style.top = `${y}px`;
+  // a mancha
+  const img = document.createElement('img');
+  img.src = `fx/splat${1 + Math.floor(Math.random() * 3)}.svg`;
+  img.className = 'fx-splat';
+  img.style.width = img.style.height = `${size}px`;
+  img.style.left = img.style.top = `${-size / 2}px`;
+  const rot = rnd(0, 360);
+  img.animate([
+    { transform: `rotate(${rot}deg) scale(.25)` },
+    { transform: `rotate(${rot}deg) scale(1.12)`, offset: 0.6 },
+    { transform: `rotate(${rot}deg) scale(1)` },
+  ], { duration: 200, easing: 'ease-out', fill: 'forwards' });
+  wrap.appendChild(img);
+  // gotinhas voando para os lados (com "gravidade")
+  for (let k = 0; k < 14; k++) {
+    const d = document.createElement('i');
+    d.className = 'fx-drop';
+    const s = rnd(6, 16);
+    d.style.width = d.style.height = `${s}px`;
+    d.style.left = d.style.top = `${-s / 2}px`;
+    const a = rnd(0, Math.PI * 2), dist = rnd(size * 0.45, size * 1.05);
+    const dx = Math.cos(a) * dist, dy = Math.sin(a) * dist;
+    d.animate([
+      { transform: 'translate(0,0) scale(1)', opacity: 1 },
+      { transform: `translate(${dx * 0.75}px, ${dy * 0.75 - 30}px) scale(.9)`, opacity: 1, offset: 0.55 },
+      { transform: `translate(${dx}px, ${dy + 70}px) scale(.5)`, opacity: 0 },
+    ], { duration: rnd(520, 760), easing: 'cubic-bezier(.2,.7,.4,1)', fill: 'forwards' });
+    wrap.appendChild(d);
+  }
+  // fios de molho escorrendo, com uma gota na ponta
+  const n = 3 + Math.floor(Math.random() * 3);
+  for (let k = 0; k < n; k++) {
+    const dr = document.createElement('i');
+    dr.className = 'fx-drip';
+    const w = rnd(8, 17);
+    dr.style.width = `${w}px`;
+    dr.style.left = `${rnd(-size * 0.3, size * 0.3) - w / 2}px`;
+    dr.style.top = `${rnd(size * 0.12, size * 0.3)}px`;
+    dr.animate([{ height: '0px' }, { height: `${rnd(70, size * 0.9)}px` }],
+      { duration: rnd(2200, 3400), delay: rnd(300, 900), easing: 'cubic-bezier(.5,0,.8,.6)', fill: 'forwards' });
+    wrap.appendChild(dr);
+  }
+  layer.appendChild(wrap);
+  // vai escorregando e some
+  wrap.animate([{ transform: 'translateY(0)', opacity: 1 }, { transform: 'translateY(0)', opacity: 1, offset: 0.7 },
+    { transform: 'translateY(40px)', opacity: 0 }], { duration: 5600, easing: 'ease-in', fill: 'forwards' });
+  setTimeout(() => wrap.remove(), 5700);
 }
 
 // Mão batendo "toc toc" e a tela tremendo (igual ao MSN)
@@ -2177,7 +2237,7 @@ function nudge(from) {
   const layer = $('#fun-layer');
   const box = document.createElement('div');
   box.className = 'fx-nudge';
-  box.innerHTML = `<div class="fx-fist"><i class="fx-hit h1"></i><i class="fx-hit h2"></i><img src="fx/mao.svg" alt=""></div>
+  box.innerHTML = `<div class="fx-fist"><i class="fx-hit h1"></i><i class="fx-hit h2"></i><span class="fist-emoji">👊</span></div>
     <div class="fx-nudge-text"><b>${esc(from)}</b> está chamando sua atenção!</div>`;
   layer.appendChild(box);
   playSound('toctoc', true);

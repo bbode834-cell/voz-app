@@ -325,8 +325,8 @@ async function enviaAmigos(uid) {
   } catch {}
 }
 
-// Tomate e "chamar atenção": cada botão pode ser usado 1 vez a cada 2 minutos
-const FUN_COOLDOWN = 120_000;
+// Tomate e "chamar atenção": cada botão pode ser usado de novo depois de 5 segundos
+const FUN_COOLDOWN = 5_000; // 5 segundos entre um uso e outro
 const funUsado = new Map(); // "uid|tipo" -> horário
 
 // Tira a conta de todos os lugares (banida ou apagada)
