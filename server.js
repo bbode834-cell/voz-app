@@ -153,7 +153,8 @@ async function userFromReq(req) {
 // O arquivo é guardado no banco e a mensagem leva só "img:<código>" (foto)
 // ou "aud:<código>:<segundos>" (áudio).
 // O código é longo e aleatório: só quem recebeu a mensagem consegue abrir.
-const IMG_MAX = 3 * 1024 * 1024;
+const IMG_MAX = 3 * 1024 * 1024; // fotos
+const MUSIC_MAX = 15 * 1024 * 1024; // músicas (MP3) para o bot
 const IMG_DIAS = 90; // fotos mais velhas que isso são apagadas
 const imgUploads = new Map(); // uid -> horários (limite por minuto)
 function tipoImagem(b) {
@@ -170,7 +171,7 @@ function tipoImagem(b) {
   return null;
 }
 app.options('/api/img', (req, res) => res.sendStatus(204));
-app.post('/api/img', express.raw({ type: () => true, limit: IMG_MAX }), async (req, res) => {
+app.post('/api/img', express.raw({ type: () => true, limit: MUSIC_MAX }), async (req, res) => {
   try {
     const u = await userFromReq(req);
     if (!u || u.status !== 'approved') return erro(res, 401, 'Entre de novo.');
@@ -180,6 +181,7 @@ app.post('/api/img', express.raw({ type: () => true, limit: IMG_MAX }), async (r
     const dados = Buffer.isBuffer(req.body) ? req.body : null;
     const mime = dados && tipoImagem(dados);
     if (!mime) return erro(res, 400, 'Esse arquivo não é uma foto nem um áudio.');
+    if (!mime.startsWith('audio/') && dados.length > IMG_MAX) return erro(res, 413, 'Foto grande demais.');
     t.push(now);
     imgUploads.set(u.id, t);
     const id = crypto.randomBytes(12).toString('base64url');
@@ -200,7 +202,18 @@ app.get('/img/:id', async (req, res) => {
     res.set('Content-Type', im.mime);
     res.set('Cache-Control', 'private, max-age=31536000, immutable');
     res.set('Access-Control-Allow-Origin', '*');
-    res.send(im.dados);
+    res.set('Accept-Ranges', 'bytes');
+    const total = im.dados.length;
+    const m = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range || ''));
+    if (m && (m[1] || m[2])) {
+      let a = m[1] ? Number(m[1]) : Math.max(0, total - Number(m[2]));
+      let b = m[1] && m[2] ? Math.min(Number(m[2]), total - 1) : total - 1;
+      if (a >= total || a > b) { res.set('Content-Range', `bytes */${total}`); return res.sendStatus(416); }
+      res.status(206);
+      res.set('Content-Range', `bytes ${a}-${b}/${total}`);
+      return res.end(im.dados.subarray(a, b + 1));
+    }
+    res.end(im.dados);
   } catch (e) {
     res.sendStatus(500);
   }
@@ -341,9 +354,142 @@ let namesVersion = 0;
 
 const byId = (id) => channels.find((c) => c.id === id);
 
+// ---------- Fontes de música do DJ ----------
+const AUDIUS = 'https://api.audius.co';
+const AUDIUS_APP = 'KingLauncher';
+const RADIO_HOSTS = ['https://de1.api.radio-browser.info', 'https://nl1.api.radio-browser.info', 'https://at1.api.radio-browser.info', 'https://all.api.radio-browser.info'];
+async function fetchJson(url, opts = {}) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 9000);
+  try {
+    const r = await fetch(url, { ...opts, signal: ctl.signal, headers: { 'User-Agent': 'KingLauncher/1.0 (bot de musica)', Accept: 'application/json', ...(opts.headers || {}) } });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return await r.json();
+  } finally {
+    clearTimeout(t);
+  }
+}
+const audiusStream = (id) => `${AUDIUS}/v1/tracks/${encodeURIComponent(id)}/stream?app_name=${AUDIUS_APP}`;
+function audiusItem(t) {
+  return {
+    kind: 'audius', id: t.id, title: t.title, artist: t.user?.name || '', duration: Number(t.duration) || null,
+    art: t.artwork?.['150x150'] || t.artwork?.['480x480'] || '', url: audiusStream(t.id),
+  };
+}
+// Audius: plataforma aberta de música (API grátis). Só o que pode ser tocado.
+async function buscaAudius(q) {
+  const j = await fetchJson(`${AUDIUS}/v1/tracks/search?query=${encodeURIComponent(q)}&app_name=${AUDIUS_APP}&limit=20`);
+  return (j.data || []).filter((t) => t.is_streamable !== false && !t.is_stream_gated).slice(0, 20).map(audiusItem);
+}
+async function audiusTrack(id) {
+  const j = await fetchJson(`${AUDIUS}/v1/tracks/${encodeURIComponent(id)}?app_name=${AUDIUS_APP}`);
+  return j.data ? audiusItem(j.data) : null;
+}
+// Radio Browser: catálogo aberto de rádios do mundo. Só rádios com https (o navegador bloqueia http).
+async function buscaRadios(q) {
+  const params = new URLSearchParams({ limit: '30', hidebroken: 'true', order: 'clickcount', reverse: 'true' });
+  if (q) params.set('name', q); else params.set('countrycode', 'BR');
+  let lastErr;
+  for (const host of RADIO_HOSTS) {
+    try {
+      const j = await fetchJson(`${host}/json/stations/search?${params}`);
+      return j
+        .filter((r) => /^https:\/\//i.test(r.url_resolved || r.url) && !r.hls)
+        .slice(0, 20)
+        .map((r) => ({
+          kind: 'radio', id: r.stationuuid, title: r.name, artist: [r.country, r.tags].filter(Boolean).join(' · ').slice(0, 60),
+          url: r.url_resolved || r.url, art: /^https:/.test(r.favicon || '') ? r.favicon : '', duration: null, live: true,
+        }));
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error('rádios indisponíveis');
+}
+async function listaMusicas(q) {
+  const all = await banco.listMusic();
+  const ql = String(q || '').toLowerCase();
+  return all
+    .filter((m) => !ql || m.titulo.toLowerCase().includes(ql) || (m.artista || '').toLowerCase().includes(ql))
+    .map((m) => ({ kind: 'file', id: m.id, title: m.titulo, artist: m.artista || '', url: `/img/${m.img}`, art: '', duration: m.duracao || null, dono: m.dono }));
+}
+// Transforma o que o usuário escolheu numa faixa segura para a fila
+async function montaFaixa(item, by) {
+  let t = null;
+  if (item.kind === 'audius' && item.id) t = await audiusTrack(String(item.id).slice(0, 20));
+  else if (item.kind === 'radio' && /^https:\/\//i.test(item.url || '')) {
+    t = { kind: 'radio', id: String(item.id || '').slice(0, 60), title: String(item.title || 'Rádio').slice(0, 80), artist: String(item.artist || '').slice(0, 60), url: String(item.url).slice(0, 500), art: /^https:/.test(item.art || '') ? String(item.art).slice(0, 500) : '', duration: null, live: true };
+  } else if (item.kind === 'file') {
+    const m = (await banco.listMusic()).find((x) => x.id === Number(item.id));
+    if (m) t = { kind: 'file', id: m.id, title: m.titulo, artist: m.artista || '', url: `/img/${m.img}`, art: '', duration: m.duracao || null };
+  } else if (item.kind === 'link' && /^https:\/\/\S+$/i.test(item.url || '')) {
+    t = { kind: 'link', id: '', title: String(item.title || item.url).slice(0, 80), artist: '', url: String(item.url).slice(0, 500), art: '', duration: null };
+  }
+  if (!t) return null;
+  return { ...t, key: `t${++djSeq}`, by: String(by || '').slice(0, 24) };
+}
+
+// ---------- 🤖 DJ King: o bot de música ----------
+// Fica na sala "Bots". Quem está numa chamada puxa ele para lá; o que ele toca cada
+// aparelho reproduz sozinho (o som não passa pelo servidor), todos no mesmo ponto.
+const BOTS_ROOM = 'bots';
+const dj = {
+  id: 'bot-dj',
+  name: 'DJ King',
+  avatar: 'p:robo',
+  room: null, // null = sala dos Bots; senão o id do canal
+  queue: [], // próximas: { key, kind, url, title, artist, art, duration }
+  now: null, // tocando: { ...faixa, startedAt (ms, quando o "0:00" começou), pausedAt (ms | null) }
+  timer: null,
+};
+let djSeq = 0;
+function djPublic() {
+  return { id: dj.id, name: dj.name, avatar: dj.avatar, room: dj.room };
+}
+function djState() {
+  const { timer, ...rest } = dj;
+  return { ...rest, serverNow: Date.now() };
+}
+function broadcastDj() { io.emit('dj', djState()); }
+function djStop() {
+  clearTimeout(dj.timer);
+  dj.timer = null;
+}
+// Toca a próxima da fila (ou para, se acabou)
+function djNext() {
+  djStop();
+  const t = dj.queue.shift();
+  if (!t) { dj.now = null; broadcastDj(); return; }
+  dj.now = { ...t, startedAt: Date.now(), pausedAt: null };
+  djArmTimer();
+  broadcastDj();
+}
+// Quando a música deve acabar (se a duração é conhecida), passa para a próxima sozinho
+function djArmTimer() {
+  djStop();
+  const n = dj.now;
+  if (!n || n.pausedAt || !n.duration) return;
+  const left = n.duration * 1000 - (Date.now() - n.startedAt);
+  dj.timer = setTimeout(djNext, Math.max(500, left + 1500));
+}
+function djPause() {
+  const n = dj.now;
+  if (!n || n.pausedAt) return;
+  n.pausedAt = Date.now();
+  djStop();
+}
+function djResume() {
+  const n = dj.now;
+  if (!n || !n.pausedAt) return;
+  n.startedAt += Date.now() - n.pausedAt;
+  n.pausedAt = null;
+  djArmTimer();
+}
+
 function snapshot() {
   return {
     namesVersion,
+    bot: djPublic(),
     channels: channels.map((c) => ({
       id: c.id,
       name: c.name,
@@ -368,6 +514,12 @@ function leave(socket) {
   socket.to(ch.id).emit('peer-left', { id: socket.id });
   socket.leave(ch.id);
   socket.data.channel = null;
+  // Sala ficou vazia com o DJ lá dentro? Ele volta sozinho para a sala Bots (e pausa a música).
+  if (dj.room === ch.id && ch.users.size === 0) {
+    dj.room = null;
+    djPause();
+    broadcastDj();
+  }
   broadcastChannels();
 }
 
@@ -629,6 +781,117 @@ io.on('connection', (socket) => {
     persistChannels();
   });
 
+  // ---------- 🤖 DJ King ----------
+  socket.emit('dj', djState());
+  // Pode mandar no bot: quem está na chamada onde ele está (ou está puxando ele para a sua), e moderadores
+  const podeDj = () => isMod() || (socket.data.channel && socket.data.channel === dj.room);
+
+  socket.on('dj-move', ({ to } = {}, ack = () => {}) => {
+    if (to === BOTS_ROOM || to == null) {
+      if (!podeDj() && dj.room) return ack({ error: 'Só quem está na chamada com o DJ pode devolver ele.' });
+      const from = dj.room;
+      dj.room = null;
+      djPause();
+      ack({ ok: true });
+      broadcastChannels();
+      broadcastDj();
+      if (from) io.to(from).emit('dj-info', { text: `🤖 ${me().name} devolveu o DJ King para a sala Bots.` });
+      return;
+    }
+    const ch = byId(to);
+    if (!ch) return ack({ error: 'Sala não encontrada.' });
+    if (socket.data.channel !== ch.id && !isMod()) return ack({ error: 'Entre na chamada primeiro e puxe o DJ para ela.' });
+    const from = dj.room;
+    dj.room = ch.id;
+    if (dj.now) djResume();
+    ack({ ok: true });
+    broadcastChannels();
+    broadcastDj();
+    if (from && from !== ch.id) io.to(from).emit('dj-info', { text: `🤖 ${me().name} levou o DJ King para a sala ${ch.name}.` });
+    socket.to(ch.id).emit('dj-info', { text: `🤖 ${me().name} chamou o DJ King para a chamada.` });
+  });
+
+  // Procurar música (Audius) ou rádio (Radio Browser)
+  socket.on('dj-search', async ({ kind, q } = {}, ack = () => {}) => {
+    try {
+      const query = String(q || '').trim().slice(0, 80);
+      if (kind === 'radio') return ack({ ok: true, items: await buscaRadios(query) });
+      if (kind === 'file') return ack({ ok: true, items: await listaMusicas(query) });
+      if (!query) return ack({ ok: true, items: [] });
+      ack({ ok: true, items: await buscaAudius(query) });
+    } catch (e) {
+      console.error('dj-search:', e.message);
+      ack({ error: 'Não consegui pesquisar agora. Tente de novo.' });
+    }
+  });
+
+  // Adicionar na fila: { kind: 'audius'|'radio'|'file'|'link', id | url, title, artist, art, duration }
+  socket.on('dj-add', async (item = {}, ack = () => {}) => {
+    try {
+      if (!podeDj()) return ack({ error: 'Puxe o DJ King para a sua chamada primeiro.' });
+      if (dj.queue.length >= 50) return ack({ error: 'A fila está cheia (50 músicas).' });
+      const t = await montaFaixa(item, me().name);
+      if (!t) return ack({ error: 'Não consegui adicionar essa música.' });
+      dj.queue.push(t);
+      ack({ ok: true, position: dj.queue.length });
+      if (!dj.now) djNext(); else broadcastDj();
+      if (dj.room) io.to(dj.room).emit('dj-info', { text: `🎵 ${me().name} adicionou "${t.title}" na fila.` });
+    } catch (e) {
+      console.error('dj-add:', e.message);
+      ack({ error: 'Não consegui adicionar agora.' });
+    }
+  });
+
+  socket.on('dj-ctrl', ({ action, key } = {}, ack = () => {}) => {
+    if (!podeDj()) return ack({ error: 'Só quem está na chamada com o DJ pode controlar ele.' });
+    if (action === 'pause') djPause();
+    else if (action === 'play') { if (dj.now) djResume(); else djNext(); }
+    else if (action === 'skip') { djNext(); ack({ ok: true }); return; }
+    else if (action === 'remove') dj.queue = dj.queue.filter((t) => t.key !== key);
+    else if (action === 'clear') dj.queue = [];
+    else if (action === 'stop') { djStop(); dj.now = null; dj.queue = []; }
+    else return ack({ error: 'Comando desconhecido.' });
+    ack({ ok: true });
+    broadcastDj();
+  });
+
+  // Um aparelho avisou que a música acabou (ou não abriu): passa para a próxima
+  socket.on('dj-ended', ({ key, error: err } = {}) => {
+    if (!dj.now || dj.now.key !== key) return;
+    if (!socket.data.channel || socket.data.channel !== dj.room) return;
+    if (err && dj.room) io.to(dj.room).emit('dj-info', { text: `⚠️ Não deu para tocar "${dj.now.title}". Pulando.` });
+    djNext();
+  });
+
+  // Guardar um MP3 enviado na biblioteca do bot
+  socket.on('dj-save', async ({ img, title, artist, duration } = {}, ack = () => {}) => {
+    try {
+      if (!/^[A-Za-z0-9_-]{16}$/.test(String(img || ''))) return ack({ error: 'Arquivo inválido.' });
+      const im = await banco.getImg(img);
+      if (!im || !String(im.mime).startsWith('audio/')) return ack({ error: 'Esse arquivo não é uma música.' });
+      const m = await banco.addMusic({
+        img, titulo: String(title || 'Música').trim().slice(0, 80) || 'Música', artista: String(artist || '').trim().slice(0, 60),
+        dono: me().id, duracao: Number(duration) > 0 ? Math.round(Number(duration)) : null,
+      });
+      ack({ ok: true, music: m });
+    } catch (e) {
+      console.error('dj-save:', e.message);
+      ack({ error: 'Não consegui guardar a música.' });
+    }
+  });
+  socket.on('dj-delete-music', async ({ id } = {}, ack = () => {}) => {
+    try {
+      const all = await banco.listMusic();
+      const m = all.find((x) => x.id === Number(id));
+      if (!m) return ack({ error: 'Música não encontrada.' });
+      if (m.dono !== me().id && !isMod()) return ack({ error: 'Só quem enviou (ou um moderador) pode apagar.' });
+      await banco.removeMusic(m.id);
+      ack({ ok: true });
+    } catch (e) {
+      ack({ error: 'Não consegui apagar.' });
+    }
+  });
+
   // Criar uma sala nova
   socket.on('create-channel', ({ name } = {}, ack = () => {}) => {
     if (!isMod()) return ack({ error: 'Só o dono e os moderadores podem criar salas.' });
@@ -658,6 +921,7 @@ io.on('connection', (socket) => {
       leave(s);
     }
     channels.splice(channels.indexOf(ch), 1);
+    if (dj.room === ch.id) { dj.room = null; djPause(); broadcastDj(); }
     namesVersion = Date.now();
     ack({ ok: true });
     broadcastChannels();

@@ -849,3 +849,48 @@ body.dm-open .main { margin-right: 340px; }
 .music-vol[hidden] { display: none; }
 #btn-music .ico { font-size: 16px; }
 #btn-music.active { border-color: #f5b82e; color: #f5b82e; }
+
+/* ---------- 🤖 DJ King ---------- */
+.bots-room { margin-top: 10px; border-top: 1px solid rgba(255,255,255,.06); padding-top: 6px; }
+.channel-btn.static { cursor: default; }
+.member.bot .mname { color: var(--text-strong); }
+.bot-badge { font-size: 9px; font-weight: 800; letter-spacing: .5px; padding: 1px 4px; border-radius: 4px; background: #5865f2; color: #fff; margin-left: 4px; }
+.member.clickable { cursor: pointer; border-radius: 6px; }
+.member.clickable:hover { background: var(--hover); }
+.bot-hint { margin-left: auto; font-size: 11px; color: var(--accent); font-weight: 700; }
+.member.empty-bot { color: var(--muted); font-size: 12px; font-style: italic; }
+.dj-panel { margin: 10px 16px 0; padding: 10px 14px; border-radius: 10px; background: var(--panel); border: 1px solid rgba(245,184,46,.45); color: var(--text); }
+.dj-panel[hidden], #btn-dj[hidden], #dj-upload-row[hidden], #dj-link-row[hidden], #dj-search[hidden] { display: none !important; }
+.dj-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.dj-title { font-weight: 800; color: var(--text-strong); flex: 1; }
+.dj-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.dj-now { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 220px; }
+.dj-art { width: 52px; height: 52px; border-radius: 8px; object-fit: cover; background: var(--bg); flex-shrink: 0; }
+.dj-art-empty { display: grid; place-items: center; font-size: 24px; }
+.dj-meta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.dj-meta strong { color: var(--text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dj-meta small { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dj-bar { height: 4px; border-radius: 2px; background: rgba(148,155,164,.35); margin: 6px 0 3px; overflow: hidden; }
+.dj-bar i { display: block; height: 100%; width: 0; background: #f5b82e; transition: width 1s linear; }
+.dj-ctrl { display: flex; align-items: center; gap: 8px; }
+.dj-btn { width: 40px; height: 40px; border-radius: 50%; border: 0; background: var(--panel-3); color: var(--text-strong); font-size: 18px; cursor: pointer; }
+.dj-btn:hover { background: var(--hover); }
+.dj-btn:disabled { opacity: .4; cursor: default; }
+.dj-queue { list-style: none; margin: 10px 0 0; padding: 0; max-height: 160px; overflow-y: auto; }
+.dj-queue li { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 6px; font-size: 13px; }
+.dj-queue li:hover { background: var(--hover); }
+.dj-n { width: 18px; color: var(--muted); font-size: 12px; text-align: right; }
+.dj-q-title { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.dj-q-title small { color: var(--muted); font-size: 11px; }
+.dj-q-dur { color: var(--muted); font-size: 12px; }
+.dj-empty { color: var(--muted); font-size: 12px; font-style: italic; }
+.dj-card { width: min(560px, calc(100% - 32px)); max-height: calc(100% - 32px); gap: 10px; padding: 16px; }
+.dj-card .chat-head { padding: 0 0 6px; }
+.dj-tabs { flex: none; }
+#dj-q { width: 100%; box-sizing: border-box; }
+.dj-upload-row { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; }
+.dj-results { overflow-y: auto; min-height: 120px; max-height: 50vh; display: flex; flex-direction: column; gap: 4px; }
+.dj-res { display: flex; align-items: center; gap: 10px; padding: 6px; border-radius: 8px; }
+.dj-res:hover { background: var(--hover); }
+.dj-res .dj-art { width: 44px; height: 44px; }
+.dj-res .btn { flex-shrink: 0; }

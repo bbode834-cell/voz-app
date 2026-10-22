@@ -82,9 +82,16 @@ class Memoria {
   async removeOldImgs(dias) {
     let n = 0;
     const lim = Date.now() - dias * 86400_000;
-    for (const [k, v] of this.imgs || []) if (v.criado < lim) { this.imgs.delete(k); n++; }
+    const keep = this.musicImgIds();
+    for (const [k, v] of this.imgs || []) if (v.criado < lim && !keep.has(k)) { this.imgs.delete(k); n++; }
     return n;
   }
+
+  // Biblioteca de músicas (MP3 enviados) do bot
+  async addMusic(m) { this.musSeq = (this.musSeq || 0) + 1; const row = { id: this.musSeq, ...m, criado: new Date() }; (this.musicas ||= []).push(row); return { ...row }; }
+  async listMusic() { return (this.musicas || []).map((m) => ({ ...m })); }
+  async removeMusic(id) { this.musicas = (this.musicas || []).filter((m) => m.id !== Number(id)); }
+  musicImgIds() { return new Set((this.musicas || []).map((m) => m.img)); }
 
   // Canais (salas): [{ id, nome }]
   async listChannels() { return (this.canais || []).map((c) => ({ ...c })); }
@@ -151,6 +158,16 @@ class Postgres {
         status TEXT NOT NULL DEFAULT 'pending',
         criado TIMESTAMPTZ NOT NULL DEFAULT now(),
         PRIMARY KEY (a, b)
+      )`);
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS musicas (
+        id SERIAL PRIMARY KEY,
+        img TEXT NOT NULL,
+        titulo TEXT NOT NULL,
+        artista TEXT NOT NULL DEFAULT '',
+        dono INTEGER NOT NULL,
+        duracao INTEGER,
+        criado TIMESTAMPTZ NOT NULL DEFAULT now()
       )`);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS canais (
@@ -248,8 +265,26 @@ class Postgres {
     return r.rows[0] || null;
   }
   async removeOldImgs(dias) {
-    const r = await this.pool.query(`DELETE FROM imagens WHERE criado < now() - ($1::int * interval '1 day')`, [dias]);
+    // as músicas da biblioteca do bot não vencem
+    const r = await this.pool.query(
+      `DELETE FROM imagens WHERE criado < now() - ($1::int * interval '1 day') AND id NOT IN (SELECT img FROM musicas)`, [dias]);
     return r.rowCount;
+  }
+
+  // Biblioteca de músicas (MP3 enviados) do bot
+  async addMusic({ img, titulo, artista, dono, duracao }) {
+    const r = await this.pool.query(
+      'INSERT INTO musicas (img, titulo, artista, dono, duracao) VALUES ($1,$2,$3,$4,$5) RETURNING *',
+      [img, titulo, artista || '', dono, duracao || null]);
+    return r.rows[0];
+  }
+  async listMusic() {
+    const r = await this.pool.query('SELECT * FROM musicas ORDER BY titulo');
+    return r.rows;
+  }
+  async removeMusic(id) {
+    const r = await this.pool.query('DELETE FROM musicas WHERE id = $1 RETURNING img', [Number(id)]);
+    if (r.rows[0]) await this.pool.query('DELETE FROM imagens WHERE id = $1', [r.rows[0].img]);
   }
 
   // Canais (salas)

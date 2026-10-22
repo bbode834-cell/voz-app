@@ -54,6 +54,7 @@ authToken = store.get('voz-token', null);
 let selfId = null;
 let currentChannel = null; // id do canal (c1, c2...)
 let channelsState = [];
+let botInfo = null; // { id, name, avatar, room } (vem com a lista de canais)
 let localStream = null;   // microfone
 let screenStream = null;  // minha tela (quando eu transmito)
 let camStream = null;     // minha câmera (quando ligada)
@@ -765,6 +766,7 @@ async function joinChannel(id) {
 
     currentChannel = id;
     selfId = res.selfId;
+    setTimeout(() => { syncDjAudio(); renderDj(); }, 0);
     modMuted = !!res.modMuted;
     if (modMuted) { muted = true; applyMicState(); }
     chatMsgs = Array.isArray(res.chat) ? res.chat.slice() : [];
@@ -793,6 +795,7 @@ function leaveChannel(switching = false) {
   if (!switching) { stopMic(); soundLeave(); }
   unwatchSpeaking(selfId);
   currentChannel = null;
+  setTimeout(() => { syncDjAudio(); renderDj(); }, 0);
   watching.clear();
   renderScreens();
   closeVolume();
@@ -1460,6 +1463,7 @@ async function tuneScreenSenders(peer) {
 // ---------- Eventos do servidor ----------
 socket.on('channels', (data) => {
   channelsState = data.channels;
+  botInfo = data.bot || botInfo;
   const saved = store.get('voz-canais', null);
   if (data.namesVersion > 0 && (!saved || data.namesVersion >= saved.version)) {
     store.set('voz-canais', {
@@ -1579,6 +1583,7 @@ socket.on('disconnect', () => {
     [...peers.keys()].forEach(closePeer);
     stopMic();
     currentChannel = null;
+    setTimeout(() => { syncDjAudio(); renderDj(); }, 0);
     watching.clear();
     renderScreens();
     closeVolume();
@@ -1843,6 +1848,221 @@ function updateCamPip(card, id) {
   if (v.srcObject !== st) { v.srcObject = st; v.play().catch(() => {}); }
   v.classList.toggle('mirror', isMirrored(id));
 }
+
+// ---------- 🤖 DJ King (bot de música) ----------
+// O servidor diz o que está tocando e desde quando; cada aparelho toca por conta própria,
+// no mesmo ponto. Quem está na chamada com o DJ controla a fila.
+let dj = null; // estado completo vindo do servidor
+let djClock = 0; // diferença entre o relógio daqui e o do servidor
+let djVolume = store.get('voz-dj-vol', 0.5);
+const djAudio = new Audio();
+djAudio.preload = 'auto';
+$('#audio-sink').appendChild(djAudio);
+djAudio.addEventListener('ended', () => { if (dj?.now) socket.emit('dj-ended', { key: dj.now.key }); });
+djAudio.addEventListener('error', () => {
+  if (!dj?.now || !djAudio.src || djAudio.dataset.key !== dj.now.key) return;
+  socket.emit('dj-ended', { key: dj.now.key, error: true });
+});
+const djHere = () => !!(dj && currentChannel && dj.room === currentChannel);
+const djPos = () => (dj?.now ? Math.max(0, ((dj.now.pausedAt || (Date.now() - djClock)) - dj.now.startedAt) / 1000) : 0);
+const djUrl = (t) => (t.url.startsWith('/') ? location.origin + t.url : t.url);
+const fmtDur = (s) => (s == null || !isFinite(s) ? '' : `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`);
+
+socket.on('dj', (st) => {
+  dj = st;
+  djClock = Date.now() - (st.serverNow || Date.now());
+  syncDjAudio();
+  renderDj();
+  renderChannels();
+});
+socket.on('dj-info', ({ text }) => toast(text));
+
+// Deixa o som do DJ igual ao estado do servidor (tocando/pausado/no ponto certo)
+function syncDjAudio() {
+  const n = dj?.now;
+  if (!djHere() || !n) {
+    if (djAudio.src) { djAudio.pause(); djAudio.removeAttribute('src'); djAudio.load(); djAudio.dataset.key = ''; }
+    return;
+  }
+  const url = djUrl(n);
+  if (djAudio.dataset.key !== n.key) {
+    djAudio.dataset.key = n.key;
+    djAudio.src = url;
+    djAudio.load();
+  }
+  djAudio.volume = djVolume;
+  djAudio.muted = deafened;
+  if (n.pausedAt) { djAudio.pause(); return; }
+  if (!n.live) {
+    const want = djPos();
+    const seek = () => { try { if (Math.abs(djAudio.currentTime - want) > 2.5 && want > 1) djAudio.currentTime = want; } catch {} };
+    if (djAudio.readyState >= 1) seek(); else djAudio.addEventListener('loadedmetadata', seek, { once: true });
+  }
+  djAudio.play().catch(() => {});
+}
+// De tempos em tempos confere se não desgarrou do ponto certo
+setInterval(() => {
+  if (!djHere() || !dj?.now || dj.now.pausedAt) return;
+  if (djAudio.paused && djAudio.src) djAudio.play().catch(() => {});
+  if (!dj.now.live) {
+    const want = djPos();
+    if (djAudio.readyState >= 2 && Math.abs(djAudio.currentTime - want) > 4) { try { djAudio.currentTime = want; } catch {} }
+  }
+  renderDjProgress();
+}, 1000);
+
+async function djMove(to) {
+  if (!to) return toast('Entre numa sala primeiro, depois chame o DJ.');
+  const r = await emitAck('dj-move', { to });
+  if (r?.error) toast(r.error);
+}
+async function djCtrl(action, key) {
+  const r = await emitAck('dj-ctrl', { action, key });
+  if (r?.error) toast(r.error);
+}
+async function djAdd(item) {
+  const r = await emitAck('dj-add', item);
+  if (r?.error) return toast(r.error);
+  toast(`🎵 "${item.title}" entrou na fila (${r.position}º).`);
+}
+
+function renderDjProgress() {
+  const n = dj?.now;
+  const bar = $('#dj-prog');
+  if (!n || !bar) return;
+  const pos = n.live ? 0 : djPos();
+  const dur = n.duration || (djAudio.duration > 0 && isFinite(djAudio.duration) ? djAudio.duration : 0);
+  $('#dj-time').textContent = n.live ? '● AO VIVO' : `${fmtDur(pos)}${dur ? ' / ' + fmtDur(dur) : ''}`;
+  bar.style.width = n.live ? '100%' : dur ? `${Math.min(100, (pos / dur) * 100)}%` : '0%';
+}
+
+function renderDj() {
+  const panel = $('#dj-panel');
+  const call = $('#btn-dj');
+  if (!dj || !currentChannel) { panel.hidden = true; call.hidden = true; return; }
+  const here = djHere();
+  call.hidden = here;
+  call.title = dj.room ? `O DJ King está na sala ${channelsState.find((c) => c.id === dj.room)?.name || ''} — clique para trazer para cá` : 'Chamar o DJ King para esta chamada';
+  panel.hidden = !here;
+  if (!here) return;
+  const n = dj.now;
+  const art = (t) => (t.art ? `<img class="dj-art" src="${esc(t.art)}" alt="">` : `<span class="dj-art dj-art-empty">${t.kind === 'radio' ? '📻' : '🎵'}</span>`);
+  $('#dj-now').innerHTML = n
+    ? `${art(n)}<div class="dj-meta"><strong>${esc(n.title)}</strong><small>${esc(n.artist || (n.kind === 'file' ? 'enviada por ' + (n.by || '') : ''))}</small>
+        <div class="dj-bar"><i id="dj-prog"></i></div><small id="dj-time"></small></div>`
+    : `<span class="dj-art dj-art-empty">🤖</span><div class="dj-meta"><strong>Nada tocando</strong><small>Toque em "Adicionar música" para começar.</small></div>`;
+  $('#dj-play').textContent = n && !n.pausedAt ? '⏸' : '▶';
+  $('#dj-play').disabled = !n && !dj.queue.length;
+  $('#dj-skip').disabled = !n && !dj.queue.length;
+  $('#dj-vol').value = Math.round(djVolume * 100);
+  const q = $('#dj-queue');
+  q.innerHTML = dj.queue.length
+    ? dj.queue.map((t, i) => `<li><span class="dj-n">${i + 1}</span><span class="dj-q-title">${esc(t.title)}<small>${esc([t.artist, t.by].filter(Boolean).join(' · '))}</small></span><span class="dj-q-dur">${t.live ? 'ao vivo' : fmtDur(t.duration)}</span><button type="button" class="icon-btn" data-dj-rm="${t.key}" title="Tirar da fila">${ICON.close}</button></li>`).join('')
+    : '<li class="dj-empty">Fila vazia</li>';
+  renderDjProgress();
+}
+$('#btn-dj').onclick = () => djMove(currentChannel);
+$('#dj-back').onclick = () => djMove('bots');
+$('#dj-play').onclick = () => djCtrl(dj?.now && !dj.now.pausedAt ? 'pause' : 'play');
+$('#dj-skip').onclick = () => djCtrl('skip');
+$('#dj-queue').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-dj-rm]');
+  if (b) djCtrl('remove', b.dataset.djRm);
+});
+$('#dj-vol').addEventListener('input', (e) => {
+  djVolume = Number(e.target.value) / 100;
+  store.set('voz-dj-vol', djVolume);
+  djAudio.volume = djVolume;
+});
+
+// ----- Procurar / adicionar música -----
+let djKind = 'audius';
+let djSearchTimer = null;
+function openDjSearch() {
+  $('#dj-search').hidden = false;
+  setTimeout(() => $('#dj-q').focus(), 30);
+  djSearch();
+}
+function setDjKind(k) {
+  djKind = k;
+  document.querySelectorAll('[data-djkind]').forEach((b) => b.classList.toggle('on', b.dataset.djkind === k));
+  $('#dj-q').placeholder = { audius: 'Nome da música ou artista…', radio: 'Nome da rádio (ex.: Jovem Pan, sertanejo, rock)…', file: 'Procurar nas enviadas…', link: 'Cole o link direto do áudio (https://…mp3)' }[k];
+  $('#dj-upload-row').hidden = k !== 'file';
+  $('#dj-link-row').hidden = k !== 'link';
+  djSearch();
+}
+document.querySelectorAll('[data-djkind]').forEach((b) => (b.onclick = () => setDjKind(b.dataset.djkind)));
+$('#dj-q').addEventListener('input', () => { clearTimeout(djSearchTimer); djSearchTimer = setTimeout(djSearch, 350); });
+$('#dj-search-close').onclick = () => { $('#dj-search').hidden = true; };
+$('#dj-add').onclick = openDjSearch;
+async function djSearch() {
+  const box = $('#dj-results');
+  if (djKind === 'link') { box.innerHTML = ''; return; }
+  const q = $('#dj-q').value.trim();
+  if (djKind === 'audius' && !q) { box.innerHTML = '<div class="chat-empty">Digite o nome de uma música ou artista. As músicas vêm do Audius, uma plataforma aberta: tem muita coisa de artistas independentes, eletrônica, lo-fi, remixes e covers.</div>'; return; }
+  box.innerHTML = '<div class="chat-empty">Procurando…</div>';
+  const r = await emitAck('dj-search', { kind: djKind, q });
+  if (r?.error) { box.innerHTML = `<div class="chat-empty">${esc(r.error)}</div>`; return; }
+  const items = r?.items || [];
+  if (!items.length) { box.innerHTML = `<div class="chat-empty">${djKind === 'file' ? 'Nenhuma música enviada ainda. Use "Enviar MP3".' : 'Nada encontrado.'}</div>`; return; }
+  box.innerHTML = items.map((t, i) => `<div class="dj-res" data-i="${i}">
+      ${t.art ? `<img class="dj-art" src="${esc(t.art)}" alt="">` : `<span class="dj-art dj-art-empty">${t.kind === 'radio' ? '📻' : '🎵'}</span>`}
+      <span class="dj-meta"><strong>${esc(t.title)}</strong><small>${esc([t.artist, t.duration ? fmtDur(t.duration) : '', t.live ? 'ao vivo' : ''].filter(Boolean).join(' · '))}</small></span>
+      ${t.kind === 'file' && (t.dono === me?.id || isMod()) ? `<button type="button" class="icon-btn" data-del="${t.id}" title="Apagar da biblioteca">${ICON.close}</button>` : ''}
+      <button type="button" class="btn small primary" data-add="${i}">Adicionar</button></div>`).join('');
+  box._items = items;
+}
+$('#dj-results').addEventListener('click', async (e) => {
+  const d = e.target.closest('[data-del]');
+  if (d) {
+    if (!confirm('Apagar essa música da biblioteca do DJ?')) return;
+    const r = await emitAck('dj-delete-music', { id: Number(d.dataset.del) });
+    if (r?.error) toast(r.error); else djSearch();
+    return;
+  }
+  const b = e.target.closest('[data-add]');
+  if (!b) return;
+  const t = $('#dj-results')._items?.[Number(b.dataset.add)];
+  if (t) djAdd(t);
+});
+$('#dj-link-add').onclick = () => {
+  const url = $('#dj-q').value.trim();
+  if (!/^https:\/\/\S+$/i.test(url)) return toast('Cole um link que comece com https:// (ex.: um .mp3 ou uma rádio).');
+  djAdd({ kind: 'link', url, title: url.split('/').pop()?.split('?')[0] || 'Link' });
+};
+// Enviar um MP3 para a biblioteca do DJ (fica guardado para as próximas vezes)
+$('#dj-upload').onclick = () => $('#dj-file').click();
+$('#dj-file').addEventListener('change', async (e) => {
+  const f = e.target.files?.[0];
+  e.target.value = '';
+  if (!f) return;
+  if (f.size > 15 * 1024 * 1024) return toast('Arquivo grande demais (máximo 15 MB).');
+  const btn = $('#dj-upload');
+  btn.disabled = true;
+  btn.textContent = 'Enviando…';
+  try {
+    // descobre a duração
+    const dur = await new Promise((ok) => {
+      const a = new Audio();
+      const url = URL.createObjectURL(f);
+      a.onloadedmetadata = () => { URL.revokeObjectURL(url); ok(isFinite(a.duration) ? a.duration : null); };
+      a.onerror = () => { URL.revokeObjectURL(url); ok(null); };
+      a.src = url;
+    });
+    const id = await uploadMedia(f);
+    if (!id) return;
+    const nomeArq = f.name.replace(/\.[^.]+$/, '');
+    const title = (prompt('Nome da música:', nomeArq) || '').trim() || nomeArq;
+    const artist = (prompt('Artista (pode deixar em branco):', '') || '').trim();
+    const r = await emitAck('dj-save', { img: id, title, artist, duration: dur });
+    if (r?.error) return toast(r.error);
+    toast('🎵 Música guardada na biblioteca do DJ!');
+    djSearch();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⬆️ Enviar MP3';
+  }
+});
 
 // ---------- Chat do canal ----------
 let chatMsgs = [];
@@ -3326,6 +3546,7 @@ const screenVolumeOf = (name) => (name in screenVolumes ? screenVolumes[name] : 
 
 // Aplica ensurdecer + volume de cada amigo + volume da transmissão
 function applyVolumes() {
+  djAudio.muted = deafened;
   peers.forEach((p, id) => {
     const v = volumeOf(nameOf(id));
     // Mutado por moderador: ninguém ouve o microfone dessa pessoa
@@ -3489,6 +3710,7 @@ function renderAll() {
   renderChannels();
   renderMain();
   renderControls();
+  renderDj();
 }
 
 function renderChannels() {
@@ -3522,6 +3744,12 @@ function renderChannels() {
         ${u.muted ? `<span class="muted-ico">${ICON.micOff}</span>` : ''}`;
       ul.appendChild(li);
     });
+    if (dj && dj.room === ch.id) {
+      const li = document.createElement('li');
+      li.className = 'member bot';
+      li.innerHTML = `${avatarHTML({ name: dj.name, avatar: dj.avatar })}<span class="mname">${esc(dj.name)}</span><span class="bot-badge">BOT</span>${dj.now && !dj.now.pausedAt ? '<span class="cam-ico" title="Tocando">🎵</span>' : ''}`;
+      ul.appendChild(li);
+    }
     el.appendChild(ul);
     wrap.appendChild(el);
   });
@@ -3531,6 +3759,17 @@ function renderChannels() {
     add.innerHTML = '➕ Nova sala';
     add.onclick = createChannel;
     wrap.appendChild(add);
+  }
+  // Sala dos bots: o DJ fica aqui esperando alguém chamar
+  if (dj) {
+    const bots = document.createElement('div');
+    bots.className = 'channel bots-room';
+    const inBots = !dj.room;
+    bots.innerHTML = `<div class="channel-row"><div class="channel-btn static">🤖<span>Bots</span><small>${inBots ? 1 : 0}/1</small></div></div>
+      <ul>${inBots ? `<li class="member bot clickable" title="${currentChannel ? 'Chamar o DJ King para a sua chamada' : 'Entre numa sala para chamar o DJ'}">${avatarHTML({ name: dj.name, avatar: dj.avatar })}<span class="mname">${esc(dj.name)}</span><span class="bot-hint">${currentChannel ? 'chamar ›' : 'DJ de música'}</span></li>` : `<li class="member empty-bot">O DJ King está na sala ${esc(channelsState.find((c) => c.id === dj.room)?.name || '')}</li>`}</ul>`;
+    const b = bots.querySelector('.member.clickable');
+    if (b) b.onclick = () => djMove(currentChannel);
+    wrap.appendChild(bots);
   }
 }
 
