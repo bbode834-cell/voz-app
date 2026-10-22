@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>King Launcher</title>
   <link rel="icon" href="logo-fone.svg" />
-  <link rel="stylesheet" href="style.css?v=156" />
+  <link rel="stylesheet" href="style.css?v=158" />
 </head>
 <body>
   <!-- Abertura: a logo parada e o fone caindo em cima da coroa (clique para pular) -->
@@ -176,6 +176,7 @@
         <button id="btn-share" class="btn">
           <span class="ico"></span><span class="label">Compartilhar tela</span>
         </button>
+        <button id="btn-funwin" class="btn" title="Abre uma janelinha que fica sempre na frente: os tomates e as outras brincadeiras aparecem nela mesmo com o jogo aberto e o navegador minimizado" hidden>🎉 Por cima do jogo</button>
         <button id="btn-cam" class="btn" title="Seus amigos veem sua câmera">
           <span class="ico"></span><span class="label">Câmera</span>
         </button>
@@ -211,10 +212,13 @@
   <aside id="dm" class="chat dm" hidden>
     <div id="dm-list-view" class="dm-view">
       <header class="chat-head">
-        <strong>Mensagens</strong>
+        <div class="dm-tabs" role="tablist">
+          <button type="button" class="on" data-dmtab="convos">Conversas</button>
+          <button type="button" data-dmtab="amigos">Amigos <b id="dm-req-count" class="dm-count" hidden></b></button>
+        </div>
         <button id="dm-close" class="icon-btn" title="Fechar"></button>
       </header>
-      <div class="dm-search"><input id="dm-search" placeholder="Procurar amigo…" autocomplete="off" /></div>
+      <div class="dm-search"><input id="dm-search" placeholder="Procurar pessoa…" autocomplete="off" /></div>
       <div id="dm-contacts" class="dm-contacts"></div>
     </div>
     <div id="dm-convo-view" class="dm-view" hidden>
@@ -294,6 +298,6 @@
   </div>
   <div id="photo-view" class="photo-view" hidden><img alt="Foto" /></div>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=156"></script>
+  <script src="app.js?v=158"></script>
 </body>
 </html>

@@ -773,7 +773,7 @@ body.dm-open .main { margin-right: 340px; }
 .fx-hit.h2 { animation-delay: .47s; }
 @keyframes hit { 0% { opacity: .9; transform: scale(.3); } 100% { opacity: 0; transform: scale(1.5); } }
 .fx-nudge-text { background: rgba(0,0,0,.78); color: #fff; padding: 10px 16px; border-radius: 20px; font-size: 16px; box-shadow: 0 6px 20px rgba(0,0,0,.4); }
-.app.shake { animation: shake .62s cubic-bezier(.36,.07,.19,.97) both; }
+.app.shake, body.fun-win.shake { animation: shake .62s cubic-bezier(.36,.07,.19,.97) both; }
 @keyframes shake {
   10%, 90% { transform: translate(-3px, 1px); } 20%, 80% { transform: translate(6px, -2px); }
   30%, 50%, 70% { transform: translate(-12px, 3px); } 40%, 60% { transform: translate(12px, -3px); }
@@ -819,3 +819,24 @@ body.dm-open .main { margin-right: 340px; }
   background: var(--accent); color: #fff; border: 0; border-radius: 22px; padding: 10px 18px; font-weight: 700; cursor: pointer;
   box-shadow: 0 6px 24px rgba(0,0,0,.45); }
 .update-bar[hidden] { display: none; }
+
+/* ---------- Abas Conversas / Amigos ---------- */
+.dm-tabs { display: flex; gap: 4px; flex: 1; }
+.dm-tabs button { background: none; border: 0; color: var(--muted); font-weight: 700; font-size: 14px; padding: 6px 10px; border-radius: 6px; cursor: pointer; position: relative; }
+.dm-tabs button.on { color: var(--text-strong); background: var(--panel-3); }
+.dm-tabs button:hover { color: var(--text-strong); }
+.dm-tabs .dm-count { margin-left: 4px; }
+.dm-friend-row { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 8px; cursor: pointer; }
+.dm-friend-row:hover { background: var(--hover); }
+.dm-friend-row .dm-info small.online { color: var(--green); }
+.dm-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.dm-actions .btn { padding: 5px 9px; font-size: 12px; white-space: nowrap; }
+.dm-actions .icon-btn svg { width: 18px; height: 18px; }
+
+/* ---------- Janela "por cima do jogo" ---------- */
+body.fun-win { margin: 0; background: #141518; overflow: hidden; height: 100vh; font-family: inherit; }
+.fun-idle { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 16px; text-align: center; color: var(--muted); }
+.fun-idle img { width: 90px; opacity: .35; }
+.fun-idle b { color: var(--text); font-size: 14px; }
+.fun-idle small { font-size: 12px; max-width: 360px; }
+#btn-funwin.on { border-color: var(--green); color: var(--green); }

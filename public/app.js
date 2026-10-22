@@ -2091,8 +2091,72 @@ const dmTime = (ts) => {
     : d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
 };
 
+// Abas da lista: "Conversas" e "Amigos" (amigos, pedidos recebidos/enviados e outras pessoas)
+let dmTab = 'convos';
+document.querySelectorAll('[data-dmtab]').forEach((b) => (b.onclick = () => {
+  dmTab = b.dataset.dmtab;
+  document.querySelectorAll('[data-dmtab]').forEach((x) => x.classList.toggle('on', x === b));
+  renderDmContacts();
+}));
+function updateReqCount() {
+  const n = Object.values(friends).filter((v) => v === 'incoming').length;
+  const b = $('#dm-req-count');
+  b.hidden = !n;
+  b.textContent = n;
+}
+function friendRow(c, sub, actions) {
+  return `<div class="dm-friend-row" data-id="${c.id}">
+    <span class="dm-av">${avatarHTML(c)}<i class="dot ${c.online ? 'on' : ''}"></i></span>
+    <span class="dm-info"><strong>${esc(c.name)} ${roleBadge(c.role)}</strong><small class="${!sub && c.online ? 'online' : ''}">${esc(sub || `@${c.username} · ${c.online ? 'online' : 'offline'}`)}</small></span>
+    <span class="dm-actions">${actions}</span></div>`;
+}
+function renderFriendsTab(list) {
+  const box = $('#dm-contacts');
+  const by = (st) => list.filter((c) => (friends[c.id] || null) === st).sort((a, b) => b.online - a.online || a.name.localeCompare(b.name));
+  const incoming = by('incoming'), outgoing = by('outgoing'), amigos = by('friend'), outros = by(null);
+  let h = '';
+  if (incoming.length) h += `<div class="dm-section">🤝 Pedidos recebidos (${incoming.length})</div>` + incoming.map((c) => friendRow(c, 'quer ser seu amigo',
+    `<button type="button" class="btn small ok" data-fa="accept">Aceitar</button><button type="button" class="btn small" data-fa="remove">Recusar</button>`)).join('');
+  if (outgoing.length) h += `<div class="dm-section">⏳ Pedidos enviados (${outgoing.length})</div>` + outgoing.map((c) => friendRow(c, 'esperando a resposta',
+    `<button type="button" class="btn small" data-fa="remove">Cancelar</button>`)).join('');
+  h += `<div class="dm-section">⭐ Amigos (${amigos.length})</div>`;
+  if (!amigos.length) h += `<div class="chat-empty">${dmContacts.length ? 'Você ainda não tem amigos. Adicione alguém na lista abaixo!' : 'Ainda não tem outras pessoas aprovadas.'}</div>`;
+  h += amigos.map((c) => friendRow(c, null,
+    `<button type="button" class="icon-btn" data-fa="dm" title="Mensagem">${ICON.chat}</button><button type="button" class="icon-btn" data-fa="unfriend" title="Desfazer amizade">${ICON.close}</button>`)).join('');
+  if (outros.length) h += `<div class="dm-section">👥 Outras pessoas (${outros.length})</div>` + outros.map((c) => friendRow(c, null,
+    `<button type="button" class="btn small primary" data-fa="add">➕ Adicionar</button>`)).join('');
+  box.innerHTML = h;
+}
+$('#dm-contacts').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-fa]');
+  if (!b) return;
+  e.stopPropagation();
+  const row = b.closest('.dm-friend-row');
+  const id = Number(row.dataset.id);
+  const c = dmContact(id);
+  const a = b.dataset.fa;
+  if (a === 'dm') return openDm(id);
+  if (a === 'unfriend') {
+    if (!confirm(`Desfazer a amizade com ${c?.name || 'essa pessoa'}?`)) return;
+    return friendAction(id, 'remove');
+  }
+  await friendAction(id, a);
+  if (a === 'add') toast(`Pedido de amizade enviado para ${c?.name || ''}.`);
+  if (a === 'accept') toast(`🎉 Você e ${c?.name || ''} agora são amigos!`);
+}, true);
+// clique no resto da linha (nome/foto) abre a conversa
+$('#dm-contacts').addEventListener('click', (e) => {
+  if (e.target.closest('[data-fa]')) return;
+  const row = e.target.closest('.dm-friend-row');
+  if (row) openDm(Number(row.dataset.id));
+});
+
 function renderDmContacts() {
+  updateReqCount();
   const q = $('#dm-search').value.trim().toLowerCase();
+  if (dmTab === 'amigos') {
+    return renderFriendsTab(dmContacts.filter((c) => !q || c.name.toLowerCase().includes(q) || c.username.includes(q)));
+  }
   const list = dmContacts
     .filter((c) => !q || c.name.toLowerCase().includes(q) || c.username.includes(q))
     .sort((a, b) => (b.last?.ts || 0) - (a.last?.ts || 0) || b.online - a.online || a.name.localeCompare(b.name));
@@ -2285,6 +2349,7 @@ socket.on('friends', (m) => {
   Object.entries(m || {}).forEach(([k, v]) => { friends[Number(k)] = v; });
   dmContacts.forEach((c) => { c.friend = friends[c.id] || null; });
   updateDmBadge();
+  updateReqCount();
   if (dmOpen && !dmWith) renderDmContacts();
   if (dmWith) updateFriendButton();
   if (volTarget && !$('#vol-pop').hidden) renderVolFriend();
@@ -2489,19 +2554,20 @@ $('#vol-friend').addEventListener('click', async (e) => {
 });
 
 socket.on('fun', ({ kind, from }) => {
+  const W = funEnv().win;
   if (kind === 'tomato') {
     // 3 tomates seguidos, cada um de um lado
     throwTomato();
-    setTimeout(throwTomato, 300);
-    setTimeout(throwTomato, 600);
+    W.setTimeout(throwTomato, 300);
+    W.setTimeout(throwTomato, 600);
     toast(`🍅 ${from} jogou um tomate em você!`);
     notifyIfHidden('🍅 Tomatada!', `${from} jogou um tomate em você!`);
     flashTitle(`🍅 ${from} te acertou!`);
   } else if (kind === 'beer') {
     // 3 garrafas seguidas
     throwBottle();
-    setTimeout(throwBottle, 320);
-    setTimeout(throwBottle, 640);
+    W.setTimeout(throwBottle, 320);
+    W.setTimeout(throwBottle, 640);
     toast(FUN.beer.got(from));
     notifyIfHidden('🍺 Garrafada!', `${from} jogou garrafas de cerveja em você!`);
     flashTitle(`🍺 ${from} te acertou!`);
@@ -2519,18 +2585,61 @@ socket.on('fun-shown', ({ kind, from, to }) => {
   if (FUN[kind]) toast(FUN[kind].seen(from, to));
 });
 
+// ---------- Janela "por cima do jogo" (PC) ----------
+// Um site não consegue desenhar por cima de outros programas. O que dá para fazer é abrir uma
+// janelinha que fica sempre na frente (a mesma técnica da câmera flutuante): as brincadeiras
+// aparecem nela mesmo com o navegador minimizado e o jogo aberto (em janela ou sem bordas).
+let funWin = null;
+function funEnv() {
+  if (funWin && !funWin.closed) {
+    const d = funWin.document;
+    return { win: funWin, doc: d, layer: d.getElementById('fun-layer'), shake: d.body, pip: true };
+  }
+  return { win: window, doc: document, layer: $('#fun-layer'), shake: document.querySelector('.app'), pip: false };
+}
+async function openFunWindow() {
+  if (!('documentPictureInPicture' in window)) return toast('Essa janela só existe no Chrome e no Edge (computador).');
+  if (funWin && !funWin.closed) { funWin.focus(); return; }
+  try {
+    const win = await documentPictureInPicture.requestWindow({ width: 440, height: 300 });
+    const d = win.document;
+    d.title = 'Brincadeiras — King Launcher';
+    const base = d.createElement('base');
+    base.href = location.href;
+    d.head.appendChild(base);
+    for (const ss of document.styleSheets) {
+      try {
+        if (ss.href) { const l = d.createElement('link'); l.rel = 'stylesheet'; l.href = ss.href; d.head.appendChild(l); }
+        else { const st = d.createElement('style'); st.textContent = [...ss.cssRules].map((r) => r.cssText).join('\n'); d.head.appendChild(st); }
+      } catch {}
+    }
+    d.body.className = 'fun-win';
+    d.body.innerHTML = `<div class="fun-idle"><img src="logo-fone.svg" alt=""><b>Brincadeiras dos amigos aparecem aqui</b>
+      <small>Deixe esta janela num canto: ela fica por cima do jogo (em janela ou sem bordas), mesmo com o navegador minimizado.</small></div>
+      <div id="fun-layer" class="fun-layer"></div>`;
+    win.addEventListener('pagehide', () => { funWin = null; renderControls(); });
+    funWin = win;
+    renderControls();
+  } catch (err) {
+    console.warn('janela de brincadeiras:', err);
+    toast('Não consegui abrir a janela.');
+  }
+}
+$('#btn-funwin').onclick = openFunWindow;
+
 // O tomate voa em arco, achata ao bater, espirra gotinhas, mancha a tela e escorre
 const rnd = (a, b) => a + Math.random() * (b - a);
 function throwTomato() {
-  const layer = $('#fun-layer');
-  const W = innerWidth, H = innerHeight;
+  const E = funEnv();
+  const layer = E.layer;
+  const W = E.win.innerWidth, H = E.win.innerHeight;
   const tx = W * rnd(0.2, 0.8), ty = H * rnd(0.2, 0.65);
   const fromLeft = Math.random() < 0.5;
   const x0 = fromLeft ? -140 : W + 40, y0 = H * rnd(0.55, 1);
   const spin = (fromLeft ? 1 : -1) * rnd(540, 900);
 
   // voo: anda em linha reta para o lado, sobe e desce em arco, gira e cresce (vem na sua direção)
-  const fly = document.createElement('div');
+  const fly = E.doc.createElement('div');
   fly.className = 'fx-fly';
   fly.innerHTML = '<span class="fx-tom">🍅</span>';
   layer.appendChild(fly);
@@ -2543,12 +2652,12 @@ function throwTomato() {
   const DUR = 560;
   fly.animate(frames, { duration: DUR, easing: 'cubic-bezier(.35,.1,.55,1)', fill: 'forwards' });
 
-  setTimeout(() => {
+  E.win.setTimeout(() => {
     // achata ao bater
     fly.firstElementChild.animate(
       [{ transform: 'scale(1)', opacity: 1 }, { transform: 'scale(1.7, .45)', opacity: 0.9 }, { transform: 'scale(1.9, .3)', opacity: 0 }],
       { duration: 110, fill: 'forwards' });
-    setTimeout(() => fly.remove(), 120);
+    E.win.setTimeout(() => fly.remove(), 120);
     playSound('tomate', true);
     splatAt(layer, tx, ty, Math.min(W, H) * rnd(0.36, 0.5));
   }, DUR);
@@ -2573,7 +2682,7 @@ function makeDrip(x, y, w, L, pal, dur, delay) {
   const body = `M${L1.join(' L')} L${R1.reverse().join(' L')} Z`;
   const hl = [];
   for (let i = 3; i <= N - 2; i++) { const t = i / N; hl.push(`${(cx - half(t) * 0.35 + wob(t, ph) * 0.5).toFixed(1)} ${(t * L).toFixed(1)}`); }
-  const el = document.createElement('div');
+  const el = funEnv().doc.createElement('div');
   el.className = 'fx-drip2';
   el.style.left = `${x - cx}px`;
   el.style.top = `${y}px`;
@@ -2604,12 +2713,13 @@ function makeDrip(x, y, w, L, pal, dur, delay) {
 }
 
 function splatAt(layer, x, y, size) {
-  const wrap = document.createElement('div');
+  const E = funEnv();
+  const wrap = E.doc.createElement('div');
   wrap.className = 'fx-splat-wrap';
   wrap.style.left = `${x}px`;
   wrap.style.top = `${y}px`;
   // a mancha
-  const img = document.createElement('img');
+  const img = E.doc.createElement('img');
   img.src = `fx/splat${1 + Math.floor(Math.random() * 3)}.svg`;
   img.className = 'fx-splat';
   img.style.width = img.style.height = `${size}px`;
@@ -2623,7 +2733,7 @@ function splatAt(layer, x, y, size) {
   wrap.appendChild(img);
   // gotinhas voando para os lados (com "gravidade")
   for (let k = 0; k < 14; k++) {
-    const d = document.createElement('i');
+    const d = E.doc.createElement('i');
     d.className = 'fx-drop';
     const s = rnd(6, 16);
     d.style.width = d.style.height = `${s}px`;
@@ -2647,18 +2757,19 @@ function splatAt(layer, x, y, size) {
   // vai escorregando e some
   wrap.animate([{ transform: 'translateY(0)', opacity: 1 }, { transform: 'translateY(0)', opacity: 1, offset: 0.7 },
     { transform: 'translateY(40px)', opacity: 0 }], { duration: 5600, easing: 'ease-in', fill: 'forwards' });
-  setTimeout(() => wrap.remove(), 5700);
+  E.win.setTimeout(() => wrap.remove(), 5700);
 }
 
 // 🍺 A garrafa voa girando e estoura na tela: vidro trincado, cacos e respingo de cerveja com espuma
 function throwBottle() {
-  const layer = $('#fun-layer');
-  const W = innerWidth, H = innerHeight;
+  const E = funEnv();
+  const layer = E.layer;
+  const W = E.win.innerWidth, H = E.win.innerHeight;
   const tx = W * rnd(0.2, 0.8), ty = H * rnd(0.2, 0.62);
   const fromLeft = Math.random() < 0.5;
   const x0 = fromLeft ? -120 : W + 40, y0 = H * rnd(0.55, 1);
   const spin = (fromLeft ? 1 : -1) * rnd(600, 1000);
-  const fly = document.createElement('div');
+  const fly = E.doc.createElement('div');
   fly.className = 'fx-fly fx-bottle-fly';
   fly.innerHTML = '<img src="fx/garrafa.svg" class="fx-bottle" alt="">';
   layer.appendChild(fly);
@@ -2670,16 +2781,16 @@ function throwBottle() {
   }
   const DUR = 540;
   fly.animate(frames, { duration: DUR, easing: 'cubic-bezier(.35,.1,.55,1)', fill: 'forwards' });
-  setTimeout(() => {
+  E.win.setTimeout(() => {
     fly.remove();
     playSound('vidro', true);
     const size = Math.min(W, H) * rnd(0.42, 0.56);
-    const wrap = document.createElement('div');
+    const wrap = E.doc.createElement('div');
     wrap.className = 'fx-splat-wrap';
     wrap.style.left = `${tx}px`;
     wrap.style.top = `${ty}px`;
     // cerveja espalhada (atrás) e o vidro trincado (na frente)
-    const beer = document.createElement('img');
+    const beer = E.doc.createElement('img');
     beer.src = `fx/cerveja${1 + Math.floor(Math.random() * 3)}.svg`;
     beer.className = 'fx-splat';
     const bs = size * 1.05;
@@ -2689,7 +2800,7 @@ function throwBottle() {
     beer.animate([{ transform: `rotate(${r1}deg) scale(.2)` }, { transform: `rotate(${r1}deg) scale(1.1)`, offset: 0.6 },
       { transform: `rotate(${r1}deg) scale(1)` }], { duration: 220, easing: 'ease-out', fill: 'forwards' });
     wrap.appendChild(beer);
-    const crack = document.createElement('img');
+    const crack = E.doc.createElement('img');
     crack.src = `fx/vidro${1 + Math.floor(Math.random() * 2)}.svg`;
     crack.className = 'fx-crack';
     crack.style.width = crack.style.height = `${size * 1.25}px`;
@@ -2699,7 +2810,7 @@ function throwBottle() {
     wrap.appendChild(crack);
     // cacos de vidro marrom voando com gravidade
     for (let k = 0; k < 16; k++) {
-      const c = document.createElement('i');
+      const c = E.doc.createElement('i');
       c.className = 'fx-shard';
       const w = rnd(8, 22), h = rnd(10, 30);
       c.style.width = `${w}px`;
@@ -2717,7 +2828,7 @@ function throwBottle() {
     }
     // gotas de cerveja com espuma
     for (let k = 0; k < 12; k++) {
-      const d = document.createElement('i');
+      const d = E.doc.createElement('i');
       d.className = 'fx-drop fx-beer-drop';
       const sz = rnd(6, 15);
       d.style.width = d.style.height = `${sz}px`;
@@ -2733,10 +2844,9 @@ function throwBottle() {
     }
     layer.appendChild(wrap);
     // tranco na tela
-    const app = document.querySelector('.app');
-    app.animate([{ transform: 'translate(0,0)' }, { transform: 'translate(-7px,4px)' }, { transform: 'translate(6px,-3px)' }, { transform: 'translate(0,0)' }], { duration: 180 });
+    E.shake.animate([{ transform: 'translate(0,0)' }, { transform: 'translate(-7px,4px)' }, { transform: 'translate(6px,-3px)' }, { transform: 'translate(0,0)' }], { duration: 180 });
     wrap.animate([{ opacity: 1 }, { opacity: 1, offset: 0.72 }, { opacity: 0 }], { duration: 5800, easing: 'ease-in', fill: 'forwards' });
-    setTimeout(() => wrap.remove(), 5900);
+    E.win.setTimeout(() => wrap.remove(), 5900);
   }, DUR);
 }
 
@@ -2844,8 +2954,9 @@ let smoking = false;
 function smokeTime(from) {
   if (smoking) return;
   smoking = true;
-  const layer = $('#fun-layer');
-  const box = document.createElement('div');
+  const E = funEnv();
+  const layer = E.layer;
+  const box = E.doc.createElement('div');
   box.className = 'fx-smoke';
   box.innerHTML = `<div class="fx-fog"></div>
     <div class="fx-smoke-text">🌿 <b>${esc(from)}</b>: hora de fumar!</div>
@@ -2860,12 +2971,12 @@ function smokeTime(from) {
   const fog = box.querySelector('.fx-fog');
   // nuvens grandes que vão tomando a tela
   for (let k = 0; k < 14; k++) {
-    const c = document.createElement('i');
+    const c = E.doc.createElement('i');
     c.className = 'fx-cloud';
-    const s = rnd(0.45, 0.9) * Math.max(innerWidth, innerHeight);
+    const s = rnd(0.45, 0.9) * Math.max(E.win.innerWidth, E.win.innerHeight);
     c.style.width = c.style.height = `${s}px`;
-    c.style.left = `${rnd(-0.25, 0.95) * innerWidth - s / 2 + s * 0.25}px`;
-    c.style.top = `${rnd(-0.2, 1.0) * innerHeight - s / 2 + s * 0.2}px`;
+    c.style.left = `${rnd(-0.25, 0.95) * E.win.innerWidth - s / 2 + s * 0.25}px`;
+    c.style.top = `${rnd(-0.2, 1.0) * E.win.innerHeight - s / 2 + s * 0.2}px`;
     c.animate([{ transform: 'translate(0,0) scale(.8)' }, { transform: `translate(${rnd(-80, 80)}px, ${rnd(-140, -40)}px) scale(1.15)` }],
       { duration: rnd(9000, 12000), easing: 'ease-out', fill: 'forwards' });
     fog.appendChild(c);
@@ -2873,11 +2984,11 @@ function smokeTime(from) {
   // o baseado sobe
   joint.animate([{ transform: `translate(-50%, 160px) rotate(${J_ANG}deg)`, opacity: 0 }, { transform: `translate(-50%, 0) rotate(${J_ANG}deg)`, opacity: 1 }],
     { duration: 600, easing: 'cubic-bezier(.2,.9,.3,1.2)', fill: 'forwards' });
-  setTimeout(() => playSound('isqueiro', true), 300);
+  E.win.setTimeout(() => playSound('isqueiro', true), 300);
   const BURN0 = 800, BURN = 6800;
   // acende e vai queimando até o filtro
   // desenha o baseado queimando, quadro a quadro
-  const dpr = Math.min(2, devicePixelRatio || 1);
+  const dpr = Math.min(2, E.win.devicePixelRatio || 1);
   cv.width = Math.round(joint.offsetWidth * dpr);
   cv.height = Math.round(joint.offsetHeight * dpr);
   const g = cv.getContext('2d');
@@ -2891,17 +3002,17 @@ function smokeTime(from) {
     const len = 400 * (1 - 0.8 * p);
     drawJoint(g, J, len, t > BURN0 - 200, t);
     tipMark.style.left = `${(len / 400) * 100}%`;
-    requestAnimationFrame(frame);
+    E.win.requestAnimationFrame(frame);
   };
-  requestAnimationFrame(frame);
+  E.win.requestAnimationFrame(frame);
   fog.animate([{ opacity: 0 }, { opacity: 0, offset: 0.08 }, { opacity: 0.93, offset: 0.62 }, { opacity: 0.93, offset: 0.78 }, { opacity: 0 }],
     { duration: 11500, easing: 'ease-in-out', fill: 'forwards' });
   // fumacinha saindo da ponta
   const ember = box.querySelector('.fx-ember');
-  const puff = setInterval(() => {
+  const puff = E.win.setInterval(() => {
     const r = ember.getBoundingClientRect();
     if (!r.width) return;
-    const p = document.createElement('i');
+    const p = E.doc.createElement('i');
     p.className = 'fx-puff';
     const s = rnd(30, 60);
     p.style.width = p.style.height = `${s}px`;
@@ -2914,26 +3025,26 @@ function smokeTime(from) {
       { transform: `translate(${dx}px, ${-up}px) scale(${rnd(3, 4.5)})`, opacity: 0 },
     ], { duration: rnd(2200, 3200), easing: 'ease-out', fill: 'forwards' });
     box.appendChild(p);
-    setTimeout(() => p.remove(), 3300);
+    E.win.setTimeout(() => p.remove(), 3300);
   }, 110);
   // cinza caindo
-  const ashTick = setInterval(() => {
+  const ashTick = E.win.setInterval(() => {
     const r = ember.getBoundingClientRect();
     if (!r.width) return;
-    const a = document.createElement('i');
+    const a = E.doc.createElement('i');
     a.className = 'fx-ashbit';
     a.style.left = `${r.left + rnd(-4, 4)}px`;
     a.style.top = `${r.top + r.height * 0.6}px`;
     a.animate([{ transform: 'translate(0,0)', opacity: 1 }, { transform: `translate(${rnd(-20, 20)}px, ${rnd(120, 220)}px) rotate(${rnd(-200, 200)}deg)`, opacity: 0 }],
       { duration: rnd(900, 1400), easing: 'ease-in', fill: 'forwards' });
     box.appendChild(a);
-    setTimeout(() => a.remove(), 1500);
+    E.win.setTimeout(() => a.remove(), 1500);
   }, 650);
-  setTimeout(() => clearInterval(ashTick), BURN0 + BURN);
-  setTimeout(() => clearInterval(puff), BURN0 + BURN - 300);
+  E.win.setTimeout(() => E.win.clearInterval(ashTick), BURN0 + BURN);
+  E.win.setTimeout(() => E.win.clearInterval(puff), BURN0 + BURN - 300);
   // sobrou a pontinha: sai girando em arco, como quem joga a bituca fora
-  setTimeout(() => {
-    const W = innerWidth, H = innerHeight;
+  E.win.setTimeout(() => {
+    const W = E.win.innerWidth, H = E.win.innerHeight;
     const dir = Math.random() < 0.5 ? 1 : -1;
     const frames = [];
     for (let k = 0; k <= 20; k++) {
@@ -2944,28 +3055,29 @@ function smokeTime(from) {
     }
     joint.animate(frames, { duration: 1150, easing: 'cubic-bezier(.3,.1,.6,1)', fill: 'forwards' });
   }, BURN0 + BURN + 150);
-  setTimeout(() => { box.remove(); smoking = false; }, 11600);
+  E.win.setTimeout(() => { box.remove(); smoking = false; }, 11600);
 }
 
 // Mão batendo "toc toc" e a tela tremendo (igual ao MSN)
 function nudge(from) {
-  const layer = $('#fun-layer');
-  const box = document.createElement('div');
+  const E = funEnv();
+  const layer = E.layer;
+  const box = E.doc.createElement('div');
   box.className = 'fx-nudge';
   box.innerHTML = `<div class="fx-fist"><i class="fx-hit h1"></i><i class="fx-hit h2"></i><span class="fist-emoji">👊</span></div>
     <div class="fx-nudge-text"><b>${esc(from)}</b> está chamando sua atenção!</div>`;
   layer.appendChild(box);
   playSound('toctoc', true);
   // duas batidas "no vidro" (0,25 s e 0,47 s) e depois a tela treme
-  setTimeout(() => {
-    const app = document.querySelector('.app');
+  E.win.setTimeout(() => {
+    const app = E.shake;
     app.classList.remove('shake');
     void app.offsetWidth;
     app.classList.add('shake');
-    setTimeout(() => app.classList.remove('shake'), 650);
+    E.win.setTimeout(() => app.classList.remove('shake'), 650);
   }, 620);
-  setTimeout(() => box.classList.add('out'), 2300);
-  setTimeout(() => box.remove(), 2700);
+  E.win.setTimeout(() => box.classList.add('out'), 2300);
+  E.win.setTimeout(() => box.remove(), 2700);
 }
 
 // Do cartão de um amigo na chamada: "Mandar mensagem"
@@ -3372,6 +3484,12 @@ function renderControls() {
   const me = $('#me-avatar');
   fillAvatar(me, myName, myAvatar);
   $('#me-name').textContent = myName;
+
+  // janela "por cima do jogo": só no Chrome/Edge do computador, e só em chamada
+  const fw = $('#btn-funwin');
+  fw.hidden = !('documentPictureInPicture' in window) || !currentChannel;
+  fw.classList.toggle('on', !!(funWin && !funWin.closed));
+  fw.textContent = funWin && !funWin.closed ? '🎉 Janela aberta' : '🎉 Por cima do jogo';
 
   const bm = $('#btn-mute');
   bm.innerHTML = muted || deafened ? ICON.micOff : ICON.mic;
