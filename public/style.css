@@ -908,4 +908,4 @@ body.dm-open .main { margin-right: 340px; }
 .dj-panel.min .dj-row, .dj-panel.min .dj-queue, .dj-panel.min #dj-add, .dj-panel.min #dj-back, .dj-panel.min #dj-yt-size { display: none !important; }
 .dj-panel.min .dj-mini-ctl { display: inline-block; width: 30px; height: 30px; font-size: 14px; }
 .dj-mini-ctl[hidden] { display: none !important; }
-.dj-panel.min .dj-yt { max-width: 356px; margin: 8px 0 0; }
+.dj-panel.min .dj-yt { display: none !important; }
