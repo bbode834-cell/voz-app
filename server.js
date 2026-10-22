@@ -413,6 +413,36 @@ async function listaMusicas(q) {
     .filter((m) => !ql || m.titulo.toLowerCase().includes(ql) || (m.artista || '').toLowerCase().includes(ql))
     .map((m) => ({ kind: 'file', id: m.id, title: m.titulo, artist: m.artista || '', url: `/img/${m.img}`, art: '', duration: m.duracao || null, dono: m.dono }));
 }
+// ---- YouTube: o DJ usa o player oficial do YouTube em cada aparelho (regras do YouTube:
+// o vídeo fica visível; nada é baixado). Aqui só entendemos o link e pegamos título/capa.
+function parseYouTube(url) {
+  let u;
+  try { u = new URL(String(url || '').trim()); } catch { return null; }
+  const host = u.hostname.replace(/^(www|m|music)\./, '');
+  if (!['youtube.com', 'youtu.be', 'youtube-nocookie.com'].includes(host)) return null;
+  const vid = /^[A-Za-z0-9_-]{11}$/;
+  const lst = /^[A-Za-z0-9_-]{10,80}$/;
+  let video = null;
+  let list = u.searchParams.get('list');
+  if (host === 'youtu.be') video = u.pathname.slice(1).split('/')[0];
+  else if (u.pathname === '/watch') video = u.searchParams.get('v');
+  else {
+    const m = u.pathname.match(/^\/(?:shorts|embed|live|v)\/([A-Za-z0-9_-]{11})/);
+    if (m) video = m[1];
+  }
+  video = video && vid.test(video) ? video : null;
+  list = list && lst.test(list) && !/^RD/.test(list) ? list : null; // "mix" (RD…) não abre fora do YouTube
+  let index = Number(u.searchParams.get('index'));
+  index = Number.isInteger(index) && index > 0 ? index - 1 : 0;
+  if (!video && !list) return null;
+  return { video, list, index };
+}
+async function infoYouTube(video, list) {
+  const alvo = list ? `https://www.youtube.com/playlist?list=${list}` : `https://www.youtube.com/watch?v=${video}`;
+  const j = await fetchJson(`https://www.youtube.com/oembed?url=${encodeURIComponent(alvo)}&format=json`);
+  return { title: String(j.title || '').slice(0, 100), author: String(j.author_name || '').slice(0, 60), art: /^https:/.test(j.thumbnail_url || '') ? j.thumbnail_url : '' };
+}
+
 // Transforma o que o usuário escolheu numa faixa segura para a fila
 async function montaFaixa(item, by) {
   let t = null;
@@ -424,6 +454,23 @@ async function montaFaixa(item, by) {
     if (m) t = { kind: 'file', id: m.id, title: m.titulo, artist: m.artista || '', url: `/img/${m.img}`, art: '', duration: m.duracao || null };
   } else if (item.kind === 'link' && /^https:\/\/\S+$/i.test(item.url || '')) {
     t = { kind: 'link', id: '', title: String(item.title || item.url).slice(0, 80), artist: '', url: String(item.url).slice(0, 500), art: '', duration: null };
+  } else if (item.kind === 'yt') {
+    const p = parseYouTube(item.url);
+    if (!p) throw new Error('yt-link');
+    let info = { title: '', author: '', art: '' };
+    try {
+      info = await infoYouTube(p.video, p.list);
+    } catch (e) {
+      // 401/403 = o dono do vídeo não deixa tocar fora do YouTube; 404 = não existe / é particular
+      if (!p.list && /HTTP (401|403|404)/.test(e.message)) throw new Error('yt-bloqueado');
+      if (p.list && /HTTP (401|403|404)/.test(e.message)) throw new Error('yt-playlist');
+    }
+    t = {
+      kind: 'yt', id: p.video || p.list, title: info.title || (p.list ? 'Playlist do YouTube' : 'Vídeo do YouTube'), artist: info.author,
+      url: p.list ? `https://www.youtube.com/playlist?list=${p.list}` : `https://www.youtube.com/watch?v=${p.video}`,
+      art: info.art || (p.video ? `https://i.ytimg.com/vi/${p.video}/mqdefault.jpg` : ''), duration: null,
+      video: p.video, list: p.list, index: p.list ? p.index : 0, count: p.list ? null : 1, nowTitle: '', nowVideo: p.video || '',
+    };
   }
   if (!t) return null;
   return { ...t, key: `t${++djSeq}`, by: String(by || '').slice(0, 24) };
@@ -471,6 +518,20 @@ function djArmTimer() {
   if (!n || n.pausedAt || !n.duration) return;
   const left = n.duration * 1000 - (Date.now() - n.startedAt);
   dj.timer = setTimeout(djNext, Math.max(500, left + 1500));
+}
+// Playlist do YouTube: passa para o próximo vídeo dela (ou para a próxima da fila, se acabou)
+function djAvanca() {
+  const n = dj.now;
+  if (n && n.kind === 'yt' && n.list && (n.count == null || n.index + 1 < n.count)) {
+    n.index += 1;
+    n.startedAt = Date.now();
+    n.pausedAt = null;
+    n.nowTitle = '';
+    n.nowVideo = '';
+    broadcastDj();
+    return;
+  }
+  djNext();
 }
 function djPause() {
   const n = dj.now;
@@ -830,7 +891,15 @@ io.on('connection', (socket) => {
     try {
       if (!podeDj()) return ack({ error: 'Puxe o DJ King para a sua chamada primeiro.' });
       if (dj.queue.length >= 50) return ack({ error: 'A fila está cheia (50 músicas).' });
-      const t = await montaFaixa(item, me().name);
+      let t;
+      try {
+        t = await montaFaixa(item, me().name);
+      } catch (e) {
+        if (e.message === 'yt-link') return ack({ error: 'Esse não parece um link do YouTube. Cole o link do vídeo ou da playlist.' });
+        if (e.message === 'yt-bloqueado') return ack({ error: 'O dono desse vídeo não deixa tocar fora do YouTube (ou ele é particular).' });
+        if (e.message === 'yt-playlist') return ack({ error: 'Não achei essa playlist. Ela precisa ser pública ou "não listada".' });
+        throw e;
+      }
       if (!t) return ack({ error: 'Não consegui adicionar essa música.' });
       dj.queue.push(t);
       ack({ ok: true, position: dj.queue.length });
@@ -846,7 +915,8 @@ io.on('connection', (socket) => {
     if (!podeDj()) return ack({ error: 'Só quem está na chamada com o DJ pode controlar ele.' });
     if (action === 'pause') djPause();
     else if (action === 'play') { if (dj.now) djResume(); else djNext(); }
-    else if (action === 'skip') { djNext(); ack({ ok: true }); return; }
+    else if (action === 'skip') { djAvanca(); ack({ ok: true }); return; } // numa playlist: próximo vídeo
+    else if (action === 'skip-all') { djNext(); ack({ ok: true }); return; } // pula a playlist inteira
     else if (action === 'remove') dj.queue = dj.queue.filter((t) => t.key !== key);
     else if (action === 'clear') dj.queue = [];
     else if (action === 'stop') { djStop(); dj.now = null; dj.queue = []; }
@@ -856,11 +926,38 @@ io.on('connection', (socket) => {
   });
 
   // Um aparelho avisou que a música acabou (ou não abriu): passa para a próxima
-  socket.on('dj-ended', ({ key, error: err } = {}) => {
-    if (!dj.now || dj.now.key !== key) return;
+  socket.on('dj-ended', ({ key, index, error: err, last } = {}) => {
+    const n = dj.now;
+    if (!n || n.key !== key) return;
     if (!socket.data.channel || socket.data.channel !== dj.room) return;
-    if (err && dj.room) io.to(dj.room).emit('dj-info', { text: `⚠️ Não deu para tocar "${dj.now.title}". Pulando.` });
+    if (n.kind === 'yt' && n.list) {
+      // Vários aparelhos avisam o mesmo fim: só vale o do vídeo atual
+      if (Number.isInteger(index) && index !== n.index) return;
+      if (err && dj.room) io.to(dj.room).emit('dj-info', { text: '⚠️ Um vídeo da playlist não pode tocar fora do YouTube. Pulando.' });
+      if (last) { djNext(); return; }
+      djAvanca();
+      return;
+    }
+    if (err && dj.room) io.to(dj.room).emit('dj-info', { text: `⚠️ Não deu para tocar "${n.title}". Pulando.` });
     djNext();
+  });
+
+  // O player do YouTube de um aparelho conta o que está tocando (título, posição na playlist, tamanho)
+  socket.on('dj-yt-meta', ({ key, index, count, title, author, video } = {}) => {
+    const n = dj.now;
+    if (!n || n.kind !== 'yt' || n.key !== key) return;
+    if (!socket.data.channel || socket.data.channel !== dj.room) return;
+    let mudou = false;
+    if (Number.isInteger(count) && count > 0 && count !== n.count) { n.count = count; mudou = true; }
+    if (index === n.index || !n.list) {
+      const t = String(title || '').slice(0, 100);
+      const v = String(video || '').slice(0, 11);
+      if (t && t !== n.nowTitle) { n.nowTitle = t; mudou = true; }
+      if (v && v !== n.nowVideo) { n.nowVideo = v; mudou = true; }
+      const a = String(author || '').slice(0, 60);
+      if (a && n.list && a !== n.artist) { n.artist = a; mudou = true; }
+    }
+    if (mudou) broadcastDj();
   });
 
   // Guardar um MP3 enviado na biblioteca do bot

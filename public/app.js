@@ -1880,10 +1880,18 @@ socket.on('dj-info', ({ text }) => toast(text));
 // Deixa o som do DJ igual ao estado do servidor (tocando/pausado/no ponto certo)
 function syncDjAudio() {
   const n = dj?.now;
+  const unloadAudio = () => { if (djAudio.src) { djAudio.pause(); djAudio.removeAttribute('src'); djAudio.load(); djAudio.dataset.key = ''; } };
   if (!djHere() || !n) {
-    if (djAudio.src) { djAudio.pause(); djAudio.removeAttribute('src'); djAudio.load(); djAudio.dataset.key = ''; }
+    unloadAudio();
+    ytStop();
     return;
   }
+  if (n.kind === 'yt') {
+    unloadAudio();
+    syncYt(n);
+    return;
+  }
+  ytStop();
   const url = djUrl(n);
   if (djAudio.dataset.key !== n.key) {
     djAudio.dataset.key = n.key;
@@ -1903,6 +1911,7 @@ function syncDjAudio() {
 // De tempos em tempos confere se não desgarrou do ponto certo
 setInterval(() => {
   if (!djHere() || !dj?.now || dj.now.pausedAt) return;
+  if (dj.now.kind === 'yt') { syncYt(dj.now); renderDjProgress(); return; }
   if (djAudio.paused && djAudio.src) djAudio.play().catch(() => {});
   if (!dj.now.live) {
     const want = djPos();
@@ -1910,6 +1919,165 @@ setInterval(() => {
   }
   renderDjProgress();
 }, 1000);
+
+// ----- ▶ YouTube: player oficial do YouTube dentro do painel (o vídeo fica visível, como o YouTube pede) -----
+let ytPlayer = null;
+let ytReady = false;
+let ytLoading = false;
+let ytKey = ''; // faixa carregada no player
+let ytLoadedAt = 0;
+let ytLastMeta = '';
+let ytErrors = 0;
+let ytPlayingSeen = false; // o vídeo atual chegou a tocar?
+const YT_MINI = 'voz-dj-yt-mini';
+function loadYtApi() {
+  if (window.YT?.Player) return Promise.resolve();
+  if (!loadYtApi.p) {
+    loadYtApi.p = new Promise((ok) => {
+      window.onYouTubeIframeAPIReady = ok;
+      const sc = document.createElement('script');
+      sc.src = 'https://www.youtube.com/iframe_api';
+      document.head.appendChild(sc);
+    });
+  }
+  return loadYtApi.p;
+}
+async function ensureYt() {
+  if (ytPlayer || ytLoading) return;
+  ytLoading = true;
+  try {
+    await loadYtApi();
+    ytPlayer = new YT.Player('dj-yt', {
+      width: '100%',
+      height: '100%',
+      playerVars: { playsinline: 1, controls: 0, rel: 0, iv_load_policy: 3, hl: 'pt', origin: location.origin, enablejsapi: 1 },
+      events: {
+        onReady: () => { ytReady = true; ytLoading = false; syncDjAudio(); },
+        onStateChange: (e) => onYtState(e.data),
+        onError: (e) => onYtError(e.data),
+      },
+    });
+  } catch (e) {
+    ytLoading = false;
+    console.warn('youtube:', e);
+  }
+}
+function ytStop() {
+  const wrap = $('#dj-yt-wrap');
+  if (wrap && !wrap.hidden) wrap.hidden = true;
+  if (ytPlayer && ytKey) {
+    ytKey = '';
+    try { ytPlayer.stopVideo(); } catch {}
+  }
+}
+function ytIdx() {
+  try {
+    const pl = ytPlayer.getPlaylist?.();
+    return pl && pl.length ? ytPlayer.getPlaylistIndex() : 0;
+  } catch { return 0; }
+}
+function syncYt(n) {
+  const wrap = $('#dj-yt-wrap');
+  wrap.hidden = false;
+  wrap.classList.toggle('mini', !!store.get(YT_MINI, false));
+  if (!ytPlayer || !ytReady) { ensureYt(); return; }
+  const p = ytPlayer;
+  try {
+    if (ytKey !== n.key) {
+      ytKey = n.key;
+      ytLoadedAt = Date.now();
+      ytLastMeta = '';
+      ytErrors = 0;
+      ytPlayingSeen = false;
+      const start = Math.max(0, Math.floor(djPos()));
+      if (n.list) p.loadPlaylist({ listType: 'playlist', list: n.list, index: n.index, startSeconds: start });
+      else p.loadVideoById({ videoId: n.video, startSeconds: start });
+      p.setVolume(Math.round(djVolume * 100));
+      if (deafened) p.mute(); else p.unMute();
+      return;
+    }
+    const st = p.getPlayerState();
+    const carregando = Date.now() - ytLoadedAt < 4000;
+    // Playlist: o servidor mandou outro vídeo dela
+    if (n.list && !carregando) {
+      const pl = p.getPlaylist?.() || [];
+      if (pl.length && p.getPlaylistIndex() !== n.index && n.index < pl.length) {
+        ytLoadedAt = Date.now();
+        ytLastMeta = '';
+        ytPlayingSeen = false;
+        p.playVideoAt(n.index);
+        return;
+      }
+    }
+    // Vídeo que não quis tocar em 20 s (bloqueado, sem erro avisado): pede para pular
+    if (!ytPlayingSeen && !n.pausedAt && Date.now() - ytLoadedAt > 20000) {
+      ytLoadedAt = Date.now();
+      ytErrors += 1;
+      socket.emit('dj-ended', { key: n.key, index: n.index, error: true, last: ytErrors >= 6 || !n.list });
+      return;
+    }
+    p.setVolume(Math.round(djVolume * 100));
+    if (deafened) p.mute(); else p.unMute();
+    if (n.pausedAt) {
+      if (st === YT.PlayerState.PLAYING || st === YT.PlayerState.BUFFERING) p.pauseVideo();
+      return;
+    }
+    if (!carregando && ytPlayingSeen) {
+      const want = djPos();
+      const dur = p.getDuration() || 0;
+      if (Math.abs(p.getCurrentTime() - want) > 3 && (!dur || want < dur - 1)) p.seekTo(want, true);
+    }
+    if (st !== YT.PlayerState.PLAYING && st !== YT.PlayerState.BUFFERING) p.playVideo();
+  } catch (e) {
+    console.warn('youtube sync:', e);
+  }
+}
+function onYtState(st) {
+  const n = dj?.now;
+  if (!n || n.kind !== 'yt' || n.key !== ytKey || !ytPlayer) return;
+  if (st === YT.PlayerState.PLAYING) {
+    ytErrors = 0;
+    ytPlayingSeen = true;
+    const d = ytPlayer.getVideoData?.() || {};
+    const pl = ytPlayer.getPlaylist?.() || null;
+    const idx = pl && pl.length ? ytPlayer.getPlaylistIndex() : 0;
+    // O player passou sozinho para o próximo vídeo da playlist: avisa que o anterior acabou
+    if (n.list && idx === n.index + 1 && Date.now() - ytLoadedAt > 4000) socket.emit('dj-ended', { key: n.key, index: n.index });
+    const meta = JSON.stringify([idx, d.video_id, pl ? pl.length : 1]);
+    if (meta !== ytLastMeta) {
+      ytLastMeta = meta;
+      socket.emit('dj-yt-meta', { key: n.key, index: idx, count: pl && pl.length ? pl.length : 1, title: d.title || '', author: d.author || '', video: d.video_id || '' });
+    }
+    if (n.pausedAt) ytPlayer.pauseVideo();
+    renderDj();
+  } else if (st === YT.PlayerState.ENDED) {
+    const pl = ytPlayer.getPlaylist?.() || null;
+    const idx = pl && pl.length ? ytPlayer.getPlaylistIndex() : 0;
+    socket.emit('dj-ended', { key: n.key, index: idx, last: !pl || !pl.length || idx >= pl.length - 1 });
+  }
+}
+function onYtError(code) {
+  const n = dj?.now;
+  if (!n || n.kind !== 'yt' || n.key !== ytKey) return;
+  ytErrors += 1;
+  const pl = ytPlayer?.getPlaylist?.() || null;
+  const idx = pl && pl.length ? ytPlayer.getPlaylistIndex() : n.index;
+  // Muitos erros seguidos: desiste da playlist inteira
+  setTimeout(() => {
+    if (dj?.now?.key !== n.key) return;
+    socket.emit('dj-ended', { key: n.key, index: idx, error: true, last: ytErrors >= 6 || !n.list });
+  }, 800);
+  console.warn('youtube erro', code);
+}
+$('#dj-yt-size').onclick = () => {
+  const mini = !store.get(YT_MINI, false);
+  store.set(YT_MINI, mini);
+  $('#dj-yt-wrap').classList.toggle('mini', mini);
+  $('#dj-yt-size').textContent = mini ? '⤢ Vídeo' : '⤡ Vídeo';
+  $('#dj-yt-size').title = mini ? 'Vídeo maior' : 'Vídeo menor';
+};
+// O navegador só libera som depois de um clique: ao primeiro clique, tenta de novo
+document.addEventListener('click', () => { if (dj?.now?.kind === 'yt' && djHere()) syncYt(dj.now); }, { capture: true });
 
 async function djMove(to) {
   if (!to) return toast('Entre numa sala primeiro, depois chame o DJ.');
@@ -1931,7 +2099,8 @@ function renderDjProgress() {
   const bar = $('#dj-prog');
   if (!n || !bar) return;
   const pos = n.live ? 0 : djPos();
-  const dur = n.duration || (djAudio.duration > 0 && isFinite(djAudio.duration) ? djAudio.duration : 0);
+  let dur = n.duration || (djAudio.duration > 0 && isFinite(djAudio.duration) ? djAudio.duration : 0);
+  if (n.kind === 'yt') { try { dur = (ytReady && ytKey === n.key && ytPlayer.getDuration()) || 0; } catch { dur = 0; } }
   $('#dj-time').textContent = n.live ? '● AO VIVO' : `${fmtDur(pos)}${dur ? ' / ' + fmtDur(dur) : ''}`;
   bar.style.width = n.live ? '100%' : dur ? `${Math.min(100, (pos / dur) * 100)}%` : '0%';
 }
@@ -1947,11 +2116,20 @@ function renderDj() {
   if (!here) return;
   const n = dj.now;
   const art = (t) => (t.art ? `<img class="dj-art" src="${esc(t.art)}" alt="">` : `<span class="dj-art dj-art-empty">${t.kind === 'radio' ? '📻' : '🎵'}</span>`);
+  const titulo = n && n.kind === 'yt' ? (n.nowTitle || n.title) : n?.title;
+  let sub = n ? (n.artist || (n.kind === 'file' ? 'enviada por ' + (n.by || '') : '')) : '';
+  if (n && n.kind === 'yt') sub = `▶ YouTube${n.list ? ` · ${esc(n.title)} · vídeo ${n.index + 1}${n.count ? '/' + n.count : ''}` : n.artist ? ' · ' + esc(n.artist) : ''}`;
+  else sub = esc(sub);
+  const capa = n && n.kind === 'yt' && n.nowVideo ? { ...n, art: `https://i.ytimg.com/vi/${n.nowVideo}/mqdefault.jpg` } : n;
+  $('#dj-skip-all').hidden = !(n && n.kind === 'yt' && n.list);
+  $('#dj-yt-size').hidden = !(n && n.kind === 'yt');
   $('#dj-now').innerHTML = n
-    ? `${art(n)}<div class="dj-meta"><strong>${esc(n.title)}</strong><small>${esc(n.artist || (n.kind === 'file' ? 'enviada por ' + (n.by || '') : ''))}</small>
+    ? `${art(capa)}<div class="dj-meta"><strong>${esc(titulo)}</strong><small>${sub}</small>
         <div class="dj-bar"><i id="dj-prog"></i></div><small id="dj-time"></small></div>`
     : `<span class="dj-art dj-art-empty">🤖</span><div class="dj-meta"><strong>Nada tocando</strong><small>Toque em "Adicionar música" para começar.</small></div>`;
   $('#dj-play').textContent = n && !n.pausedAt ? '⏸' : '▶';
+  $('#dj-mini-play').textContent = n && !n.pausedAt ? '⏸' : '▶';
+  $('#dj-mini-now').textContent = n ? `· ${titulo}${n.pausedAt ? ' (pausado)' : ''}` : '· nada tocando';
   $('#dj-play').disabled = !n && !dj.queue.length;
   $('#dj-skip').disabled = !n && !dj.queue.length;
   $('#dj-vol').value = Math.round(djVolume * 100);
@@ -1962,9 +2140,24 @@ function renderDj() {
   renderDjProgress();
 }
 $('#btn-dj').onclick = () => djMove(currentChannel);
+// Minimizar o painel (fica só uma linha; lembra a escolha)
+const DJ_MIN = 'voz-dj-min';
+function applyDjMin() {
+  const min = !!store.get(DJ_MIN, false);
+  $('#dj-panel').classList.toggle('min', min);
+  $('#dj-min').textContent = min ? '⤢' : '▁';
+  $('#dj-min').title = min ? 'Abrir o painel do DJ' : 'Minimizar o painel do DJ';
+  $('#dj-mini-play').hidden = !min;
+  $('#dj-mini-skip').hidden = !min;
+}
+$('#dj-min').onclick = () => { store.set(DJ_MIN, !store.get(DJ_MIN, false)); applyDjMin(); };
+$('#dj-mini-play').onclick = () => djCtrl(dj?.now && !dj.now.pausedAt ? 'pause' : 'play');
+$('#dj-mini-skip').onclick = () => djCtrl('skip');
+applyDjMin();
 $('#dj-back').onclick = () => djMove('bots');
 $('#dj-play').onclick = () => djCtrl(dj?.now && !dj.now.pausedAt ? 'pause' : 'play');
 $('#dj-skip').onclick = () => djCtrl('skip');
+$('#dj-skip-all').onclick = () => djCtrl('skip-all');
 $('#dj-queue').addEventListener('click', (e) => {
   const b = e.target.closest('[data-dj-rm]');
   if (b) djCtrl('remove', b.dataset.djRm);
@@ -1986,18 +2179,23 @@ function openDjSearch() {
 function setDjKind(k) {
   djKind = k;
   document.querySelectorAll('[data-djkind]').forEach((b) => b.classList.toggle('on', b.dataset.djkind === k));
-  $('#dj-q').placeholder = { audius: 'Nome da música ou artista…', radio: 'Nome da rádio (ex.: Jovem Pan, sertanejo, rock)…', file: 'Procurar nas enviadas…', link: 'Cole o link direto do áudio (https://…mp3)' }[k];
+  $('#dj-q').placeholder = { yt: 'Cole o link do vídeo ou da playlist do YouTube', audius: 'Nome da música ou artista…', radio: 'Nome da rádio (ex.: Jovem Pan, sertanejo, rock)…', file: 'Procurar nas enviadas…', link: 'Cole o link direto do áudio (https://…mp3)' }[k];
   $('#dj-upload-row').hidden = k !== 'file';
   $('#dj-link-row').hidden = k !== 'link';
+  $('#dj-yt-row').hidden = k !== 'yt';
   djSearch();
 }
 document.querySelectorAll('[data-djkind]').forEach((b) => (b.onclick = () => setDjKind(b.dataset.djkind)));
-$('#dj-q').addEventListener('input', () => { clearTimeout(djSearchTimer); djSearchTimer = setTimeout(djSearch, 350); });
+$('#dj-q').addEventListener('input', () => {
+  if (djKind !== 'yt' && /^(https?:\/\/)?(www\.|m\.|music\.)?(youtube\.com|youtu\.be)\//i.test($('#dj-q').value.trim())) { setDjKind('yt'); return; }
+  clearTimeout(djSearchTimer);
+  djSearchTimer = setTimeout(djSearch, 350);
+});
 $('#dj-search-close').onclick = () => { $('#dj-search').hidden = true; };
 $('#dj-add').onclick = openDjSearch;
 async function djSearch() {
   const box = $('#dj-results');
-  if (djKind === 'link') { box.innerHTML = ''; return; }
+  if (djKind === 'link' || djKind === 'yt') { box.innerHTML = ''; return; }
   const q = $('#dj-q').value.trim();
   if (djKind === 'audius' && !q) { box.innerHTML = '<div class="chat-empty">Digite o nome de uma música ou artista. As músicas vêm do Audius, uma plataforma aberta: tem muita coisa de artistas independentes, eletrônica, lo-fi, remixes e covers.</div>'; return; }
   box.innerHTML = '<div class="chat-empty">Procurando…</div>';
@@ -2025,6 +2223,21 @@ $('#dj-results').addEventListener('click', async (e) => {
   const t = $('#dj-results')._items?.[Number(b.dataset.add)];
   if (t) djAdd(t);
 });
+$('#dj-yt-add').onclick = async () => {
+  const url = $('#dj-q').value.trim();
+  if (!/youtu\.?be/i.test(url)) return toast('Cole um link do YouTube (vídeo ou playlist).');
+  const btn = $('#dj-yt-add');
+  btn.disabled = true;
+  try {
+    const r = await emitAck('dj-add', { kind: 'yt', url });
+    if (r?.error) return toast(r.error);
+    toast(`▶ Entrou na fila (${r.position}º).`);
+    $('#dj-q').value = '';
+  } finally {
+    btn.disabled = false;
+  }
+};
+$('#dj-q').addEventListener('keydown', (e) => { if (e.key === 'Enter' && djKind === 'yt') $('#dj-yt-add').click(); });
 $('#dj-link-add').onclick = () => {
   const url = $('#dj-q').value.trim();
   if (!/^https:\/\/\S+$/i.test(url)) return toast('Cole um link que comece com https:// (ex.: um .mp3 ou uma rádio).');

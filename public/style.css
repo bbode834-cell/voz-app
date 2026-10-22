@@ -860,7 +860,7 @@ body.dm-open .main { margin-right: 340px; }
 .bot-hint { margin-left: auto; font-size: 11px; color: var(--accent); font-weight: 700; }
 .member.empty-bot { color: var(--muted); font-size: 12px; font-style: italic; }
 .dj-panel { margin: 10px 16px 0; padding: 10px 14px; border-radius: 10px; background: var(--panel); border: 1px solid rgba(245,184,46,.45); color: var(--text); }
-.dj-panel[hidden], #btn-dj[hidden], #dj-upload-row[hidden], #dj-link-row[hidden], #dj-search[hidden] { display: none !important; }
+.dj-panel[hidden], #btn-dj[hidden], #dj-upload-row[hidden], #dj-link-row[hidden], #dj-yt-row[hidden], #dj-yt-wrap[hidden], #dj-skip-all[hidden], #dj-search[hidden] { display: none !important; }
 .dj-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .dj-title { font-weight: 800; color: var(--text-strong); flex: 1; }
 .dj-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
@@ -894,3 +894,18 @@ body.dm-open .main { margin-right: 340px; }
 .dj-res:hover { background: var(--hover); }
 .dj-res .dj-art { width: 44px; height: 44px; }
 .dj-res .btn { flex-shrink: 0; }
+
+/* vídeo do YouTube dentro do painel do DJ (mínimo que o YouTube pede: 200px) */
+.dj-yt { position: relative; width: 100%; max-width: 480px; aspect-ratio: 16 / 9; background: #000; border-radius: 8px; overflow: hidden; margin-bottom: 10px; }
+.dj-yt.mini { max-width: 356px; }
+.dj-yt iframe, .dj-yt > div { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+#dj-yt-size[hidden] { display: none !important; }
+
+/* painel do DJ minimizado: só uma linha */
+.dj-mini-now { display: none; margin-left: 10px; font-weight: 500; color: var(--muted); font-size: 12px; max-width: 42vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
+.dj-panel.min .dj-head { margin-bottom: 0; }
+.dj-panel.min .dj-mini-now { display: inline-block; }
+.dj-panel.min .dj-row, .dj-panel.min .dj-queue, .dj-panel.min #dj-add, .dj-panel.min #dj-back, .dj-panel.min #dj-yt-size { display: none !important; }
+.dj-panel.min .dj-mini-ctl { display: inline-block; width: 30px; height: 30px; font-size: 14px; }
+.dj-mini-ctl[hidden] { display: none !important; }
+.dj-panel.min .dj-yt { max-width: 356px; margin: 8px 0 0; }
