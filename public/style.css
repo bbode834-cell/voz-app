@@ -463,6 +463,12 @@ body.chat-open .quality > span { display: none; }
   resize: both; cursor: grab; touch-action: none; box-shadow: 0 4px 16px rgba(0,0,0,.5);
 }
 .cam-pip:active { cursor: grabbing; }
+.mirror-btn { position: absolute; left: 8px; top: 8px; z-index: 4; width: 28px; height: 28px; border-radius: 50%; border: 0; cursor: pointer;
+  background: rgba(0,0,0,.6); color: #fff; display: grid; place-items: center; opacity: 0; transition: opacity .2s; pointer-events: auto; }
+.cam-pip:hover .mirror-btn, .tile:hover .mirror-btn, .mirror-btn:focus-visible { opacity: 1; }
+@media (hover: none) { .mirror-btn { opacity: .75; } }
+.mirror-btn:hover { background: rgba(0,0,0,.85); }
+.tile .mirror-btn { left: auto; right: 8px; top: auto; bottom: 8px; }
 .cam-pip video { position: static !important; display: block; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
 
 .screen-card .float-cam {

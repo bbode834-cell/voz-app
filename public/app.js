@@ -1119,6 +1119,31 @@ function camFromFloating() {
 
 // Vídeos da câmera ficam guardados para não piscar quando a tela é redesenhada
 const camVideos = new Map(); // id -> <video>
+// ---------- Espelhar a câmera ----------
+// Sua própria câmera aparece espelhada (como num espelho); a dos outros, normal.
+// O botão ⇄ inverte isso para cada pessoa, e a escolha fica guardada neste navegador.
+let mirrorPref = store.get('voz-espelhar', {}) || {};
+function mirrorKey(id) { return id === selfId ? 'eu' : String(findUser(id)?.uid || id); }
+function isMirrored(id) { return (id === selfId) !== !!mirrorPref[mirrorKey(id)]; }
+function toggleMirror(id) {
+  const k = mirrorKey(id);
+  mirrorPref[k] = !mirrorPref[k];
+  store.set('voz-espelhar', mirrorPref);
+  renderCams();
+  document.querySelectorAll('.cam-pip').forEach((p) => p.querySelector('video').classList.toggle('mirror', isMirrored(p.dataset.id)));
+}
+const MIRROR_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M8 8l-5 4 5 4"/><path d="M16 8l5 4-5 4"/></svg>';
+function mirrorButton(id) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'mirror-btn';
+  b.title = 'Espelhar a câmera';
+  b.innerHTML = MIRROR_SVG;
+  b.onclick = (e) => { e.stopPropagation(); toggleMirror(id); };
+  b.onpointerdown = (e) => e.stopPropagation();
+  return b;
+}
+
 function camVideoFor(id, stream) {
   let v = camVideos.get(id);
   if (!v) {
@@ -1128,7 +1153,7 @@ function camVideoFor(id, stream) {
     camVideos.set(id, v);
   }
   if (v.srcObject !== stream) v.srcObject = stream;
-  v.classList.toggle('mirror', id === selfId);
+  v.classList.toggle('mirror', isMirrored(id));
   return v;
 }
 
@@ -1645,6 +1670,7 @@ function updateCamPip(card, id) {
     pip.className = 'cam-pip';
     pip.title = 'Arraste para mover · puxe o canto para mudar o tamanho';
     pip.innerHTML = '<video autoplay playsinline muted></video>';
+    pip.appendChild(mirrorButton(id));
     card.appendChild(pip);
     let drag = null;
     pip.addEventListener('pointerdown', (e) => {
@@ -1687,9 +1713,10 @@ function updateCamPip(card, id) {
       pip.dataset.placed = '1';
     });
   }
+  pip.dataset.id = id;
   const v = pip.querySelector('video');
   if (v.srcObject !== st) { v.srcObject = st; v.play().catch(() => {}); }
-  v.classList.toggle('mirror', id === selfId);
+  v.classList.toggle('mirror', isMirrored(id));
 }
 
 // ---------- Chat do canal ----------
@@ -3335,6 +3362,7 @@ function renderMain() {
       const v = camVideoFor(u.id, cam);
       t.prepend(v);
       v.play().catch(() => {});
+      t.appendChild(mirrorButton(u.id));
     }
     tiles.appendChild(t);
   });
