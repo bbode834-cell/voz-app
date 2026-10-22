@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>King Launcher</title>
   <link rel="icon" href="logo-fone.svg" />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=151" />
 </head>
 <body>
   <!-- Abertura: a logo parada e o fone caindo em cima da coroa (clique para pular) -->
@@ -197,6 +197,10 @@
     <div id="chat-list" class="chat-list"></div>
     <form id="chat-form" class="chat-form" autocomplete="off">
       <button type="button" class="pick-btn" data-for="chat" title="Emojis e GIFs">😀</button>
+      <button type="button" class="photo-btn" data-for="chat" title="Mandar foto">📷</button>
+      <button type="button" class="rec-btn" data-for="chat" title="Gravar áudio">🎤</button>
+      <div class="rec-bar"><span class="rec-dot"></span><span class="rec-time">0:00</span><span class="rec-hint">Gravando…</span>
+        <button type="button" class="rec-cancel" title="Cancelar">✕</button><button type="button" class="rec-send">Enviar</button></div>
       <input id="chat-input" maxlength="500" placeholder="Escreva uma mensagem…" />
       <button type="submit" class="btn primary small">Enviar</button>
     </form>
@@ -223,6 +227,10 @@
       <div id="dm-msgs" class="chat-list"></div>
       <form id="dm-form" class="chat-form" autocomplete="off">
         <button type="button" class="pick-btn" data-for="dm" title="Emojis e GIFs">😀</button>
+        <button type="button" class="photo-btn" data-for="dm" title="Mandar foto">📷</button>
+        <button type="button" class="rec-btn" data-for="dm" title="Gravar áudio">🎤</button>
+        <div class="rec-bar"><span class="rec-dot"></span><span class="rec-time">0:00</span><span class="rec-hint">Gravando…</span>
+          <button type="button" class="rec-cancel" title="Cancelar">✕</button><button type="button" class="rec-send">Enviar</button></div>
         <input id="dm-input" maxlength="1000" placeholder="Mensagem…" />
         <button type="submit" class="btn primary small">Enviar</button>
       </form>
@@ -271,7 +279,9 @@
   <div id="audio-sink" hidden></div>
   <div id="toast" class="toast" role="status"></div>
 
+  <input id="photo-input" type="file" accept="image/*" hidden />
+  <div id="photo-view" class="photo-view" hidden><img alt="Foto" /></div>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js"></script>
+  <script src="app.js?v=151"></script>
 </body>
 </html>

@@ -1616,10 +1616,222 @@ function updateChatBadge() {
 // Mensagem que é só um GIF (dos serviços de GIF conhecidos) vira imagem
 const GIF_RE = /^https:\/\/([a-z0-9-]+\.)*(klipy\.com|giphy\.com|tenor\.com|imgur\.com)\/\S+\.(gif|webp)(\?\S*)?$/i;
 const isGif = (t) => GIF_RE.test(String(t).trim());
-const msgHTML = (t) => isGif(t)
-  ? `<img class="chat-gif" src="${esc(String(t).trim())}" alt="GIF" loading="lazy">`
-  : linkify(t);
-const msgPreview = (t) => (isGif(t) ? '🎞️ GIF' : t);
+// Foto enviada pelo King Launcher: a mensagem é "img:<código>"
+const IMG_RE = /^img:([A-Za-z0-9_-]{16})$/;
+const isImg = (t) => IMG_RE.test(String(t).trim());
+// Áudio: "aud:<código>:<segundos>"
+const AUD_RE = /^aud:([A-Za-z0-9_-]{16}):(\d{1,3})$/;
+const isAud = (t) => AUD_RE.test(String(t).trim());
+const VM_PLAY = '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M7 4.5v15l12.5-7.5z" fill="currentColor"/></svg>';
+const VM_PAUSE = '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M6 4h4.5v16H6zM13.5 4H18v16h-4.5z" fill="currentColor"/></svg>';
+const fmtSec = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+function audHTML(t) {
+  const [, id, sec] = String(t).trim().match(AUD_RE);
+  return `<div class="voice-msg" data-src="/img/${id}" data-dur="${sec}"><button type="button" class="vm-play" title="Ouvir">${VM_PLAY}</button>
+    <div class="vm-bar"><i></i></div><span class="vm-time">${fmtSec(Number(sec))}</span></div>`;
+}
+const msgHTML = (t) => isAud(t) ? audHTML(t) : isImg(t)
+  ? `<img class="chat-photo" src="/img/${String(t).trim().slice(4)}" alt="Foto" loading="lazy">`
+  : isGif(t)
+    ? `<img class="chat-gif" src="${esc(String(t).trim())}" alt="GIF" loading="lazy">`
+    : linkify(t);
+const msgPreview = (t) => (isAud(t) ? `🎤 Áudio (${fmtSec(Number(String(t).trim().match(AUD_RE)[2]))})` : isImg(t) ? '📷 Foto' : isGif(t) ? '🎞️ GIF' : t);
+
+// ---------- Mandar fotos (chat da chamada e mensagens diretas) ----------
+// A foto é diminuída aqui mesmo (no máximo 1600 px) antes de subir para o servidor
+function shrinkImage(file) {
+  return new Promise((resolve, reject) => {
+    // GIF animado vai do jeito que está (se não for enorme)
+    if (file.type === 'image/gif' && file.size < 2.5 * 1024 * 1024) return resolve(file);
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const k = Math.min(1, 1600 / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(img.width * k));
+      c.height = Math.max(1, Math.round(img.height * k));
+      const g = c.getContext('2d');
+      g.fillStyle = '#fff';
+      g.fillRect(0, 0, c.width, c.height);
+      g.drawImage(img, 0, 0, c.width, c.height);
+      c.toBlob((b) => (b ? resolve(b) : reject(new Error('foto'))), 'image/jpeg', 0.82);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('foto')); };
+    img.src = url;
+  });
+}
+// Sobe a foto/áudio para o servidor; devolve o código (ou null)
+async function uploadMedia(blob) {
+  try {
+    const r = await fetch('/api/img', {
+      method: 'POST',
+      headers: { 'Content-Type': blob.type || 'application/octet-stream', Authorization: `Bearer ${authToken}` },
+      body: blob,
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.id) { toast(j.error || 'Não consegui mandar.'); return null; }
+    return j.id;
+  } catch {
+    toast('Não consegui mandar. Confira a internet.');
+    return null;
+  }
+}
+async function sendMediaText(text, where, dmTo) {
+  if (where === 'chat') {
+    const res = await emitAck('chat-send', { text });
+    if (res?.error) toast(res.error);
+    return;
+  }
+  const res = await emitAck('dm-send', { to: dmTo, text });
+  if (res?.error) return toast(res.error);
+  const c = dmContact(dmTo);
+  if (c) c.last = res.message;
+  if (dmWith === dmTo) { dmMsgs.push(res.message); renderDm(true); }
+}
+
+// ---------- Mensagem de áudio ----------
+// Toque no 🎤 para gravar, "Enviar" para mandar (no máximo 2 minutos)
+const REC_MAX = 120;
+let rec = null; // { mr, stream, chunks, start, where, dmTo, form, tick, cancel }
+async function startRec(where, form) {
+  if (rec) return;
+  if (where === 'chat' && !currentChannel) return;
+  if (where === 'dm' && !dmWith) return;
+  if (!window.MediaRecorder) return toast('Este navegador não grava áudio.');
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  } catch {
+    return toast('Libere o microfone para gravar áudio.');
+  }
+  const type = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4'].find((t) => MediaRecorder.isTypeSupported(t));
+  const mr = new MediaRecorder(stream, type ? { mimeType: type, audioBitsPerSecond: 48000 } : undefined);
+  rec = { mr, stream, chunks: [], start: Date.now(), where, dmTo: dmWith, form, cancel: false };
+  mr.ondataavailable = (e) => e.data.size && rec?.chunks.push(e.data);
+  mr.onstop = async () => {
+    const r = rec;
+    rec = null;
+    clearInterval(r.tick);
+    r.stream.getTracks().forEach((t) => t.stop());
+    r.form.classList.remove('recording');
+    const sec = Math.max(1, Math.round((Date.now() - r.start) / 1000));
+    if (r.cancel || (Date.now() - r.start) < 700) return;
+    const blob = new Blob(r.chunks, { type: (mr.mimeType || 'audio/webm').split(';')[0] });
+    r.form.classList.add('sending');
+    const id = await uploadMedia(blob);
+    r.form.classList.remove('sending');
+    if (id) await sendMediaText(`aud:${id}:${Math.min(sec, REC_MAX)}`, r.where, r.dmTo);
+  };
+  mr.start(250);
+  form.classList.add('recording');
+  const t = form.querySelector('.rec-time');
+  t.textContent = '0:00';
+  rec.tick = setInterval(() => {
+    const s = (Date.now() - rec.start) / 1000;
+    t.textContent = fmtSec(s);
+    if (s >= REC_MAX) stopRec(false);
+  }, 250);
+}
+function stopRec(cancel) {
+  if (!rec) return;
+  rec.cancel = cancel;
+  try { rec.mr.stop(); } catch {}
+}
+document.querySelectorAll('.rec-btn').forEach((b) => (b.onclick = () => startRec(b.dataset.for, b.closest('form'))));
+document.querySelectorAll('.rec-send').forEach((b) => (b.onclick = () => stopRec(false)));
+document.querySelectorAll('.rec-cancel').forEach((b) => (b.onclick = () => stopRec(true)));
+
+// Tocador dos áudios (um de cada vez)
+let vmAudio = null, vmEl = null;
+function vmReset(el) {
+  if (!el) return;
+  el.classList.remove('playing');
+  el.querySelector('.vm-play').innerHTML = VM_PLAY;
+  el.querySelector('.vm-bar i').style.width = '0%';
+  el.querySelector('.vm-time').textContent = fmtSec(Number(el.dataset.dur));
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('.vm-play');
+  if (!b) return;
+  const el = b.closest('.voice-msg');
+  if (vmEl === el && vmAudio) {
+    if (vmAudio.paused) { vmAudio.play(); el.classList.add('playing'); b.innerHTML = VM_PAUSE; } else { vmAudio.pause(); el.classList.remove('playing'); b.innerHTML = VM_PLAY; }
+    return;
+  }
+  if (vmAudio) { vmAudio.pause(); vmReset(vmEl); }
+  vmEl = el;
+  vmAudio = new Audio(el.dataset.src);
+  const dur = Number(el.dataset.dur) || 1;
+  vmAudio.ontimeupdate = () => {
+    if (vmEl !== el) return;
+    const d = isFinite(vmAudio.duration) && vmAudio.duration > 0 ? vmAudio.duration : dur;
+    el.querySelector('.vm-bar i').style.width = `${Math.min(100, (vmAudio.currentTime / d) * 100)}%`;
+    el.querySelector('.vm-time').textContent = fmtSec(vmAudio.currentTime);
+  };
+  vmAudio.onended = () => { vmReset(el); vmAudio = null; vmEl = null; };
+  vmAudio.onerror = () => { toast('Não consegui tocar esse áudio.'); vmReset(el); vmAudio = null; vmEl = null; };
+  vmAudio.play().catch(() => {});
+  el.classList.add('playing');
+  b.innerHTML = VM_PAUSE;
+});
+
+let photoFor = 'chat';
+let photoBusy = false;
+async function sendPhoto(file, where) {
+  if (!file || !file.type.startsWith('image/')) return toast('Escolha uma foto.');
+  if (photoBusy) return;
+  const dmTo = dmWith;
+  if (where === 'chat' && !currentChannel) return;
+  if (where === 'dm' && !dmTo) return;
+  photoBusy = true;
+  document.querySelectorAll('.photo-btn').forEach((b) => b.classList.add('busy'));
+  try {
+    const blob = await shrinkImage(file);
+    const id = await uploadMedia(blob);
+    if (id) await sendMediaText(`img:${id}`, where, dmTo);
+  } catch {
+    toast('Não consegui mandar a foto.');
+  } finally {
+    photoBusy = false;
+    document.querySelectorAll('.photo-btn').forEach((b) => b.classList.remove('busy'));
+  }
+}
+document.querySelectorAll('.photo-btn').forEach((b) => (b.onclick = () => {
+  photoFor = b.dataset.for;
+  $('#photo-input').click();
+}));
+$('#photo-input').addEventListener('change', (e) => {
+  const f = e.target.files?.[0];
+  e.target.value = '';
+  if (f) sendPhoto(f, photoFor);
+});
+// Colar uma foto (Ctrl+V) na caixa de texto também manda
+[['#chat-input', 'chat'], ['#dm-input', 'dm']].forEach(([sel, where]) => {
+  $(sel).addEventListener('paste', (e) => {
+    const item = [...(e.clipboardData?.items || [])].find((i) => i.type.startsWith('image/'));
+    if (!item) return;
+    e.preventDefault();
+    sendPhoto(item.getAsFile(), where);
+  });
+});
+// Tocar na foto abre grande
+document.addEventListener('click', (e) => {
+  const im = e.target.closest('.chat-photo');
+  if (!im) return;
+  const v = $('#photo-view');
+  v.querySelector('img').src = im.src;
+  v.hidden = false;
+});
+$('#photo-view').onclick = () => { $('#photo-view').hidden = true; };
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('#photo-view').hidden = true; });
+// Quando a foto termina de carregar, continua mostrando a última mensagem
+document.addEventListener('load', (e) => {
+  if (!e.target.classList?.contains('chat-photo') && !e.target.classList?.contains('chat-gif')) return;
+  let box = e.target.parentElement;
+  while (box && box.scrollHeight <= box.clientHeight) box = box.parentElement;
+  if (box && box.scrollHeight - box.scrollTop - box.clientHeight < e.target.clientHeight + 160) box.scrollTop = box.scrollHeight;
+}, true);
 
 // Texto com links clicáveis (sem permitir HTML de ninguém)
 function linkify(text) {
@@ -2393,6 +2605,105 @@ function throwBottle() {
   }, DUR);
 }
 
+// Desenho do baseado (papel creme com dobrinhas; a ponta acesa fica marrom-arroxeada com brasa)
+// Tudo em "unidades": o baseado inteiro tem 400 de comprimento e 80 de altura.
+const J_ANG = -38;
+function jointData() {
+  const creases = [];
+  for (let x = 40; x < 390; x += rnd(26, 40)) creases.push([x, rnd(16, 34), rnd(-4, 6), Math.random() < 0.5 ? 1 : -1]);
+  const spots = [];
+  for (let k = 0; k < 16; k++) spots.push([rnd(0, 1) ** 1.6, rnd(-0.9, 0.9), rnd(3.5, 8), rnd(2.5, 5.5), k % 3, rnd(0, 6.28), rnd(5, 11)]);
+  return { ph: rnd(0, 6.28), w1: rnd(0, 6.28), w2: rnd(0, 6.28), creases, spots };
+}
+const jR = (J, x) => 13 + 21 * Math.pow(Math.max(0, x) / 400, 0.6) + 1.3 * Math.sin((x / 400) * 9 + J.ph);
+function jointPath(g, J, len) {
+  const cy = 40, r0 = jR(J, 0), x0 = r0 * 0.9;
+  const re = jR(J, len), capR = re * 0.45, xe = Math.max(x0 + 1, len - capR);
+  g.beginPath();
+  g.moveTo(x0, cy - r0);
+  for (let x = x0 + 8; x < xe; x += 8) g.lineTo(x, cy - jR(J, x));
+  g.lineTo(xe, cy - re);
+  g.bezierCurveTo(xe + capR * 1.33, cy - re, xe + capR * 1.33, cy + re, xe, cy + re);
+  for (let x = xe - 8; x > x0; x -= 8) g.lineTo(x, cy + jR(J, x));
+  g.lineTo(x0, cy + r0);
+  g.arc(x0, cy, r0, Math.PI / 2, Math.PI * 1.5, false);
+  g.closePath();
+}
+function drawJoint(g, J, len, lit, t) {
+  const cy = 40, x0 = jR(J, 0) * 0.9, re = jR(J, len);
+  g.clearRect(-30, -40, 500, 170);
+  // brilho da brasa (atrás)
+  if (lit) {
+    const pulse = 0.5 + 0.5 * Math.sin(t / 1400 * Math.PI * 2);
+    const gr = g.createRadialGradient(len - 4, cy, 0, len - 4, cy, re * (1.5 + 0.5 * pulse));
+    gr.addColorStop(0, `rgba(255,110,30,${0.45 + 0.25 * pulse})`);
+    gr.addColorStop(1, 'rgba(255,110,30,0)');
+    g.fillStyle = gr;
+    g.fillRect(len - 50, -20, 100, 120);
+  }
+  jointPath(g, J, len);
+  g.fillStyle = '#ece5ce';
+  g.fill();
+  g.save();
+  jointPath(g, J, len);
+  g.clip();
+  // brilho comprido do papel
+  g.lineCap = 'round';
+  g.strokeStyle = 'rgba(250,248,236,.9)';
+  g.lineWidth = 9;
+  g.beginPath();
+  for (let x = x0 + 6; x < len - 12; x += 8) { const y = cy - jR(J, x) * 0.42; x === x0 + 6 ? g.moveTo(x, y) : g.lineTo(x, y); }
+  g.stroke();
+  // dobrinhas do papel
+  g.strokeStyle = '#c9c2aa';
+  g.lineWidth = 2.4;
+  for (const [x, l, dy, side] of J.creases) {
+    if (x > len - 14) continue;
+    const r = jR(J, x);
+    g.beginPath();
+    if (side > 0) { g.moveTo(x, cy - r + 1); g.quadraticCurveTo(x + l * 0.4, cy - r * 0.55, x + l, cy - r * 0.2 + dy); }
+    else { g.moveTo(x, cy + r - 1); g.quadraticCurveTo(x + l * 0.45, cy + r * 0.6, x + l, cy + r * 0.25 + dy); }
+    g.stroke();
+  }
+  // ponta queimada: faixa marrom-arroxeada com borda ondulada
+  if (lit) {
+    const cs = Math.max(x0, len - 38);
+    const gr = g.createLinearGradient(cs, 0, len, 0);
+    gr.addColorStop(0, '#8d6f68');
+    gr.addColorStop(0.5, '#765861');
+    gr.addColorStop(1, '#55394a');
+    g.fillStyle = gr;
+    g.beginPath();
+    for (let y = -2; y <= 82; y += 3) {
+      const x = cs + 5 * Math.sin(y * 0.22 + J.w1) + 3 * Math.sin(y * 0.55 + J.w2);
+      y === -2 ? g.moveTo(x, y) : g.lineTo(x, y);
+    }
+    g.lineTo(len + 10, 82);
+    g.lineTo(len + 10, -2);
+    g.closePath();
+    g.fill();
+    // pedacinhos de brasa piscando
+    const cols = ['#e5261a', '#ff8b1f', '#ffb33b'];
+    for (const [dx, dy, w, h, c, ph, sp] of J.spots) {
+      const a = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(t / 1000 * sp + ph));
+      g.globalAlpha = a;
+      g.fillStyle = cols[c];
+      const x = len - 4 - dx * 16, y = cy + dy * re * 0.75;
+      g.beginPath();
+      g.roundRect ? g.roundRect(x - w / 2, y - h / 2, w, h, 1.5) : g.rect(x - w / 2, y - h / 2, w, h);
+      g.fill();
+    }
+    g.globalAlpha = 1;
+  }
+  g.restore();
+  // contorno
+  jointPath(g, J, len);
+  g.strokeStyle = '#bcb59e';
+  g.lineWidth = 3.8;
+  g.lineJoin = 'round';
+  g.stroke();
+}
+
 // 🌿 Hora de fumar: o baseado sobe, é aceso, queima até o fim e a fumaça toma conta da tela
 let smoking = false;
 function smokeTime(from) {
@@ -2404,21 +2715,13 @@ function smokeTime(from) {
   box.innerHTML = `<div class="fx-fog"></div>
     <div class="fx-smoke-text">🌿 <b>${esc(from)}</b>: hora de fumar!</div>
     <div class="fx-joint">
-      <div class="fx-joint-body"><svg viewBox="0 0 400 60" preserveAspectRatio="none" class="fx-joint-svg">
-        <defs>
-          <linearGradient id="jp" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#cfc6b4"/><stop offset=".3" stop-color="#fffdf6"/><stop offset=".65" stop-color="#ece5d6"/><stop offset="1" stop-color="#a99f8c"/></linearGradient>
-          <linearGradient id="jf" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#a8865a"/><stop offset=".35" stop-color="#e8cfa3"/><stop offset="1" stop-color="#8a6a40"/></linearGradient>
-        </defs>
-        <path d="M0 22 L400 6 L400 54 L0 38 Z" fill="url(#jp)"/>
-        <path d="M0 22 L70 19 L70 41 L0 38 Z" fill="url(#jf)"/>
-        <path d="M70 19 L70 41" stroke="#8a6a40" stroke-width="1.5"/>
-        <path d="M90 22 L400 10" stroke="#b9ae97" stroke-width="1.2" opacity=".7"/>
-        <path d="M120 33 L170 33 M210 30 L260 31 M300 36 L350 37" stroke="#7a9a3a" stroke-width="2" opacity=".18" stroke-linecap="round"/>
-      </svg><i class="fx-ash"></i><i class="fx-ember"></i></div>
+      <canvas class="fx-joint-cv"></canvas><i class="fx-ember"></i>
     </div>`;
   layer.appendChild(box);
   const joint = box.querySelector('.fx-joint');
-  const body = box.querySelector('.fx-joint-body');
+  const cv = box.querySelector('.fx-joint-cv');
+  const J = jointData();
+  const t0 = performance.now();
   const fog = box.querySelector('.fx-fog');
   // nuvens grandes que vão tomando a tela
   for (let k = 0; k < 14; k++) {
@@ -2433,13 +2736,29 @@ function smokeTime(from) {
     fog.appendChild(c);
   }
   // o baseado sobe
-  joint.animate([{ transform: 'translate(-50%, 160px) rotate(-8deg)', opacity: 0 }, { transform: 'translate(-50%, 0) rotate(-8deg)', opacity: 1 }],
+  joint.animate([{ transform: `translate(-50%, 160px) rotate(${J_ANG}deg)`, opacity: 0 }, { transform: `translate(-50%, 0) rotate(${J_ANG}deg)`, opacity: 1 }],
     { duration: 600, easing: 'cubic-bezier(.2,.9,.3,1.2)', fill: 'forwards' });
   setTimeout(() => playSound('isqueiro', true), 300);
   const BURN0 = 800, BURN = 6800;
   // acende e vai queimando até o filtro
-  setTimeout(() => box.classList.add('lit'), BURN0 - 200);
-  body.animate([{ width: '100%' }, { width: '24%' }], { duration: BURN, delay: BURN0, easing: 'linear', fill: 'forwards' });
+  // desenha o baseado queimando, quadro a quadro
+  const dpr = Math.min(2, devicePixelRatio || 1);
+  cv.width = Math.round(joint.offsetWidth * dpr);
+  cv.height = Math.round(joint.offsetHeight * dpr);
+  const g = cv.getContext('2d');
+  // a tela de desenho sobra um pouco em volta (para o brilho e a ponta arredondada)
+  g.setTransform(cv.width / 440, 0, 0, cv.height / 128, (20 / 440) * cv.width, (24 / 128) * cv.height);
+  const tipMark = box.querySelector('.fx-ember');
+  const frame = () => {
+    if (!box.isConnected) return;
+    const t = performance.now() - t0;
+    const p = Math.min(1, Math.max(0, (t - BURN0) / BURN));
+    const len = 400 * (1 - 0.8 * p);
+    drawJoint(g, J, len, t > BURN0 - 200, t);
+    tipMark.style.left = `${(len / 400) * 100}%`;
+    requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
   fog.animate([{ opacity: 0 }, { opacity: 0, offset: 0.08 }, { opacity: 0.93, offset: 0.62 }, { opacity: 0.93, offset: 0.78 }, { opacity: 0 }],
     { duration: 11500, easing: 'ease-in-out', fill: 'forwards' });
   // fumacinha saindo da ponta
@@ -2475,9 +2794,21 @@ function smokeTime(from) {
     box.appendChild(a);
     setTimeout(() => a.remove(), 1500);
   }, 650);
-  setTimeout(() => { clearInterval(ashTick); box.classList.remove('lit'); box.classList.add('done'); }, BURN0 + BURN);
+  setTimeout(() => clearInterval(ashTick), BURN0 + BURN);
   setTimeout(() => clearInterval(puff), BURN0 + BURN - 300);
-  setTimeout(() => joint.animate([{ opacity: 1 }, { opacity: 0, transform: 'translate(-50%, 140px) rotate(-14deg)' }], { duration: 600, easing: 'ease-in', fill: 'forwards' }), BURN0 + BURN + 300);
+  // sobrou a pontinha: sai girando em arco, como quem joga a bituca fora
+  setTimeout(() => {
+    const W = innerWidth, H = innerHeight;
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    const frames = [];
+    for (let k = 0; k <= 20; k++) {
+      const p = k / 20;
+      const dx = dir * W * 0.75 * p;
+      const dy = -H * 0.42 * Math.sin(Math.PI * p * 0.85) + H * 0.9 * p * p;
+      frames.push({ transform: `translate(-50%, 0) translate(${dx}px, ${dy}px) rotate(${J_ANG + dir * 1080 * p}deg) scale(${1 - 0.25 * p})` });
+    }
+    joint.animate(frames, { duration: 1150, easing: 'cubic-bezier(.3,.1,.6,1)', fill: 'forwards' });
+  }, BURN0 + BURN + 150);
   setTimeout(() => { box.remove(); smoking = false; }, 11600);
 }
 

@@ -4,6 +4,7 @@
 const express = require('express');
 const http = require('http');
 const path = require('path');
+const crypto = require('crypto');
 const { Server } = require('socket.io');
 const { hashSenha, confereSenha, criaToken, leToken, abreBanco } = require('./contas');
 
@@ -138,6 +139,73 @@ async function userFromReq(req) {
   const id = leToken(h.startsWith('Bearer ') ? h.slice(7) : '');
   return id ? banco.byId(id) : null;
 }
+
+// ---------- Fotos e áudios no chat ----------
+// O arquivo é guardado no banco e a mensagem leva só "img:<código>" (foto)
+// ou "aud:<código>:<segundos>" (áudio).
+// O código é longo e aleatório: só quem recebeu a mensagem consegue abrir.
+const IMG_MAX = 3 * 1024 * 1024;
+const IMG_DIAS = 90; // fotos mais velhas que isso são apagadas
+const imgUploads = new Map(); // uid -> horários (limite por minuto)
+function tipoImagem(b) {
+  if (b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+  if (b.length > 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png';
+  if (b.length > 12 && b.toString('ascii', 0, 4) === 'RIFF' && b.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
+  if (b.length > 6 && b.toString('ascii', 0, 3) === 'GIF') return 'image/gif';
+  // áudios (mensagem de voz)
+  if (b.length > 4 && b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return 'audio/webm';
+  if (b.length > 4 && b.toString('ascii', 0, 4) === 'OggS') return 'audio/ogg';
+  if (b.length > 12 && b.toString('ascii', 4, 8) === 'ftyp') return 'audio/mp4';
+  if (b.length > 3 && (b.toString('ascii', 0, 3) === 'ID3' || (b[0] === 0xff && (b[1] & 0xe0) === 0xe0))) return 'audio/mpeg';
+  if (b.length > 12 && b.toString('ascii', 0, 4) === 'RIFF' && b.toString('ascii', 8, 12) === 'WAVE') return 'audio/wav';
+  return null;
+}
+app.options('/api/img', (req, res) => res.sendStatus(204));
+app.post('/api/img', express.raw({ type: () => true, limit: IMG_MAX }), async (req, res) => {
+  try {
+    const u = await userFromReq(req);
+    if (!u || u.status !== 'approved') return erro(res, 401, 'Entre de novo.');
+    const now = Date.now();
+    const t = (imgUploads.get(u.id) || []).filter((x) => now - x < 60_000);
+    if (t.length >= 20) return erro(res, 429, 'Calma! Muitos envios seguidos.');
+    const dados = Buffer.isBuffer(req.body) ? req.body : null;
+    const mime = dados && tipoImagem(dados);
+    if (!mime) return erro(res, 400, 'Esse arquivo não é uma foto nem um áudio.');
+    t.push(now);
+    imgUploads.set(u.id, t);
+    const id = crypto.randomBytes(12).toString('base64url');
+    await banco.addImg({ id, dono: u.id, mime, dados });
+    res.json({ ok: true, id });
+  } catch (e) {
+    if (e.type === 'entity.too.large') return erro(res, 413, 'Arquivo grande demais.');
+    console.error('img:', e.message);
+    erro(res, 500, 'Não consegui guardar o arquivo.');
+  }
+});
+app.get('/img/:id', async (req, res) => {
+  try {
+    const id = String(req.params.id || '');
+    if (!/^[A-Za-z0-9_-]{16}$/.test(id)) return res.sendStatus(404);
+    const im = await banco.getImg(id);
+    if (!im) return res.sendStatus(404);
+    res.set('Content-Type', im.mime);
+    res.set('Cache-Control', 'private, max-age=31536000, immutable');
+    res.set('Access-Control-Allow-Origin', '*');
+    res.send(im.dados);
+  } catch (e) {
+    res.sendStatus(500);
+  }
+});
+async function limpaFotos() {
+  try {
+    const n = await banco.removeOldImgs(IMG_DIAS);
+    if (n) console.log(`Fotos antigas apagadas: ${n}`);
+  } catch (e) {
+    console.error('limpar fotos:', e.message);
+  }
+}
+setTimeout(limpaFotos, 60_000);
+setInterval(limpaFotos, 24 * 3600_000).unref();
 
 app.get('/api/me', async (req, res) => {
   try {

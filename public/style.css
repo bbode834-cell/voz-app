@@ -656,6 +656,32 @@ body.dm-open .main { margin-right: 340px; }
 .gif-grid .gif:hover { outline: 2px solid var(--accent); }
 .gif-msg { grid-column: 1 / -1; color: var(--muted); text-align: center; padding: 20px 10px; font-size: 13px; }
 .gif-credit { color: var(--muted); font-size: 10px; text-align: right; padding: 0 10px 6px; }
+.chat-photo { max-width: min(280px, 100%); max-height: 300px; border-radius: 10px; display: block; margin-top: 2px; cursor: zoom-in;
+  background: var(--bg); min-width: 60px; min-height: 60px; object-fit: cover; }
+.photo-btn { font-size: 19px; width: 34px; flex-shrink: 0; border-radius: 6px; background: none; border: 0; cursor: pointer; line-height: 1; opacity: .85; }
+.photo-btn:hover { opacity: 1; }
+.photo-btn.busy { animation: photo-busy .8s ease-in-out infinite alternate; pointer-events: none; }
+@keyframes photo-busy { from { opacity: .3; } to { opacity: 1; } }
+.photo-view { position: fixed; inset: 0; z-index: 9500; background: rgba(0,0,0,.88); display: grid; place-items: center; cursor: zoom-out; padding: 16px; }
+.photo-view[hidden] { display: none; }
+.photo-view img { max-width: 100%; max-height: 100%; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,.6); }
+.rec-btn { font-size: 19px; width: 34px; flex-shrink: 0; border-radius: 6px; background: none; border: 0; cursor: pointer; line-height: 1; opacity: .85; }
+.rec-btn:hover { opacity: 1; }
+.rec-bar { display: none; flex: 1; align-items: center; gap: 8px; min-width: 0; padding: 0 4px; }
+.chat-form.recording > :not(.rec-bar) { display: none !important; }
+.chat-form.recording .rec-bar { display: flex; }
+.chat-form.sending .rec-btn { animation: photo-busy .8s ease-in-out infinite alternate; pointer-events: none; }
+.rec-dot { width: 10px; height: 10px; border-radius: 50%; background: #ef4444; animation: rec-dot 1s ease-in-out infinite alternate; flex-shrink: 0; }
+@keyframes rec-dot { from { opacity: 1; } to { opacity: .25; } }
+.rec-time { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--text-strong); }
+.rec-hint { flex: 1; color: var(--muted); font-size: 13px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.rec-cancel { background: none; border: 0; color: var(--muted); font-size: 18px; cursor: pointer; padding: 4px 8px; }
+.rec-send { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 8px 14px; font-weight: 700; cursor: pointer; }
+.voice-msg { display: flex; align-items: center; gap: 10px; background: var(--bg); border-radius: 20px; padding: 6px 12px 6px 6px; width: 240px; max-width: 100%; box-sizing: border-box; margin-top: 2px; }
+.vm-play { width: 32px; height: 32px; border-radius: 50%; border: 0; background: var(--accent); color: #fff; font-size: 13px; cursor: pointer; flex-shrink: 0; display: grid; place-items: center; }
+.vm-bar { flex: 1; height: 4px; border-radius: 2px; background: rgba(148,155,164,.35); overflow: hidden; min-width: 60px; }
+.vm-bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .25s linear; }
+.vm-time { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 32px; text-align: right; }
 .chat-gif { max-width: min(260px, 100%); max-height: 220px; border-radius: 8px; display: block; margin-top: 2px; }
 
 /* ---------- Amigos ---------- */
@@ -704,18 +730,10 @@ body.dm-open .main { margin-right: 340px; }
   background: rgba(0,0,0,.72); color: #fff; padding: 10px 18px; border-radius: 20px; font-size: 17px; font-weight: 600;
   animation: smoke-text 7.5s both; }
 @keyframes smoke-text { 0% { opacity: 0; transform: translate(-50%, -10px); } 6%, 85% { opacity: 1; transform: translate(-50%, 0); } 100% { opacity: 0; } }
-.fx-joint { position: absolute; left: 50%; bottom: 16%; width: min(78vw, 420px); height: calc(min(78vw, 420px) * .15); z-index: 1;
-  filter: drop-shadow(0 10px 10px rgba(0,0,0,.5)); opacity: 0; }
-.fx-joint-body { position: relative; height: 100%; width: 100%; overflow: visible; }
-.fx-joint-svg { position: absolute; left: 0; top: 0; height: 100%; width: min(78vw, 420px); clip-path: inset(0 0 0 0); }
-.fx-joint-body { overflow: hidden; }
-.fx-joint-body .fx-ember, .fx-joint-body .fx-ash { position: absolute; top: 50%; transform: translateY(-50%); border-radius: 40%; }
-.fx-ash { right: 0; width: 14px; height: 78%; background: linear-gradient(90deg, #6d6d6d, #bdbdbd 50%, #8a8a8a); opacity: 0; }
-.fx-ember { right: 0; width: 12px; height: 72%; background: radial-gradient(circle at 60% 50%, #fff3a0, #ff8c1a 35%, #d42a00 70%, #5a1200); opacity: 0;
-  box-shadow: 0 0 10px 3px rgba(255,120,20,.0); }
-.fx-smoke.lit .fx-ember { opacity: 1; animation: ember .7s ease-in-out infinite alternate; }
-.fx-smoke.lit .fx-ash { opacity: 1; right: 8px; }
-@keyframes ember { from { box-shadow: 0 0 8px 2px rgba(255,120,20,.6); filter: brightness(.9); } to { box-shadow: 0 0 22px 8px rgba(255,150,40,.9); filter: brightness(1.25); } }
+.fx-joint { position: absolute; left: 50%; bottom: 26%; transform-origin: 10% 50%; width: min(78vw, 420px); height: calc(min(78vw, 420px) * .2); z-index: 1;
+  filter: drop-shadow(0 10px 10px rgba(0,0,0,.45)); opacity: 0; }
+.fx-joint-cv { position: absolute; left: -5%; top: -30%; width: 110%; height: 160%; }
+.fx-ember { position: absolute; top: 50%; width: 2px; height: 2px; left: 100%; }
 .fx-drip2 { position: absolute; z-index: -1; pointer-events: none; }
 .fx-drip2 svg { position: absolute; left: 0; overflow: visible; }
 .fx-drip-body { top: 0; filter: drop-shadow(0 2px 2px rgba(0,0,0,.25)); }

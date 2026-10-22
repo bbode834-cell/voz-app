@@ -76,6 +76,16 @@ class Memoria {
     this.amigos = this.amigos.filter((f) => f.a !== uid && f.b !== uid);
   }
 
+  // Fotos do chat
+  async addImg(im) { (this.imgs ||= new Map()).set(im.id, { ...im, criado: Date.now() }); }
+  async getImg(id) { return this.imgs?.get(id) || null; }
+  async removeOldImgs(dias) {
+    let n = 0;
+    const lim = Date.now() - dias * 86400_000;
+    for (const [k, v] of this.imgs || []) if (v.criado < lim) { this.imgs.delete(k); n++; }
+    return n;
+  }
+
   // Amizades: { a, b (a < b), de (quem pediu), status: 'pending' | 'accepted' }
   async friendsOf(uid) { return this.amigos.filter((f) => f.a === uid || f.b === uid).map((f) => ({ ...f })); }
   async getFriend(x, y) {
@@ -137,6 +147,14 @@ class Postgres {
         status TEXT NOT NULL DEFAULT 'pending',
         criado TIMESTAMPTZ NOT NULL DEFAULT now(),
         PRIMARY KEY (a, b)
+      )`);
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS imagens (
+        id TEXT PRIMARY KEY,
+        dono INTEGER NOT NULL,
+        mime TEXT NOT NULL,
+        dados BYTEA NOT NULL,
+        criado TIMESTAMPTZ NOT NULL DEFAULT now()
       )`);
   }
   async count() {
@@ -209,6 +227,19 @@ class Postgres {
   async removeMsgsOf(uid) {
     await this.pool.query('DELETE FROM mensagens WHERE de = $1 OR para = $1', [uid]);
     await this.pool.query('DELETE FROM amizades WHERE a = $1 OR b = $1', [uid]);
+  }
+
+  // Fotos do chat
+  async addImg({ id, dono, mime, dados }) {
+    await this.pool.query('INSERT INTO imagens (id, dono, mime, dados) VALUES ($1,$2,$3,$4)', [id, dono, mime, dados]);
+  }
+  async getImg(id) {
+    const r = await this.pool.query('SELECT mime, dados FROM imagens WHERE id = $1', [id]);
+    return r.rows[0] || null;
+  }
+  async removeOldImgs(dias) {
+    const r = await this.pool.query(`DELETE FROM imagens WHERE criado < now() - ($1::int * interval '1 day')`, [dias]);
+    return r.rowCount;
   }
 
   // Amizades
