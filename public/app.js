@@ -1855,6 +1855,7 @@ function updateCamPip(card, id) {
 let dj = null; // estado completo vindo do servidor
 let djClock = 0; // diferença entre o relógio daqui e o do servidor
 let djVolume = store.get('voz-dj-vol', 0.5);
+let djMuted = !!store.get('voz-dj-mute', false); // mudo só para mim
 const djAudio = new Audio();
 djAudio.preload = 'auto';
 $('#audio-sink').appendChild(djAudio);
@@ -1899,7 +1900,7 @@ function syncDjAudio() {
     djAudio.load();
   }
   djAudio.volume = djVolume;
-  djAudio.muted = deafened;
+  djAudio.muted = deafened || djMuted;
   if (n.pausedAt) { djAudio.pause(); return; }
   if (!n.live) {
     const want = djPos();
@@ -1993,7 +1994,7 @@ function syncYt(n) {
       if (n.list) p.loadPlaylist({ listType: 'playlist', list: n.list, index: n.index, startSeconds: start });
       else p.loadVideoById({ videoId: n.video, startSeconds: start });
       p.setVolume(Math.round(djVolume * 100));
-      if (deafened) p.mute(); else p.unMute();
+      if (deafened || djMuted) p.mute(); else p.unMute();
       return;
     }
     const st = p.getPlayerState();
@@ -2017,7 +2018,7 @@ function syncYt(n) {
       return;
     }
     p.setVolume(Math.round(djVolume * 100));
-    if (deafened) p.mute(); else p.unMute();
+    if (deafened || djMuted) p.mute(); else p.unMute();
     if (n.pausedAt) {
       if (st === YT.PlayerState.PLAYING || st === YT.PlayerState.BUFFERING) p.pauseVideo();
       return;
@@ -2133,6 +2134,7 @@ function renderDj() {
   $('#dj-play').disabled = !n && !dj.queue.length;
   $('#dj-skip').disabled = !n && !dj.queue.length;
   $('#dj-vol').value = Math.round(djVolume * 100);
+  renderDjMute();
   const q = $('#dj-queue');
   q.innerHTML = dj.queue.length
     ? dj.queue.map((t, i) => `<li><span class="dj-n">${i + 1}</span><span class="dj-q-title">${esc(t.title)}<small>${esc([t.artist, t.by].filter(Boolean).join(' · '))}</small></span><span class="dj-q-dur">${t.live ? 'ao vivo' : fmtDur(t.duration)}</span><button type="button" class="icon-btn" data-dj-rm="${t.key}" title="Tirar da fila">${ICON.close}</button></li>`).join('')
@@ -2149,6 +2151,7 @@ function applyDjMin() {
   $('#dj-min').title = min ? 'Abrir o painel do DJ' : 'Minimizar o painel do DJ';
   $('#dj-mini-play').hidden = !min;
   $('#dj-mini-skip').hidden = !min;
+  $('.dj-head .dj-mute').hidden = !min;
 }
 $('#dj-min').onclick = () => { store.set(DJ_MIN, !store.get(DJ_MIN, false)); applyDjMin(); };
 $('#dj-mini-play').onclick = () => djCtrl(dj?.now && !dj.now.pausedAt ? 'pause' : 'play');
@@ -2162,6 +2165,16 @@ $('#dj-queue').addEventListener('click', (e) => {
   const b = e.target.closest('[data-dj-rm]');
   if (b) djCtrl('remove', b.dataset.djRm);
 });
+function renderDjMute() {
+  document.querySelectorAll('.dj-mute').forEach((b) => { b.textContent = djMuted ? '🔇' : '🔊'; b.title = djMuted ? 'Ligar o som do DJ (só para você)' : 'Silenciar o DJ (só para você)'; b.classList.toggle('on', djMuted); });
+}
+document.querySelectorAll('.dj-mute').forEach((b) => (b.onclick = () => {
+  djMuted = !djMuted;
+  store.set('voz-dj-mute', djMuted);
+  djAudio.muted = deafened || djMuted;
+  if (dj?.now?.kind === 'yt' && djHere()) syncYt(dj.now);
+  renderDjMute();
+}));
 $('#dj-vol').addEventListener('input', (e) => {
   djVolume = Number(e.target.value) / 100;
   store.set('voz-dj-vol', djVolume);

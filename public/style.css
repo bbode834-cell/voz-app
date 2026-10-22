@@ -909,3 +909,6 @@ body.dm-open .main { margin-right: 340px; }
 .dj-panel.min .dj-mini-ctl { display: inline-block; width: 30px; height: 30px; font-size: 14px; }
 .dj-mini-ctl[hidden] { display: none !important; }
 .dj-panel.min .dj-yt { display: none !important; }
+
+.dj-mute.on { color: #f04747; }
+.dj-head .dj-mute[hidden] { display: none !important; }
