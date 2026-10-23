@@ -30,32 +30,90 @@
   .hide { display: none !important; }
   #power { position: absolute; left: 10px; bottom: 10px; width: 120px; height: 10px; border-radius: 5px; background: #333; overflow: hidden; display: none; }
   #power i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--green), var(--accent), var(--red)); }
+  #seats { display: flex; gap: 6px; flex-wrap: wrap; }
+  .seat.t0 { border-left: 3px solid #3b82f6; } .seat.t1 { border-left: 3px solid #ef4444; }
+  #domino { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 6px; gap: 6px; }
+  #board { flex: 1; overflow: auto; background: #1f7a3f; border-radius: 10px; padding: 14px; display: flex; align-items: center; }
+  #chain { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; justify-content: center; margin: auto; max-width: 100%; }
+  .tile { display: inline-flex; background: #f8f5ea; color: #111; border-radius: 5px; border: 1px solid #999; box-shadow: 0 1px 2px #0006; }
+  .tile.h { flex-direction: row; width: 52px; height: 26px; } .tile.v { flex-direction: column; width: 26px; height: 52px; }
+  .tile .half { flex: 1; display: grid; place-items: center; }
+  .pips { display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr); width: 82%; height: 82%; }
+  .pips i { display: block; width: 70%; height: 70%; margin: auto; border-radius: 50%; }
+  .pips i.on { background: #111; }
+  .tile.h .half { width: 26px; height: 26px; } .tile.v .half { width: 26px; height: 26px; }
+  .tile.h .half + .half { border-left: 1px solid #999; } .tile.v .half + .half { border-top: 1px solid #999; }
+  .tile.last { outline: 2px solid var(--accent); }
+  #hand { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; min-height: 64px; align-items: center; }
+  #hand .tile { width: 36px; height: 72px; flex-direction: column; cursor: pointer; opacity: .45; }
+  #hand .tile .half { width: 36px; height: 36px; } #hand .tile .half + .half { border-top: 1px solid #999; border-left: 0; }
+  #hand .tile.ok { opacity: 1; box-shadow: 0 0 0 2px var(--green); } #hand .tile.ok:hover { transform: translateY(-4px); }
+  #dom-actions { display: flex; align-items: center; gap: 10px; justify-content: center; font-size: 12px; color: var(--muted); }
+  #lado { position: absolute; inset: 0; display: grid; place-items: center; background: #0008; }
+  #cartas { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 6px; gap: 6px; }
+  #mesa { flex: 1; display: flex; align-items: center; justify-content: center; gap: 26px; background: #1f5a3f; border-radius: 10px; position: relative; min-height: 120px; }
+  .uc { width: 64px; height: 96px; border-radius: 9px; border: 3px solid #fff; display: grid; place-items: center; font-weight: 900; font-size: 26px; color: #fff; text-shadow: 0 1px 2px #0008; box-shadow: 0 2px 6px #0007; position: relative; user-select: none; }
+  .uc.r { background: #e53935; } .uc.g { background: #43a047; } .uc.b { background: #1e88e5; } .uc.y { background: #fdd835; color: #222; text-shadow: none; } .uc.k { background: #222; }
+  .uc small { position: absolute; left: 5px; top: 3px; font-size: 11px; font-weight: 800; }
+  .uc .act { font-size: 15px; text-align: center; line-height: 1.1; }
+  #deck { width: 64px; height: 96px; border-radius: 9px; background: #222; border: 3px solid #fff; display: grid; place-items: center; cursor: pointer; color: #fff; font-size: 34px; }
+  #deck small { font-size: 11px; }
+  #deck.ok { box-shadow: 0 0 0 3px var(--green); }
+  #sentido { position: absolute; right: 12px; top: 8px; color: #fff9; font-size: 22px; }
+  #cartas-acoes { display: flex; gap: 8px; justify-content: center; min-height: 32px; }
+  #myhand { display: flex; gap: 6px; overflow-x: auto; padding: 6px 4px 10px; min-height: 110px; align-items: flex-end; justify-content: safe center; }
+  #myhand .uc { flex: none; opacity: .45; cursor: pointer; transition: transform .1s; }
+  #myhand .uc.ok { opacity: 1; box-shadow: 0 0 0 3px var(--green); } #myhand .uc.ok:hover { transform: translateY(-6px); }
+  #cor { position: absolute; inset: 0; display: grid; place-items: center; background: #0008; }
+  .cores { display: flex; gap: 10px; justify-content: center; margin-bottom: 12px; }
+  .cores button { width: 54px; height: 54px; border-radius: 12px; border: 3px solid #fff; }
+  .corbadge { position: absolute; right: -10px; top: -10px; width: 22px; height: 22px; border-radius: 50%; border: 2px solid #fff; }
   #toast { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); background: #000c; color: #fff; padding: 8px 14px; border-radius: 10px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
 </style>
 </head>
 <body>
 <div id="app">
   <div id="top">
-    <div id="seat0" class="seat"><span class="dot"></span><b>—</b></div>
-    <span class="vs">×</span>
-    <div id="seat1" class="seat"><span class="dot"></span><b>—</b></div>
+    <div id="seats"></div>
     <span id="msg"></span>
-    <button id="sit" class="primary">🎱 Jogar</button>
+    <button id="sit" class="primary">Jogar</button>
+    <button id="start" class="primary hide">▶ Começar</button>
     <button id="stand" class="hide">Sair da mesa</button>
     <button id="reset" class="hide">Nova partida</button>
+    <button id="trocar" title="Trocar de jogo">Jogos</button>
   </div>
   <div id="stage"><canvas id="c" width="880" height="480"></canvas></div>
+  <div id="cartas" class="hide">
+    <div id="mesa">
+      <div id="pile"></div>
+      <div id="deck" title="Comprar"><span>🂠</span><small id="deck-n"></small></div>
+      <div id="sentido">⟳</div>
+    </div>
+    <div id="cartas-acoes"><button id="uno" class="primary hide">UNO!</button><button id="pegou" class="danger hide">Pegou! (esqueceu o UNO)</button><button id="passar" class="hide">Passar</button></div>
+    <div id="myhand"></div>
+  </div>
+  <div id="domino" class="hide">
+    <div id="board"><div id="chain"></div></div>
+    <div id="hand"></div>
+    <div id="dom-actions"><button id="dom-pass" class="hide">Passar / Comprar</button><span id="dom-monte"></span></div>
+  </div>
 </div>
 <div id="pick">
   <div class="card">
     <h2>🕹️ Arcade King</h2>
     <p>Escolha o jogo para a sala. Quem quiser jogar senta; o resto assiste.</p>
-    <button id="pick-sinuca" class="primary" style="font-size:16px;padding:10px 18px">🎱 Sinuca (2 jogadores)</button>
+    <button id="pick-sinuca" class="primary" style="font-size:16px;padding:10px 18px;width:100%">🎱 Sinuca (2 a 4, em duplas)</button>
+    <div style="height:10px"></div>
+    <button id="pick-domino" class="primary" style="font-size:16px;padding:10px 18px;width:100%">🁣 Dominó (2 a 4)</button>
+    <div style="height:10px"></div>
+    <button id="pick-cartas" class="primary" style="font-size:16px;padding:10px 18px;width:100%">🃏 Cartas, estilo Uno (2 a 4)</button>
   </div>
 </div>
+<div id="cor" class="hide"><div class="card"><p>Escolha a cor</p><div class="cores"><button data-cor="r" style="background:#e53935"></button><button data-cor="g" style="background:#43a047"></button><button data-cor="b" style="background:#1e88e5"></button><button data-cor="y" style="background:#fdd835"></button></div><button id="cor-x">Cancelar</button></div></div>
+<div id="lado" class="hide"><div class="card"><p id="lado-txt">De que lado?</p><button id="lado-esq" class="primary">◀ Esquerda</button> <button id="lado-dir" class="primary">Direita ▶</button> <button id="lado-x">Cancelar</button></div></div>
 <div id="power"><i></i></div>
 <div id="toast"></div>
 <script src="/socket.io/socket.io.js"></script>
-<script src="arcade.js?v=1"></script>
+<script src="arcade.js?v=4"></script>
 </body>
 </html>
