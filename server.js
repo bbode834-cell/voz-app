@@ -571,7 +571,7 @@ async function carregaTv() {
         items.set(c.id, { id: c.id, name: c.name, country: c.country || '', cats: c.categories || [], logo: logo.get(c.id) || '', url: st.url, q: qual(st.quality), web: prev?.web ?? null });
       }
       const antigo = tvCat.byId;
-      const lista = [...items.values()].map((i) => ({ ...i, web: antigo.get(i.id)?.web ?? null }));
+      const lista = [...items.values()].map((i) => { const a = antigo.get(i.id); return { ...i, web: a?.web ?? null, ok: a?.url === i.url ? a?.ok ?? null : null, hevc: a?.hevc ?? false, checkedAt: a?.url === i.url ? a?.checkedAt ?? 0 : 0, failCount: a?.failCount ?? 0 }; });
       const peso = (cc) => (cc === 'BR' ? 0 : cc === 'PT' ? 1 : 2);
       lista.sort((a, b) => peso(a.country) - peso(b.country) || a.country.localeCompare(b.country) || a.name.localeCompare(b.name));
       tvCat.items = lista;
@@ -588,29 +588,85 @@ async function carregaTv() {
   return tvCat.carregando;
 }
 function qual(q) { const n = parseInt(q || '0', 10); return Number.isFinite(n) ? n : 0; }
-// Confere quais canais do Brasil tocam dentro do navegador (precisam liberar "CORS"); no app todos tentam
-async function checaTvWeb() {
-  const alvo = tvCat.items.filter((i) => i.country === 'BR' && i.web == null);
-  let k = 0;
-  async function worker() {
-    while (k < alvo.length) {
-      const it = alvo[k++];
-      try {
-        const ctl = new AbortController();
-        const t = setTimeout(() => ctl.abort(), 8000);
-        const r = await fetch(it.url, { method: 'GET', headers: { Origin: 'https://king-laucher.onrender.com', 'User-Agent': 'Mozilla/5.0' }, signal: ctl.signal, redirect: 'follow' });
-        clearTimeout(t);
-        try { ctl.abort(); } catch {}
-        it.web = r.ok && !!r.headers.get('access-control-allow-origin');
-      } catch {
-        it.web = false;
-      }
-    }
+// Confere se o canal está no ar de verdade (abre a playlist e um pedaço do vídeo), se usa um
+// formato que o navegador não toca (HEVC) e se libera "CORS" (toca dentro do site). Brasil e
+// Portugal são checados; os outros países só quando alguém abre a lista deles.
+const TV_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+async function pegaTexto(url, ms = 8000) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), ms);
+  try {
+    const r = await fetch(url, { headers: { Origin: 'https://king-laucher.onrender.com', 'User-Agent': TV_UA }, signal: ctl.signal, redirect: 'follow' });
+    const cors = !!r.headers.get('access-control-allow-origin');
+    if (!r.ok) return { ok: false, status: r.status, cors };
+    const ct = String(r.headers.get('content-type') || '');
+    let text = '';
+    if (/mpegurl|text|octet|json|xml/i.test(ct) || !ct) text = (await r.text()).slice(0, 200000);
+    else { try { ctl.abort(); } catch {} }
+    return { ok: true, status: r.status, cors, text, final: r.url || url, ct };
+  } finally {
+    clearTimeout(t);
   }
-  await Promise.all(Array.from({ length: 8 }, worker));
-  console.log(`TV: ${tvCat.items.filter((i) => i.web).length} canais do Brasil tocam no navegador`);
 }
-const tvPublicItem = (i) => ({ id: i.id, name: i.name, country: i.country, cats: i.cats, logo: i.logo, url: i.url, web: i.web });
+async function checaCanal(it) {
+  const antes = it.ok;
+  try {
+    const m = await pegaTexto(it.url);
+    if (!m.ok || !/#EXTM3U/.test(m.text || '')) { it.ok = false; it.web = m.cors && it.web !== false ? it.web : false; return; }
+    it.web = m.cors;
+    it.hevc = /CODECS="[^"]*(hvc1|hev1)/i.test(m.text);
+    let media = m.text;
+    let base = m.final;
+    if (/#EXT-X-STREAM-INF/.test(media)) {
+      // playlist "mestre": pega a primeira variante
+      const linhas = media.split(/\r?\n/);
+      let v = null;
+      for (let i = 0; i < linhas.length; i++) if (linhas[i].startsWith('#EXT-X-STREAM-INF') && linhas[i + 1] && !linhas[i + 1].startsWith('#')) { v = linhas[i + 1].trim(); break; }
+      if (!v) { it.ok = false; return; }
+      const vu = new URL(v, base).href;
+      const r2 = await pegaTexto(vu);
+      if (!r2.ok || !/#EXTINF/.test(r2.text || '')) { it.ok = false; return; }
+      media = r2.text;
+      base = r2.final;
+    }
+    if (!/#EXTINF/.test(media)) { it.ok = false; return; }
+    // tenta baixar o começo de um pedaço do vídeo
+    const segs = media.split(/\r?\n/).filter((l) => l && !l.startsWith('#'));
+    const seg = segs[segs.length - 1];
+    if (!seg) { it.ok = false; return; }
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 8000);
+    try {
+      const r3 = await fetch(new URL(seg, base).href, { headers: { 'User-Agent': TV_UA, Range: 'bytes=0-2047' }, signal: ctl.signal });
+      it.ok = r3.ok;
+      try { ctl.abort(); } catch {}
+    } finally {
+      clearTimeout(t);
+    }
+  } catch {
+    it.ok = false;
+  } finally {
+    it.checkedAt = Date.now();
+    if (it.ok === false && antes !== false) it.failCount = 0;
+  }
+}
+let tvChecando = false;
+async function checaTvWeb(filtro) {
+  if (tvChecando) return;
+  tvChecando = true;
+  try {
+    const alvo = tvCat.items.filter(filtro || ((i) => (i.country === 'BR' || i.country === 'PT') && (!i.checkedAt || Date.now() - i.checkedAt > 2 * 60 * 60 * 1000)));
+    let k = 0;
+    async function worker() { while (k < alvo.length) await checaCanal(alvo[k++]); }
+    await Promise.all(Array.from({ length: 10 }, worker));
+    const br = tvCat.items.filter((i) => i.country === 'BR');
+    console.log(`TV: Brasil ${br.filter((i) => i.ok).length}/${br.length} no ar, ${br.filter((i) => i.ok && i.web && !i.hevc).length} tocam no navegador`);
+  } finally {
+    tvChecando = false;
+  }
+}
+setInterval(() => checaTvWeb().catch(() => {}), 60 * 60 * 1000);
+const tvPublicItem = (i) => ({ id: i.id, name: i.name, country: i.country, cats: i.cats, logo: i.logo, url: i.url, web: i.web === true && !i.hevc ? true : i.web === false || i.hevc ? false : null, ok: i.ok ?? null });
 setTimeout(() => carregaTv(), 3000);
 setInterval(() => carregaTv(), 12 * 60 * 60 * 1000);
 
@@ -619,11 +675,13 @@ function tvPublic() { return { id: tv.id, name: tv.name, avatar: tv.avatar, room
 function tvState() { return { id: tv.id, name: tv.name, avatar: tv.avatar, room: tv.room, channel: tv.channel ? tvPublicItem(tv.channel) : null, since: tv.since, serverNow: Date.now() }; }
 function broadcastTv() { io.emit('tv', tvState()); }
 
+let arcadeBot = { pub: () => null, onLeave() {}, onChannelDeleted() {} };
+
 function snapshot() {
   return {
     namesVersion,
     bot: djPublic(),
-    bots: [djPublic(), tvPublic()],
+    bots: [djPublic(), tvPublic(), arcadeBot.pub()].filter(Boolean),
     channels: channels.map((c) => ({
       id: c.id,
       name: c.name,
@@ -658,6 +716,7 @@ function leave(socket) {
     tv.room = null;
     broadcastTv();
   }
+  arcadeBot.onLeave(ch.id, ch.users.size);
   broadcastChannels();
 }
 
@@ -739,6 +798,8 @@ io.use(async (socket, next) => {
     next(new Error('servidor'));
   }
 });
+
+arcadeBot = require('./arcade')(io, { byId, socketsOf, BOTS_ROOM, broadcastChannels, RANK });
 
 io.on('connection', (socket) => {
   socket.data.channel = null;
@@ -1097,11 +1158,14 @@ io.on('connection', (socket) => {
       if (!tvCat.items.length) await carregaTv();
       const ql = String(q || '').trim().toLowerCase().slice(0, 40);
       const cc = String(country || '').toUpperCase().slice(0, 2);
-      let lista = tvCat.items;
+      let lista = tvCat.items.filter((i) => i.ok !== false);
       if (cc) lista = lista.filter((i) => i.country === cc);
       if (ql) lista = lista.filter((i) => i.name.toLowerCase().includes(ql));
+      // ordem: já conferidos e no ar primeiro
+      lista = lista.slice().sort((a, b) => (b.ok === true) - (a.ok === true));
+      if (cc && cc !== 'BR' && cc !== 'PT') checaTvWeb((i) => i.country === cc && !i.checkedAt).catch(() => {});
       const paises = {};
-      for (const i of tvCat.items) paises[i.country] = (paises[i.country] || 0) + 1;
+      for (const i of tvCat.items) if (i.ok !== false) paises[i.country] = (paises[i.country] || 0) + 1;
       ack({ ok: true, total: lista.length, items: lista.slice(0, 150).map(tvPublicItem), countries: paises });
     } catch (e) {
       ack({ error: 'Não consegui carregar a lista de canais agora.' });
@@ -1124,9 +1188,14 @@ io.on('connection', (socket) => {
     broadcastTv();
   });
   // Um aparelho não conseguiu abrir o canal no navegador: anota para avisar os outros
-  socket.on('tv-fail', ({ id } = {}) => {
+  socket.on('tv-fail', ({ id, app } = {}) => {
     const it = tvCat.byId.get(String(id || ''));
-    if (it && it.web == null) { it.web = false; }
+    if (!it) return;
+    if (!app && it.web == null) it.web = false;
+    if (app) {
+      it.failCount = (it.failCount || 0) + 1;
+      if (it.failCount >= 2) { it.ok = false; it.checkedAt = Date.now(); }
+    }
   });
 
   // Criar uma sala nova
@@ -1160,6 +1229,7 @@ io.on('connection', (socket) => {
     channels.splice(channels.indexOf(ch), 1);
     if (dj.room === ch.id) { dj.room = null; djPause(); broadcastDj(); }
     if (tv.room === ch.id) { tv.room = null; broadcastTv(); }
+    arcadeBot.onChannelDeleted(ch.id);
     namesVersion = Date.now();
     ack({ ok: true });
     broadcastChannels();

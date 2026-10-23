@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>King Launcher</title>
   <link rel="icon" href="logo-fone.svg" />
-  <link rel="stylesheet" href="style.css?v=168" />
+  <link rel="stylesheet" href="style.css?v=170" />
 </head>
 <body>
   <!-- Abertura: a logo parada e o fone caindo em cima da coroa (clique para pular) -->
@@ -164,6 +164,7 @@
             <button class="dj-mute dj-btn dj-mini-ctl" type="button" title="Silenciar o DJ (só para você)" hidden>🔊</button>
             <button id="dj-min" class="btn small" type="button" title="Minimizar o painel do DJ">▁</button>
             <button id="dj-yt-size" class="btn small" type="button" title="Vídeo menor" hidden>⤡ Vídeo</button>
+            <button id="dj-yt-full" class="btn small" type="button" title="Vídeo em tela cheia" hidden>⛶ Tela cheia</button>
             <button id="dj-add" class="btn small primary" type="button">➕ Adicionar música</button>
             <button id="dj-back" class="btn small" type="button" title="Manda o DJ de volta para a sala Bots">↩ Devolver</button>
           </header>
@@ -195,6 +196,7 @@
           <div id="tv-video-wrap" class="dj-yt tv-video" hidden>
             <video id="tv-video" playsinline autoplay></video>
             <div id="tv-msg" class="tv-msg" hidden></div>
+            <button id="tv-full" class="full-btn" type="button" title="Tela cheia">⛶</button>
           </div>
           <div class="dj-row">
             <div id="tv-now" class="dj-now"></div>
@@ -203,6 +205,16 @@
               <label class="music-vol" title="Só você ouve mais alto ou mais baixo"><input id="tv-vol" type="range" min="0" max="100" /></label>
             </div>
           </div>
+        </div>
+        <!-- 🕹️ Arcade King -->
+        <div id="arcade-panel" class="dj-panel arcade-panel" hidden>
+          <header class="dj-head">
+            <span class="dj-title">🕹️ Arcade King<small id="arcade-mini-now" class="dj-mini-now"></small></span>
+            <button id="arcade-min" class="btn small" type="button" title="Minimizar">▁</button>
+            <button id="arcade-full" class="btn small" type="button" title="Tela cheia">⛶ Tela cheia</button>
+            <button id="arcade-back" class="btn small" type="button" title="Manda o Arcade de volta para a sala Bots">↩ Devolver</button>
+          </header>
+          <div id="arcade-wrap" class="arcade-wrap"><iframe id="arcade-frame" title="Arcade King" allow="fullscreen"></iframe></div>
         </div>
         <div id="music-bar" class="music-bar" hidden>
           <span class="music-ico">🎵</span><span id="music-who"></span>
@@ -235,6 +247,7 @@
         </button>
         <button id="btn-dj" class="btn" title="Chamar o DJ King para esta chamada" hidden>🤖 DJ</button>
         <button id="btn-tv" class="btn" title="Chamar a TV King para esta chamada" hidden>📺 TV</button>
+        <button id="btn-arcade" class="btn" title="Chamar o Arcade King para esta chamada" hidden>🕹️ Arcade</button>
         <button id="btn-music" class="btn" title="Toca o som de uma aba do navegador (YouTube, Spotify…) para todo mundo na chamada">
           <span class="ico">🎵</span><span class="label">Música</span>
         </button>
@@ -396,6 +409,6 @@
   </div>
   <div id="photo-view" class="photo-view" hidden><img alt="Foto" /></div>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=168"></script>
+  <script src="app.js?v=170"></script>
 </body>
 </html>

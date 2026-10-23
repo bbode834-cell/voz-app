@@ -766,7 +766,7 @@ async function joinChannel(id) {
 
     currentChannel = id;
     selfId = res.selfId;
-    setTimeout(() => { syncDjAudio(); renderDj(); syncTv(); renderTv(); }, 0);
+    setTimeout(() => { syncDjAudio(); renderDj(); syncTv(); renderTv(); renderArcade(); }, 0);
     modMuted = !!res.modMuted;
     if (modMuted) { muted = true; applyMicState(); }
     chatMsgs = Array.isArray(res.chat) ? res.chat.slice() : [];
@@ -795,7 +795,7 @@ function leaveChannel(switching = false) {
   if (!switching) { stopMic(); soundLeave(); }
   unwatchSpeaking(selfId);
   currentChannel = null;
-  setTimeout(() => { syncDjAudio(); renderDj(); syncTv(); renderTv(); }, 0);
+  setTimeout(() => { syncDjAudio(); renderDj(); syncTv(); renderTv(); renderArcade(); }, 0);
   watching.clear();
   renderScreens();
   closeVolume();
@@ -1583,7 +1583,7 @@ socket.on('disconnect', () => {
     [...peers.keys()].forEach(closePeer);
     stopMic();
     currentChannel = null;
-    setTimeout(() => { syncDjAudio(); renderDj(); syncTv(); renderTv(); }, 0);
+    setTimeout(() => { syncDjAudio(); renderDj(); syncTv(); renderTv(); renderArcade(); }, 0);
     watching.clear();
     renderScreens();
     closeVolume();
@@ -2108,6 +2108,7 @@ function renderDjProgress() {
 }
 
 function renderDj() {
+  if (typeof updateMediaClass === 'function') updateMediaClass();
   const panel = $('#dj-panel');
   const call = $('#btn-dj');
   if (!dj || !currentChannel) { panel.hidden = true; call.hidden = true; return; }
@@ -2125,6 +2126,7 @@ function renderDj() {
   const capa = n && n.kind === 'yt' && n.nowVideo ? { ...n, art: `https://i.ytimg.com/vi/${n.nowVideo}/mqdefault.jpg` } : n;
   $('#dj-skip-all').hidden = !(n && n.kind === 'yt' && n.list);
   $('#dj-yt-size').hidden = !(n && n.kind === 'yt');
+  $('#dj-yt-full').hidden = !(n && n.kind === 'yt');
   $('#dj-now').innerHTML = n
     ? `${art(capa)}<div class="dj-meta"><strong>${esc(titulo)}</strong><small>${sub}</small>
         <div class="dj-bar"><i id="dj-prog"></i></div><small id="dj-time"></small></div>`
@@ -2373,7 +2375,19 @@ async function tvMove(to) {
   if (r?.error) toast(r.error);
 }
 const TV_MIN = 'voz-tv-min';
+// Marca d'água some enquanto tem vídeo (TV ou YouTube) na tela
+function updateMediaClass() {
+  const on = (tvHere() && !!tv?.channel) || (djHere() && dj?.now?.kind === 'yt') || (arcadeHere() && !store.get(ARC_MIN, false));
+  document.body.classList.toggle('has-media', on);
+}
+function toggleFull(el) {
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  else el.requestFullscreen?.().catch(() => toast('Este navegador não deixou abrir em tela cheia.'));
+}
+$('#tv-full').onclick = () => toggleFull($('#tv-video-wrap'));
+$('#dj-yt-full').onclick = () => toggleFull($('#dj-yt-wrap'));
 function renderTv() {
+  updateMediaClass();
   const panel = $('#tv-panel');
   const call = $('#btn-tv');
   if (!tv || !currentChannel) { panel.hidden = true; call.hidden = true; return; }
@@ -2439,6 +2453,38 @@ $('#tv-results').addEventListener('click', async (e) => {
   if (r?.error) return toast(r.error);
   $('#tv-pick').hidden = true;
 });
+
+// ---------- 🕹️ Arcade King (mini-jogos) ----------
+let arcade = null;
+const arcadeHere = () => !!(arcade && currentChannel && arcade.room === currentChannel);
+socket.on('arcade', (st) => { arcade = st; renderArcade(); renderChannels(); });
+async function arcadeMove(to) {
+  if (!to) return toast('Entre numa sala primeiro, depois chame o Arcade.');
+  const r = await emitAck('arcade-move', { to });
+  if (r?.error) toast(r.error);
+}
+const ARC_MIN = 'voz-arcade-min';
+function renderArcade() {
+  updateMediaClass();
+  const panel = $('#arcade-panel');
+  const call = $('#btn-arcade');
+  const frame = $('#arcade-frame');
+  if (!arcade || !currentChannel) { panel.hidden = true; call.hidden = true; if (frame.src) frame.removeAttribute('src'); return; }
+  const here = arcadeHere();
+  call.hidden = here;
+  panel.hidden = !here;
+  if (!here) { if (frame.getAttribute('src')) frame.removeAttribute('src'); return; }
+  const want = `arcade.html?token=${encodeURIComponent(authToken || '')}&uid=${me?.id || 0}`;
+  if (frame.getAttribute('src') !== want) frame.setAttribute('src', want);
+  const min = !!store.get(ARC_MIN, false);
+  panel.classList.toggle('min', min);
+  $('#arcade-min').textContent = min ? '⤢' : '▁';
+  $('#arcade-mini-now').textContent = arcade.game ? `· ${arcade.game === 'sinuca' ? 'Sinuca' : arcade.game}${arcade.seats?.filter(Boolean).length ? ' · ' + arcade.seats.filter(Boolean).map((s) => s.name).join(' × ') : ''}` : '· escolhendo jogo';
+}
+$('#btn-arcade').onclick = () => arcadeMove(currentChannel);
+$('#arcade-back').onclick = () => arcadeMove('bots');
+$('#arcade-min').onclick = () => { store.set(ARC_MIN, !store.get(ARC_MIN, false)); renderArcade(); };
+$('#arcade-full').onclick = () => toggleFull($('#arcade-wrap'));
 
 // ---------- Chat do canal ----------
 let chatMsgs = [];
@@ -4084,6 +4130,7 @@ function updateSpeakingClasses() {
 // ---------- Renderização ----------
 function renderAll() {
   renderTv();
+  renderArcade();
   renderChannels();
   renderMain();
   renderControls();
@@ -4121,6 +4168,12 @@ function renderChannels() {
         ${u.muted ? `<span class="muted-ico">${ICON.micOff}</span>` : ''}`;
       ul.appendChild(li);
     });
+    if (arcade && arcade.room === ch.id) {
+      const li = document.createElement('li');
+      li.className = 'member bot';
+      li.innerHTML = `${avatarHTML({ name: arcade.name, avatar: arcade.avatar })}<span class="mname">${esc(arcade.name)}</span><span class="bot-badge">BOT</span>${arcade.game ? '<span class="cam-ico" title="Jogando">🎱</span>' : ''}`;
+      ul.appendChild(li);
+    }
     if (tv && tv.room === ch.id) {
       const li = document.createElement('li');
       li.className = 'member bot';
@@ -4144,10 +4197,10 @@ function renderChannels() {
     wrap.appendChild(add);
   }
   // Sala dos bots: o DJ e a TV ficam aqui esperando alguém chamar
-  if (dj || tv) {
+  if (dj || tv || arcade) {
     const bots = document.createElement('div');
     bots.className = 'channel bots-room';
-    const lista = [dj && { ...dj, move: () => djMove(currentChannel), hint: 'DJ de música' }, tv && { ...tv, move: () => tvMove(currentChannel), hint: 'TV ao vivo' }].filter(Boolean);
+    const lista = [dj && { ...dj, move: () => djMove(currentChannel), hint: 'DJ de música' }, tv && { ...tv, move: () => tvMove(currentChannel), hint: 'TV ao vivo' }, arcade && { ...arcade, move: () => arcadeMove(currentChannel), hint: 'Mini-jogos' }].filter(Boolean);
     const emCasa = lista.filter((b) => !b.room);
     bots.innerHTML = `<div class="channel-row"><div class="channel-btn static">🤖<span>Bots</span><small>${emCasa.length}/${lista.length}</small></div></div><ul></ul>`;
     const ul = bots.querySelector('ul');

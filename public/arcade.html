@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Arcade King</title>
+<style>
+  :root { --bg: #15171c; --panel: #23262d; --text: #dfe2e8; --muted: #9aa0ab; --accent: #f5b82e; --green: #23a55a; --red: #da373c; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; touch-action: none; }
+  #app { display: flex; flex-direction: column; height: 100%; }
+  #top { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 13px; flex-wrap: wrap; }
+  .seat { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 8px; background: var(--panel); min-width: 0; }
+  .seat.turn { outline: 2px solid var(--accent); }
+  .seat .dot { width: 12px; height: 12px; border-radius: 50%; background: #fff; border: 2px solid #999; flex: none; }
+  .seat .dot.listrada { background: linear-gradient(#fff 30%, #e33 30%, #e33 70%, #fff 70%); }
+  .seat .dot.lisa { background: #e33; }
+  .seat b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 110px; }
+  .vs { color: var(--muted); }
+  #msg { flex: 1; min-width: 120px; color: var(--muted); font-size: 12px; }
+  button { font: inherit; border: 0; border-radius: 8px; padding: 6px 12px; background: var(--panel); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); color: #1a1300; font-weight: 700; }
+  button.danger { background: var(--red); color: #fff; }
+  #stage { flex: 1; display: grid; place-items: center; padding: 6px; min-height: 0; }
+  canvas { display: block; border-radius: 10px; touch-action: none; max-width: 100%; max-height: 100%; }
+  #pick { position: absolute; inset: 0; display: grid; place-items: center; background: var(--bg); }
+  .card { background: var(--panel); border-radius: 14px; padding: 18px 22px; text-align: center; width: min(320px, 90vw); }
+  .card h2 { margin: 0 0 6px; }
+  .card p { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+  .hide { display: none !important; }
+  #power { position: absolute; left: 10px; bottom: 10px; width: 120px; height: 10px; border-radius: 5px; background: #333; overflow: hidden; display: none; }
+  #power i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--green), var(--accent), var(--red)); }
+  #toast { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); background: #000c; color: #fff; padding: 8px 14px; border-radius: 10px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="top">
+    <div id="seat0" class="seat"><span class="dot"></span><b>—</b></div>
+    <span class="vs">×</span>
+    <div id="seat1" class="seat"><span class="dot"></span><b>—</b></div>
+    <span id="msg"></span>
+    <button id="sit" class="primary">🎱 Jogar</button>
+    <button id="stand" class="hide">Sair da mesa</button>
+    <button id="reset" class="hide">Nova partida</button>
+  </div>
+  <div id="stage"><canvas id="c" width="880" height="480"></canvas></div>
+</div>
+<div id="pick">
+  <div class="card">
+    <h2>🕹️ Arcade King</h2>
+    <p>Escolha o jogo para a sala. Quem quiser jogar senta; o resto assiste.</p>
+    <button id="pick-sinuca" class="primary" style="font-size:16px;padding:10px 18px">🎱 Sinuca (2 jogadores)</button>
+  </div>
+</div>
+<div id="power"><i></i></div>
+<div id="toast"></div>
+<script src="/socket.io/socket.io.js"></script>
+<script src="arcade.js?v=1"></script>
+</body>
+</html>
