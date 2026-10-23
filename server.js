@@ -43,7 +43,39 @@ const VERSAO_SITE = (() => {
   return h.digest('hex').slice(0, 12);
 })();
 
-app.get('/config', (req, res) => {
+// TURN da Cloudflare (grátis): gera credenciais temporárias e renova sozinho.
+// Precisa de CF_TURN_KEY_ID e CF_TURN_API_TOKEN no Render.
+const cfTurn = { servers: null, at: 0, pedindo: null };
+async function turnCloudflare() {
+  const id = process.env.CF_TURN_KEY_ID, tok = process.env.CF_TURN_API_TOKEN;
+  if (!id || !tok) return null;
+  if (cfTurn.servers && Date.now() - cfTurn.at < 12 * 60 * 60 * 1000) return cfTurn.servers;
+  if (cfTurn.pedindo) return cfTurn.pedindo;
+  cfTurn.pedindo = (async () => {
+    try {
+      const r = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(id)}/credentials/generate-ice-servers`, {
+        method: 'POST', headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ ttl: 86400 }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = await r.json();
+      const lista = Array.isArray(j.iceServers) ? j.iceServers : j.iceServers ? [j.iceServers] : [];
+      const servers = lista.filter((x) => x && x.urls).map((x) => ({ urls: x.urls, username: x.username, credential: x.credential }));
+      if (!servers.length) throw new Error('resposta sem servidores');
+      cfTurn.servers = servers;
+      cfTurn.at = Date.now();
+      console.log('TURN Cloudflare: credenciais renovadas');
+      return servers;
+    } catch (e) {
+      console.error('TURN Cloudflare:', e.message);
+      return cfTurn.servers; // usa as antigas se ainda tiver
+    } finally {
+      cfTurn.pedindo = null;
+    }
+  })();
+  return cfTurn.pedindo;
+}
+
+app.get('/config', async (req, res) => {
   res.set('Access-Control-Allow-Origin', '*');
   const iceServers = [
     { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
@@ -55,7 +87,11 @@ app.get('/config', (req, res) => {
       credential: process.env.TURN_PASS,
     });
   }
-  res.json({ iceServers, maxPerChannel: MAX_PER_CHANNEL, contas: true, versao: VERSAO_SITE });
+  try {
+    const cf = await turnCloudflare();
+    if (cf) iceServers.push(...cf);
+  } catch {}
+  res.json({ iceServers, maxPerChannel: MAX_PER_CHANNEL, contas: true, versao: VERSAO_SITE, turn: iceServers.length > 1 });
 });
 
 // ---------- Contas ----------
@@ -1495,7 +1531,8 @@ banco.init()
       console.log(`Servidor rodando em http://localhost:${PORT}`);
       console.log(`Canais: ${channels.map((c) => c.name).join(', ')} | Máx. por canal: ${MAX_PER_CHANNEL}`);
       console.log(`Contas guardadas em: ${tipoBanco}`);
-      console.log(process.env.TURN_URL ? `TURN: ${process.env.TURN_URL}` : 'TURN: não configurado (só STUN)');
+      console.log(process.env.TURN_URL ? `TURN: ${process.env.TURN_URL}` : process.env.CF_TURN_KEY_ID ? 'TURN: Cloudflare' : 'TURN: não configurado (só STUN) — quem está em rede fechada pode não se ouvir');
+      if (process.env.CF_TURN_KEY_ID) turnCloudflare();
     });
   })
   .catch((e) => {

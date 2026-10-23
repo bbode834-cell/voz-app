@@ -939,8 +939,14 @@ function createPeer(id, initiator = false) {
   };
 
   pc.onconnectionstatechange = () => {
-    if (pc.connectionState === 'failed') pc.restartIce();
-    if (pc.connectionState === 'connected') { tuneScreenSenders(peer); tuneCamSenders(peer); }
+    const st = pc.connectionState;
+    if (st === 'failed') { pc.restartIce(); peer.failTries = (peer.failTries || 0) + 1; }
+    if (st === 'connected') { tuneScreenSenders(peer); tuneCamSenders(peer); peer.failTries = 0; }
+    clearTimeout(peer.failTimer);
+    if (st === 'failed' || st === 'disconnected') {
+      // depois de 5 s sem conectar, avisa no quadradinho (normalmente é rede fechada: precisa de TURN)
+      peer.failTimer = setTimeout(() => { if (['failed', 'disconnected'].includes(pc.connectionState)) { peer.semConexao = true; renderMain(); if (!peer.avisou) { peer.avisou = true; toast(`⚠️ Não consegui conectar com ${nameOf(id)} (rede fechada). Clique no aviso no quadradinho para tentar de novo.`); } } }, 5000);
+    } else if (peer.semConexao) { peer.semConexao = false; renderMain(); }
   };
 
   pc.ontrack = ({ track, streams }) => {
@@ -1348,6 +1354,14 @@ function fastStart(sdp) {
 
 socket.on('signal', async ({ from, data }) => {
   if (!currentChannel) return;
+  if (data.reset) {
+    // o outro lado pediu para refazer a conexão do zero
+    const watched = watching.has(from);
+    closePeer(from);
+    if (watched) watching.add(from);
+    createPeer(from, false);
+    return;
+  }
   const peer = peers.get(from) || createPeer(from);
   const { pc } = peer;
   try {
@@ -1396,6 +1410,18 @@ socket.on('signal', async ({ from, data }) => {
   }
 });
 
+// Refaz a conexão com uma pessoa do zero (quando ficou "sem conexão")
+function reconnectPeer(id) {
+  const peer = peers.get(id);
+  if (!peer) return;
+  const watched = watching.has(id);
+  closePeer(id);
+  if (watched) watching.add(id);
+  sendSignal(id, { reset: true }); // o outro lado também refaz
+  createPeer(id, true);
+  toast(`Tentando conectar de novo com ${nameOf(id)}…`);
+  renderMain();
+}
 function closePeer(id) {
   const peer = peers.get(id);
   if (!peer) return;
@@ -4245,11 +4271,14 @@ function renderMain() {
       ${u.modMuted ? '<span class="modmute-badge" title="Microfone fechado por um moderador">🔇 mutado</span>' : ''}
       ${isSharing(u.id) ? '<span class="live">AO VIVO</span>' : ''}
       ${!isMe && isSharing(u.id) ? `<button class="watch-btn ${watching.has(u.id) ? 'on' : ''}">${watching.has(u.id) ? 'Assistindo' : 'Assistir'}</button>` : ''}
-      ${!isMe && vol !== 1 ? `<span class="vol-badge">${vol === 0 ? 'Silenciado' : Math.round(vol * 100) + '%'}</span>` : ''}`;
+      ${!isMe && vol !== 1 ? `<span class="vol-badge">${vol === 0 ? 'Silenciado' : Math.round(vol * 100) + '%'}</span>` : ''}
+      ${!isMe && peers.get(u.id)?.semConexao ? '<button class="noconn-btn" title="Sem conexão de áudio com essa pessoa. Clique para tentar de novo.">⚠️ sem conexão · tentar de novo</button>' : ''}`;
     if (!isMe) {
       t.dataset.vol = '1';
       t.title = 'Ajustar volume';
       t.onclick = () => (volTarget === u.id ? closeVolume() : openVolume(u.id, t));
+      const nb = t.querySelector('.noconn-btn');
+      if (nb) nb.onclick = (e) => { e.stopPropagation(); reconnectPeer(u.id); };
       const wb = t.querySelector('.watch-btn');
       if (wb) {
         wb.title = watching.has(u.id) ? 'Parar de assistir' : 'Assistir a transmissão';
