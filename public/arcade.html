@@ -68,6 +68,25 @@
   .cores { display: flex; gap: 10px; justify-content: center; margin-bottom: 12px; }
   .cores button { width: 54px; height: 54px; border-radius: 12px; border: 3px solid #fff; }
   .corbadge { position: absolute; right: -10px; top: -10px; width: 22px; height: 22px; border-radius: 50%; border: 2px solid #fff; }
+  #luta { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
+  #luta-select { flex: 1; overflow: auto; padding: 8px; }
+  .lsel h3 { margin: 6px 0; font-size: 14px; color: var(--muted); }
+  #fighters, #arenas { display: flex; flex-wrap: wrap; gap: 8px; }
+  .fcard { width: 150px; background: var(--panel); border-radius: 10px; padding: 8px; cursor: pointer; border: 2px solid transparent; font-size: 12px; }
+  .fcard.sel { border-color: var(--accent); } .fcard.rival { border-color: #ef4444; border-style: dashed; }
+  .fcard b { display: block; font-size: 14px; } .fcard .ava { width: 40px; height: 40px; border-radius: 50%; margin-bottom: 4px; }
+  .fcard small { color: var(--muted); display: block; margin-top: 3px; }
+  .acard { padding: 8px 12px; border-radius: 10px; background: var(--panel); cursor: pointer; border: 2px solid transparent; font-size: 13px; }
+  .acard.sel { border-color: var(--accent); }
+  #luta-status { margin: 10px 0; font-size: 13px; color: var(--muted); }
+  #luta-stage { flex: 1; display: flex; flex-direction: column; min-height: 0; align-items: center; position: relative; }
+  #lc { max-width: 100%; max-height: 100%; border-radius: 10px; }
+  #pad { display: none; width: 100%; justify-content: space-between; padding: 6px; gap: 6px; }
+  #pad button { width: 54px; height: 54px; border-radius: 50%; font-size: 20px; background: #2b2f38; }
+  #pad .pad-l, #pad .pad-r { display: flex; gap: 6px; flex-wrap: wrap; max-width: 48%; }
+  #pad .sp { background: #6a1b9a; } #pad .ult { background: #b71c1c; }
+  body.touch #pad { display: flex; } body.touch #luta-help { display: none; }
+  #luta-help { font-size: 11px; color: var(--muted); padding: 4px; }
   #toast { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); background: #000c; color: #fff; padding: 8px 14px; border-radius: 10px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
 </style>
 </head>
@@ -83,6 +102,25 @@
     <button id="trocar" title="Trocar de jogo">Jogos</button>
   </div>
   <div id="stage"><canvas id="c" width="880" height="480"></canvas></div>
+  <div id="luta" class="hide">
+    <div id="luta-select" class="hide">
+      <div class="lsel">
+        <h3>Escolha seu lutador</h3>
+        <div id="fighters"></div>
+        <h3>Arena</h3>
+        <div id="arenas"></div>
+        <div id="luta-status"></div>
+        <button id="luta-ready" class="primary">Pronto!</button>
+      </div>
+    </div>
+    <div id="luta-stage" class="hide"><canvas id="lc" width="800" height="400"></canvas>
+      <div id="pad">
+        <div class="pad-l"><button data-k="l">◀</button><button data-k="r">▶</button><button data-k="u">▲</button><button data-k="d">▼</button></div>
+        <div class="pad-r"><button data-k="p">👊</button><button data-k="k">🦵</button><button data-k="b">🛡️</button><button data-k="s" class="sp">✨</button><button data-k="x" class="ult">💥</button></div>
+      </div>
+      <div id="luta-help">Teclado: A/D anda · W pula · S agacha · J soco · K chute · L defende · U especial · I ultra</div>
+    </div>
+  </div>
   <div id="cartas" class="hide">
     <div id="mesa">
       <div id="pile"></div>
@@ -107,6 +145,8 @@
     <button id="pick-domino" class="primary" style="font-size:16px;padding:10px 18px;width:100%">🁣 Dominó (2 a 4)</button>
     <div style="height:10px"></div>
     <button id="pick-cartas" class="primary" style="font-size:16px;padding:10px 18px;width:100%">🃏 Cartas, estilo Uno (2 a 4)</button>
+    <div style="height:10px"></div>
+    <button id="pick-luta" class="primary" style="font-size:16px;padding:10px 18px;width:100%">🥊 Luta (1x1)</button>
   </div>
 </div>
 <div id="cor" class="hide"><div class="card"><p>Escolha a cor</p><div class="cores"><button data-cor="r" style="background:#e53935"></button><button data-cor="g" style="background:#43a047"></button><button data-cor="b" style="background:#1e88e5"></button><button data-cor="y" style="background:#fdd835"></button></div><button id="cor-x">Cancelar</button></div></div>
@@ -114,6 +154,6 @@
 <div id="power"><i></i></div>
 <div id="toast"></div>
 <script src="/socket.io/socket.io.js"></script>
-<script src="arcade.js?v=4"></script>
+<script src="arcade.js?v=6"></script>
 </body>
 </html>

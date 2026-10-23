@@ -198,6 +198,178 @@ function compraCartas(st, seat, n) {
     if (st.deck.length) st.hands[seat].push(st.deck.pop());
   }
 }
+// ---------- 🥊 Luta (1x1, tempo real) ----------
+// O servidor simula a luta a 30 quadros/s e manda a posição de tudo; os jogadores só mandam os botões.
+const LW = 800, LH = 400, CHAO = 330, GRAV = 1800;
+const LUTADORES = {
+  brasa: { nome: 'Brasa', desc: 'Fogo. Equilibrada.', cor: '#ff6a00', cor2: '#ffd166', vel: 230, pulo: 620, soco: 7, chute: 11, hp: 100,
+    especial: { nome: 'Bola de fogo', custo: 35, desc: 'Lança uma bola de fogo (14).' },
+    ultra: { nome: 'Erupção', custo: 100, desc: 'Coluna de fogo embaixo do rival (30) e queima por 3 s.' } },
+  tempestade: { nome: 'Tempestade', desc: 'Raio. Rápida, frágil.', cor: '#3aa0ff', cor2: '#e0f2ff', vel: 300, pulo: 700, soco: 5, chute: 8, hp: 85,
+    especial: { nome: 'Relâmpago', custo: 30, desc: 'Raio cai onde o rival está (12). Dá para desviar.' },
+    ultra: { nome: 'Tormenta', custo: 100, desc: 'Cinco raios seguidos pela arena.' } },
+  rocha: { nome: 'Rocha', desc: 'Terra. Lenta, pesada.', cor: '#8d6e63', cor2: '#d7ccc8', vel: 170, pulo: 520, soco: 9, chute: 15, hp: 125,
+    especial: { nome: 'Terremoto', custo: 40, desc: 'Soca o chão: quem está no chão toma 16 e fica tonto.' },
+    ultra: { nome: 'Avalanche', custo: 100, desc: 'Pedras caem por toda a arena (10 cada).' } },
+  sombra: { nome: 'Sombra', desc: 'Sombras. Traiçoeira.', cor: '#6a1b9a', cor2: '#ce93d8', vel: 260, pulo: 640, soco: 6, chute: 10, hp: 90,
+    especial: { nome: 'Passo das sombras', custo: 30, desc: 'Some e reaparece atrás do rival com um golpe (13).' },
+    ultra: { nome: 'Eclipse', custo: 100, desc: 'Fica invisível por 4 s e os golpes dão o dobro.' } },
+  gelo: { nome: 'Névoa', desc: 'Gelo. Controle.', cor: '#26c6da', cor2: '#e0f7fa', vel: 240, pulo: 600, soco: 6, chute: 10, hp: 95,
+    especial: { nome: 'Sopro gelado', custo: 30, desc: 'Projétil que congela o rival por 1,5 s (8).' },
+    ultra: { nome: 'Era do gelo', custo: 100, desc: 'Congela a arena: o rival anda a metade por 6 s e toma 20.' } },
+};
+const ARENAS = { praia: 'Praia ao pôr do sol', cidade: 'Cidade à noite', templo: 'Templo nas montanhas', vulcao: 'Vulcão' };
+const ROUND_TIME = 60;
+function novaLuta(seats) {
+  const ordem = seats.map((s, i) => (s ? i : -1)).filter((i) => i >= 0).slice(0, 2);
+  return {
+    ordem, phase: 'select', // select | countdown | fight | roundEnd | over
+    pick: {}, ready: {}, arena: null, // escolhas por cadeira
+    round: 1, wins: [0, 0], timer: ROUND_TIME, t: 0, winner: null, msg: 'Escolham o lutador. Quem está na primeira cadeira escolhe a arena.',
+    f: null, // lutadores [{...}] por índice 0/1 (ordem)
+    proj: [], fx: [], inputs: [{}, {}], seq: 0,
+  };
+}
+function novoLutador(key, lado) {
+  const d = LUTADORES[key];
+  return { key, x: lado === 0 ? 200 : 600, y: CHAO, vx: 0, vy: 0, hp: d.hp, hpMax: d.hp, en: 0, face: lado === 0 ? 1 : -1,
+    st: 'idle', stT: 0, cd: 0, stun: 0, frozen: 0, slow: 0, burn: 0, invis: 0, chao: true, hits: 0 };
+}
+function iniciaRound(st) {
+  st.f = [novoLutador(st.pick[st.ordem[0]], 0), novoLutador(st.pick[st.ordem[1]], 1)];
+  if (st.round > 1) for (const f of st.f) f.en = 20;
+  st.proj = []; st.fx = []; st.timer = ROUND_TIME; st.t = 0;
+  st.phase = 'countdown'; st.cdT = 3.2;
+}
+// Um passo da luta (dt em segundos). Devolve true se o round acabou.
+function passoLuta(st, dt) {
+  st.t += dt;
+  if (st.phase === 'countdown') { st.cdT -= dt; if (st.cdT <= 0) { st.phase = 'fight'; st.msg = 'LUTEM!'; } return false; }
+  if (st.phase !== 'fight') return false;
+  st.timer -= dt;
+  const [a, b] = st.f;
+  const outro = (f) => (f === a ? b : a);
+  for (let i = 0; i < 2; i++) {
+    const f = st.f[i], o = st.f[1 - i], inp = st.inputs[i] || {}, d = LUTADORES[f.key];
+    f.stT += dt; f.cd = Math.max(0, f.cd - dt);
+    for (const k of ['stun', 'frozen', 'slow', 'invis']) f[k] = Math.max(0, f[k] - dt);
+    if (f.burn > 0) { f.burn -= dt; f.hp -= 4 * dt; }
+    // estados "presos" (golpe em andamento, tonto, congelado, caído)
+    const preso = f.frozen > 0 || f.stun > 0 || ['punch', 'kick', 'hit', 'special', 'ko', 'ultra'].includes(f.st);
+    if (['punch', 'kick', 'hit', 'special', 'ultra'].includes(f.st)) {
+      const dur = { punch: 0.3, kick: 0.45, hit: 0.35, special: 0.5, ultra: 0.8 }[f.st];
+      if (f.stT >= dur) { f.st = 'idle'; f.stT = 0; }
+    }
+    // olhar sempre para o rival (menos no meio de um golpe)
+    if (!preso) f.face = o.x >= f.x ? 1 : -1;
+    const vel = d.vel * (f.slow > 0 ? 0.5 : 1);
+    if (!preso) {
+      f.vx = 0;
+      if (inp.b) { f.st = 'block'; }
+      else if (inp.d && f.chao) { f.st = 'crouch'; }
+      else {
+        if (inp.l) f.vx = -vel;
+        if (inp.r) f.vx = vel;
+        if (inp.u && f.chao) { f.vy = -d.pulo; f.chao = false; }
+        f.st = f.chao ? (f.vx ? 'walk' : 'idle') : 'jump';
+      }
+      // golpes
+      if (f.cd === 0 && f.chao !== null) {
+        if (inp.p) { f.st = 'punch'; f.stT = 0; f.cd = 0.35; f.vx = 0; golpe(st, f, o, d.soco, 46, 0.2, 'soco'); }
+        else if (inp.k) { f.st = 'kick'; f.stT = 0; f.cd = 0.55; f.vx = 0; golpe(st, f, o, d.chute, 58, 0.3, 'chute'); }
+        else if (inp.s && f.en >= d.especial.custo) { f.en -= d.especial.custo; f.st = 'special'; f.stT = 0; f.cd = 0.7; f.vx = 0; especial(st, f, o, i); }
+        else if (inp.x && f.en >= d.ultra.custo) { f.en -= d.ultra.custo; f.st = 'ultra'; f.stT = 0; f.cd = 1; f.vx = 0; ultra(st, f, o, i); }
+      }
+    } else if (f.chao) f.vx = 0;
+    // física
+    f.x += f.vx * dt;
+    f.vy += GRAV * dt;
+    f.y += f.vy * dt;
+    if (f.y >= CHAO) { f.y = CHAO; f.vy = 0; f.chao = true; } else f.chao = false;
+    f.x = Math.max(30, Math.min(LW - 30, f.x));
+  }
+  // não atravessar o outro
+  if (Math.abs(a.x - b.x) < 44 && a.chao && b.chao) { const m = (a.x + b.x) / 2; const s = a.x <= b.x ? 1 : -1; a.x = m - 22 * s; b.x = m + 22 * s; }
+  // projéteis
+  for (const p of st.proj) {
+    p.x += p.vx * dt; p.t -= dt;
+    const alvo = st.f[1 - p.dono];
+    if (Math.abs(p.x - alvo.x) < 34 && Math.abs(p.y - (alvo.y - 50)) < 60 && !(alvo.st === 'crouch' && p.y < alvo.y - 70)) {
+      dano(st, st.f[p.dono], alvo, p.dmg, p.tipo); p.t = 0;
+      if (p.tipo === 'gelo') alvo.frozen = Math.max(alvo.frozen, 1.5);
+    }
+  }
+  st.proj = st.proj.filter((p) => p.t > 0 && p.x > -40 && p.x < LW + 40);
+  // efeitos com atraso (raios, pedras, erupção)
+  for (const e of st.fx) {
+    e.t -= dt;
+    if (e.tipo === 'golpe') continue; // tratados em aplicaGolpes
+    if (e.t <= 0 && !e.feito) {
+      e.feito = true;
+      const alvo = st.f[1 - e.dono];
+      if (e.tipo === 'raio' && Math.abs(alvo.x - e.x) < 40) dano(st, st.f[e.dono], alvo, e.dmg, 'raio');
+      if (e.tipo === 'pedra' && Math.abs(alvo.x - e.x) < 36 && alvo.y > CHAO - 90) dano(st, st.f[e.dono], alvo, e.dmg, 'pedra');
+      if (e.tipo === 'erupcao' && Math.abs(alvo.x - e.x) < 50) { dano(st, st.f[e.dono], alvo, e.dmg, 'fogo'); alvo.burn = 3; }
+    }
+  }
+  st.fx = st.fx.filter((e) => e.t > -0.6);
+  // fim do round
+  const ko = st.f.findIndex((f) => f.hp <= 0);
+  if (ko >= 0 || st.timer <= 0) {
+    let venc;
+    if (ko >= 0) { venc = 1 - ko; st.f[ko].st = 'ko'; st.f[ko].hp = 0; }
+    else venc = a.hp === b.hp ? -1 : a.hp > b.hp ? 0 : 1;
+    if (venc >= 0) st.wins[venc] += 1;
+    st.phase = 'roundEnd';
+    st.roundWinner = venc;
+    st.cdT = 3;
+    return true;
+  }
+  return false;
+}
+function golpe(st, f, o, dmg, alcance, atraso, tipo) {
+  // o dano entra um pouco depois (animação); guardamos como efeito
+  st.fx.push({ tipo: 'golpe', dono: st.f.indexOf(f), t: atraso, x: f.x + f.face * alcance * 0.5, alcance, dmg, g: tipo });
+}
+function dano(st, de, para, dmg, tipo) {
+  if (para.st === 'ko') return;
+  let d = dmg;
+  if (de.invis > 0) d *= 2;
+  if (para.st === 'block' && tipo !== 'raio' && tipo !== 'pedra' && tipo !== 'fogo') { d = Math.round(d * 0.2); para.en = Math.min(100, para.en + 3); }
+  else { para.st = 'hit'; para.stT = 0; para.vx = 0; para.x += (para.x >= de.x ? 1 : -1) * 12; }
+  para.hp -= d;
+  de.en = Math.min(100, de.en + 12);
+  para.en = Math.min(100, para.en + 8);
+  de.hits += 1;
+  st.fx.push({ tipo: 'dano', x: para.x, y: para.y - 70, t: 0.5, dmg: Math.round(d), feito: true });
+}
+function especial(st, f, o, i) {
+  if (f.key === 'brasa') st.proj.push({ tipo: 'fogo', dono: i, x: f.x + f.face * 30, y: f.y - 50, vx: f.face * 520, dmg: 14, t: 2 });
+  if (f.key === 'gelo') st.proj.push({ tipo: 'gelo', dono: i, x: f.x + f.face * 30, y: f.y - 50, vx: f.face * 420, dmg: 8, t: 2 });
+  if (f.key === 'tempestade') st.fx.push({ tipo: 'raio', dono: i, x: o.x, t: 0.45, dmg: 12 });
+  if (f.key === 'rocha') { st.fx.push({ tipo: 'tremor', dono: i, x: f.x, t: 0.25, feito: true }); if (Math.abs(o.x - f.x) < 220) st.fx.push({ tipo: 'golpe', dono: i, t: 0.25, x: o.x, alcance: 60, dmg: 16, g: 'terremoto', stun: 1.2 }); }
+  if (f.key === 'sombra') { f.x = Math.max(30, Math.min(LW - 30, o.x - o.face * 40)); f.face = o.x >= f.x ? 1 : -1; st.fx.push({ tipo: 'sombra', x: f.x, t: 0.4, feito: true }); st.fx.push({ tipo: 'golpe', dono: i, t: 0.15, x: o.x, alcance: 60, dmg: 13, g: 'sombra' }); }
+}
+function ultra(st, f, o, i) {
+  if (f.key === 'brasa') st.fx.push({ tipo: 'erupcao', dono: i, x: o.x, t: 0.6, dmg: 30 });
+  if (f.key === 'tempestade') for (let k = 0; k < 5; k++) st.fx.push({ tipo: 'raio', dono: i, x: 80 + k * 160 + (o.x % 50), t: 0.5 + k * 0.35, dmg: 10 });
+  if (f.key === 'rocha') for (let k = 0; k < 9; k++) st.fx.push({ tipo: 'pedra', dono: i, x: 60 + k * 85, t: 0.6 + (k % 3) * 0.4, dmg: 10 });
+  if (f.key === 'sombra') { f.invis = 4; st.fx.push({ tipo: 'eclipse', x: f.x, t: 0.6, feito: true }); }
+  if (f.key === 'gelo') { o.slow = 6; st.fx.push({ tipo: 'eragelo', x: o.x, t: 0.6, feito: true }); st.fx.push({ tipo: 'golpe', dono: i, t: 0.3, x: o.x, alcance: 80, dmg: 20, g: 'gelo' }); }
+}
+// golpes corpo a corpo entram pela fila de efeitos
+function aplicaGolpes(st) {
+  for (const e of st.fx) {
+    if (e.tipo !== 'golpe' || e.feito || e.t > 0) continue;
+    e.feito = true;
+    const de = st.f[e.dono], para = st.f[1 - e.dono];
+    if (de.st === 'hit' || de.st === 'ko') continue; // foi interrompido
+    const alcance = e.alcance;
+    const dist = Math.abs(para.x - e.x);
+    const alturaOk = e.g === 'terremoto' ? para.chao : Math.abs(para.y - de.y) < 70;
+    if (dist < alcance && alturaOk) { dano(st, de, para, e.dmg, e.g); if (e.stun) para.stun = Math.max(para.stun, e.stun); }
+  }
+}
 const extremos = (chain) => (chain.length ? [chain[0][0], chain[chain.length - 1][1]] : null);
 function jogadasPossiveis(hand, chain) {
   const ex = extremos(chain);
@@ -229,6 +401,11 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
         hand: seat >= 0 ? st.hands[seat] : null, jogadas: seat >= 0 && st.phase === 'play' && st.turn === seat ? jogadasPossiveis(st.hands[seat], st.chain) : [],
         revel: st.phase === 'over' ? st.hands : null };
     }
+    if (arcade.state && arcade.game === 'luta') {
+      const st = arcade.state;
+      state = { ordem: st.ordem, phase: st.phase, pick: st.pick, ready: st.ready, arena: st.arena, round: st.round, wins: st.wins, winner: st.winner, msg: st.msg, roundWinner: st.roundWinner,
+        frame: quadroLuta(st) };
+    }
     if (arcade.state && arcade.game === 'cartas') {
       const st = arcade.state;
       const seat = uid != null ? cadeira(uid) : -1;
@@ -239,8 +416,13 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
         hand: seat >= 0 ? st.hands[seat] : null,
         jogaveis: seat >= 0 && st.phase === 'play' && st.turn === seat ? st.hands[seat].map((c, i) => (podeJogarCarta(c, st) && (st.drew == null || i === st.hands[seat].length - 1) ? i : -1)).filter((i) => i >= 0) : [] };
     }
-    return { id: arcade.id, name: arcade.name, avatar: arcade.avatar, room: arcade.room, game: arcade.game, seats: arcade.seats, started: arcade.started, state, W, H, R, POCKET_R, serverNow: Date.now() };
+    return { id: arcade.id, name: arcade.name, avatar: arcade.avatar, room: arcade.room, game: arcade.game, seats: arcade.seats, started: arcade.started, state, W, H, R, POCKET_R, serverNow: Date.now(),
+      luta: arcade.game === 'luta' ? { lutadores: LUTADORES, arenas: ARENAS } : undefined };
   };
+  const quadroLuta = (st) => (st.f ? { t: Math.round(st.t * 100) / 100, timer: Math.ceil(st.timer), cd: st.cdT ? Math.ceil(st.cdT) : 0, phase: st.phase,
+    f: st.f.map((f) => ({ k: f.key, x: Math.round(f.x), y: Math.round(f.y), hp: Math.max(0, Math.round(f.hp)), hpMax: f.hpMax, en: Math.round(f.en), face: f.face, st: f.st, frozen: f.frozen > 0, slow: f.slow > 0, burn: f.burn > 0, invis: f.invis > 0, stun: f.stun > 0 })),
+    proj: st.proj.map((p) => [p.tipo, Math.round(p.x), Math.round(p.y), p.vx > 0 ? 1 : -1]),
+    fx: st.fx.filter((e) => e.tipo !== 'golpe').map((e) => [e.tipo, Math.round(e.x), Math.round((e.t) * 100) / 100, e.dmg || 0, Math.round(e.y || 0)]) } : null);
   function broadcast() {
     if ((arcade.game === 'domino' || arcade.game === 'cartas') && arcade.state) {
       for (const s of io.sockets.sockets.values()) s.emit('arcade', snapshot(s.data.user?.id));
@@ -290,6 +472,8 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
       const times = new Set(st.ordem.map(timeDe));
       if (times.size <= 1) encerra((s) => { s.winner = st.ordem.length ? timeDe(st.ordem[0]) : null; s.msg = st.ordem.length ? `${nomeTime(s.winner)} venceu (o adversário saiu).` : 'Todo mundo saiu da mesa.'; });
       else if (!arcade.seats[st.turn]) { st.turn = st.ordem[0]; st.phase = st.phase === 'moving' ? 'moving' : 'aim'; }
+    } else if (arcade.game === 'luta') {
+      if (st.ordem.length <= 1) encerra((s) => { s.winner = st.ordem[0] ?? null; s.msg = st.ordem.length ? `${arcade.seats[st.ordem[0]].name} venceu (o rival saiu).` : 'Todo mundo saiu.'; });
     } else if (arcade.game === 'domino' || arcade.game === 'cartas') {
       if (st.ordem.length <= 1) encerra((s) => { s.winner = st.ordem[0] ?? null; s.msg = st.ordem.length ? `${arcade.seats[st.ordem[0]].name} venceu (os outros saíram).` : 'Todo mundo saiu.'; });
       else if (!arcade.seats[st.turn]) st.turn = st.ordem[0];
@@ -386,6 +570,52 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
       const resta = minhasFora(g);
       st.msg += resta === 0 ? ' Agora é a 8!' : ` (${g === 'lisa' ? 'lisas' : 'listradas'}, faltam ${resta})`;
     }
+  }
+
+  // ---- luta: laço de 30 quadros/s ----
+  function comecaLuta() {
+    const st = arcade.state;
+    iniciaRound(st);
+    clearInterval(arcade.timer);
+    let last = Date.now();
+    arcade.timer = setInterval(() => {
+      const now = Date.now();
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      const st2 = arcade.state;
+      if (!st2 || arcade.game !== 'luta') { clearInterval(arcade.timer); arcade.timer = null; return; }
+      if (st2.phase === 'roundEnd') {
+        st2.cdT -= dt;
+        if (st2.cdT <= 0) {
+          if (st2.wins[0] >= 2 || st2.wins[1] >= 2 || st2.round >= 5) {
+            st2.phase = 'over';
+            const v = st2.wins[0] === st2.wins[1] ? null : st2.wins[0] > st2.wins[1] ? 0 : 1;
+            st2.winner = v == null ? null : st2.ordem[v];
+            st2.msg = v == null ? 'Empate!' : `🏆 ${arcade.seats[st2.ordem[v]]?.name || 'Alguém'} venceu a luta!`;
+            clearInterval(arcade.timer); arcade.timer = null;
+            broadcast();
+            return;
+          }
+          st2.round += 1;
+          iniciaRound(st2);
+          broadcast();
+        }
+        io.to('arcade-view').volatile.emit('arcade-luta', quadroLuta(st2));
+        return;
+      }
+      const fase = st2.phase;
+      const acabou = passoLuta(st2, dt);
+      aplicaGolpes(st2);
+      if (st2.phase !== fase) {
+        if (st2.phase === 'roundEnd') {
+          const rw = st2.roundWinner;
+          st2.msg = rw < 0 ? 'Empate no round!' : `${arcade.seats[st2.ordem[rw]]?.name || 'Alguém'} venceu o round ${st2.round}!`;
+        }
+        broadcast();
+      }
+      io.to('arcade-view').volatile.emit('arcade-luta', quadroLuta(st2));
+      if (acabou) broadcast();
+    }, 1000 / 30);
   }
 
   // ---- cartas ----
@@ -565,7 +795,7 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
     socket.on('arcade-game', ({ game } = {}, ack = () => {}) => {
       if (!pode()) return ack({ error: 'Puxe o Arcade King para a sua chamada primeiro.' });
       if (game == null) { pararJogo(); ack({ ok: true }); broadcast(); return; } // volta para a escolha de jogo
-      if (!['sinuca', 'domino', 'cartas'].includes(game)) return ack({ error: 'Jogo desconhecido.' });
+      if (!['sinuca', 'domino', 'cartas', 'luta'].includes(game)) return ack({ error: 'Jogo desconhecido.' });
       pararJogo();
       arcade.game = game;
       ack({ ok: true });
@@ -579,7 +809,7 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
       if (sentados() < 2) return ack({ error: 'Precisa de pelo menos 2 jogadores.' });
       if (arcade.state && arcade.state.phase !== 'over') return ack({ error: 'A partida já está rolando.' });
       arcade.started = true;
-      arcade.state = arcade.game === 'sinuca' ? novoJogo(arcade.seats) : arcade.game === 'cartas' ? novoCartas(arcade.seats) : novoDomino(arcade.seats);
+      arcade.state = arcade.game === 'sinuca' ? novoJogo(arcade.seats) : arcade.game === 'cartas' ? novoCartas(arcade.seats) : arcade.game === 'luta' ? novaLuta(arcade.seats) : novoDomino(arcade.seats);
       if (arcade.game === 'domino') arcade.state.msg = arcade.state.msg.replace('%NOME%', arcade.seats[arcade.state.turn].name);
       ack({ ok: true });
       broadcast();
@@ -592,6 +822,7 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
       if (arcade.state && arcade.state.phase !== 'over') return ack({ error: 'A partida já começou. Espere acabar para entrar.' });
       const livre = arcade.seats.findIndex((s) => !s);
       if (livre < 0) return ack({ error: 'A mesa está cheia (4 jogadores).' });
+      if (arcade.game === 'luta' && sentados() >= 2) return ack({ error: 'A luta é 1x1: as duas cadeiras já estão ocupadas.' });
       arcade.seats[livre] = { uid: me().id, name: me().name, avatar: me().avatar };
       ack({ ok: true });
       broadcast();
@@ -611,8 +842,41 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
       arcade.timer = null;
       limpaCadeiras();
       if (sentados() < 2) { arcade.state = null; arcade.started = false; ack({ ok: true }); broadcast(); return; }
-      arcade.state = arcade.game === 'sinuca' ? novoJogo(arcade.seats) : arcade.game === 'cartas' ? novoCartas(arcade.seats) : novoDomino(arcade.seats);
+      arcade.state = arcade.game === 'sinuca' ? novoJogo(arcade.seats) : arcade.game === 'cartas' ? novoCartas(arcade.seats) : arcade.game === 'luta' ? novaLuta(arcade.seats) : novoDomino(arcade.seats);
       if (arcade.game === 'domino') arcade.state.msg = arcade.state.msg.replace('%NOME%', arcade.seats[arcade.state.turn].name);
+      ack({ ok: true });
+      broadcast();
+    });
+    // Luta: escolhas e botões
+    socket.on('arcade-luta', ({ action, pick, arena, inp } = {}, ack = () => {}) => {
+      const st = arcade.state;
+      if (!st || arcade.game !== 'luta') return ack({ error: 'Sem jogo.' });
+      const seat = cadeira(me().id);
+      const idx = st.ordem.indexOf(seat);
+      if (idx < 0) return ack({ error: 'Você está só assistindo (a luta é 1x1).' });
+      if (action === 'pick') {
+        if (st.phase !== 'select') return ack({ error: 'A luta já começou.' });
+        if (!LUTADORES[pick]) return ack({ error: 'Lutador desconhecido.' });
+        st.pick[seat] = pick; st.ready[seat] = false;
+      } else if (action === 'arena') {
+        if (st.phase !== 'select') return ack({ error: 'A luta já começou.' });
+        if (idx !== 0) return ack({ error: 'Quem está na primeira cadeira escolhe a arena.' });
+        if (!ARENAS[arena]) return ack({ error: 'Arena desconhecida.' });
+        st.arena = arena;
+      } else if (action === 'ready') {
+        if (st.phase !== 'select') return ack({ error: 'A luta já começou.' });
+        if (!st.pick[seat]) return ack({ error: 'Escolha um lutador primeiro.' });
+        st.ready[seat] = !st.ready[seat];
+        if (st.ordem.length === 2 && st.ordem.every((c) => st.pick[c] && st.ready[c])) {
+          if (!st.arena) st.arena = Object.keys(ARENAS)[Math.floor(Math.random() * 4)];
+          st.msg = 'Round 1';
+          comecaLuta();
+        }
+      } else if (action === 'input') {
+        if (st.phase !== 'fight') return ack({ ok: true });
+        st.inputs[idx] = inp && typeof inp === 'object' ? inp : {};
+        return ack({ ok: true }); // sem broadcast: o laço manda os quadros
+      } else return ack({ error: 'Ação desconhecida.' });
       ack({ ok: true });
       broadcast();
     });
