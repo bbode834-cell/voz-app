@@ -597,14 +597,24 @@ async function carregaTv() {
       for (const l of logos) if (l.channel && !l.feed && /^https:/.test(l.url || '') && !logo.has(l.channel)) logo.set(l.channel, l.url);
       const chMap = new Map(chs.filter((c) => !c.is_nsfw && !c.closed).map((c) => [c.id, c]));
       const items = new Map();
+      // Lista do Brasil em m3u: traz as etiquetas [Geo-blocked] / [Not 24/7] que a API não tem
+      const tags = new Map();
+      try {
+        const m3u = await (await fetch('https://iptv-org.github.io/iptv/countries/br.m3u')).text();
+        const linhas = m3u.split(/\r?\n/);
+        for (let i = 0; i < linhas.length; i++) if (linhas[i].startsWith('#EXTINF') && linhas[i + 1]) tags.set(linhas[i + 1].trim(), { geo: /Geo-blocked/i.test(linhas[i]), parcial: /Not 24\/7/i.test(linhas[i]) });
+      } catch {}
       for (const st of sts) {
-        if (!st.channel || !/^https:\/\//i.test(st.url || '')) continue;
+        if (!st.channel || !/^https?:\/\//i.test(st.url || '')) continue;
         if (st.user_agent || st.referrer) continue; // precisa de cabeçalho especial: o navegador não consegue
         const c = chMap.get(st.channel);
         if (!c) continue;
         const prev = items.get(c.id);
-        if (prev && prev.q >= qual(st.quality)) continue;
-        items.set(c.id, { id: c.id, name: c.name, country: c.country || '', cats: c.categories || [], logo: logo.get(c.id) || '', url: st.url, q: qual(st.quality), web: prev?.web ?? null });
+        const https = /^https:/i.test(st.url);
+        // prefere https (toca no site); entre iguais, a melhor qualidade
+        if (prev && (prev.https && !https || (prev.https === https && prev.q >= qual(st.quality)))) continue;
+        const tg = tags.get(st.url) || {};
+        items.set(c.id, { id: c.id, name: c.name, country: c.country || '', cats: c.categories || [], logo: logo.get(c.id) || '', url: st.url, q: qual(st.quality), https, geo: !!tg.geo, parcial: !!tg.parcial, web: https ? prev?.web ?? null : false });
       }
       const antigo = tvCat.byId;
       const lista = [...items.values()].map((i) => { const a = antigo.get(i.id); return { ...i, web: a?.web ?? null, ok: a?.url === i.url ? a?.ok ?? null : null, hevc: a?.hevc ?? false, checkedAt: a?.url === i.url ? a?.checkedAt ?? 0 : 0, failCount: a?.failCount ?? 0 }; });
@@ -646,8 +656,11 @@ async function pegaTexto(url, ms = 8000) {
 }
 async function checaCanal(it) {
   const antes = it.ok;
+  if (it.geo) { it.ok = null; it.checkedAt = Date.now(); return; } // o servidor fica fora do Brasil: não dá para testar daqui
   try {
     const m = await pegaTexto(it.url);
+    // 403/401/451 = bloqueio por país (o servidor fica fora do Brasil): não dá para saber daqui
+    if (!m.ok && [401, 403, 451].includes(m.status)) { it.ok = null; it.geo = true; return; }
     if (!m.ok || !/#EXTM3U/.test(m.text || '')) { it.ok = false; it.web = m.cors && it.web !== false ? it.web : false; return; }
     it.web = m.cors;
     it.hevc = /CODECS="[^"]*(hvc1|hev1)/i.test(m.text);
@@ -679,8 +692,9 @@ async function checaCanal(it) {
     } finally {
       clearTimeout(t);
     }
-  } catch {
-    it.ok = false;
+  } catch (e) {
+    // demorou demais = provavelmente bloqueio por região; erro de rede de verdade = fora do ar
+    if (/abort/i.test(e.message || '')) { it.ok = null; it.geo = true; } else it.ok = false;
   } finally {
     it.checkedAt = Date.now();
     if (it.ok === false && antes !== false) it.failCount = 0;
@@ -702,7 +716,7 @@ async function checaTvWeb(filtro) {
   }
 }
 setInterval(() => checaTvWeb().catch(() => {}), 60 * 60 * 1000);
-const tvPublicItem = (i) => ({ id: i.id, name: i.name, country: i.country, cats: i.cats, logo: i.logo, url: i.url, web: i.web === true && !i.hevc ? true : i.web === false || i.hevc ? false : null, ok: i.ok ?? null });
+const tvPublicItem = (i) => ({ id: i.id, name: i.name, country: i.country, cats: i.cats, logo: i.logo, url: i.url, web: !i.https || i.hevc ? false : i.web === true ? true : i.web === false ? false : null, ok: i.ok ?? null, geo: !!i.geo, parcial: !!i.parcial });
 setTimeout(() => carregaTv(), 3000);
 setInterval(() => carregaTv(), 12 * 60 * 60 * 1000);
 
@@ -1112,7 +1126,22 @@ io.on('connection', (socket) => {
       djAvanca();
       return;
     }
-    if (err && dj.room) io.to(dj.room).emit('dj-info', { text: `⚠️ Não deu para tocar "${n.title}". Pulando.` });
+    // Um aparelho só não decide: a música só é pulada quando a MAIORIA da sala avisa
+    // (erro ou fim antes da hora). Fim na hora certa (perto da duração) vale na primeira.
+    const ouvintes = new Set([...io.sockets.adapter.rooms.get(dj.room) || []].map((sid) => io.sockets.sockets.get(sid)?.data.user?.id).filter(Boolean));
+    const tocado = n.pausedAt ? 0 : (Date.now() - n.startedAt) / 1000;
+    const fimNormal = !err && (!n.duration || tocado >= n.duration - 6);
+    if (!fimNormal) {
+      n.votos = n.votos || new Map();
+      n.votos.set(me().id, Date.now());
+      for (const [uid, t] of n.votos) if (Date.now() - t > 20000) n.votos.delete(uid);
+      const precisa = Math.max(1, Math.ceil(ouvintes.size / 2));
+      if (n.votos.size < precisa) {
+        if (n.votos.size === 1) socket.emit('dj-info', { text: `⚠️ A música travou só no seu aparelho. Toque em ⏭ se quiser pular para todo mundo.` });
+        return;
+      }
+      if (dj.room) io.to(dj.room).emit('dj-info', { text: `⚠️ Não deu para tocar "${n.title}" na maioria dos aparelhos. Pulando.` });
+    }
     djNext();
   });
 
@@ -1230,7 +1259,7 @@ io.on('connection', (socket) => {
     if (!app && it.web == null) it.web = false;
     if (app) {
       it.failCount = (it.failCount || 0) + 1;
-      if (it.failCount >= 2) { it.ok = false; it.checkedAt = Date.now(); }
+      if (it.failCount >= (it.geo ? 3 : 2)) { it.ok = false; it.checkedAt = Date.now(); }
     }
   });
 

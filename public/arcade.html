@@ -81,9 +81,11 @@
   #luta-status { margin: 10px 0; font-size: 13px; color: var(--muted); }
   #luta-stage { flex: 1; display: flex; flex-direction: column; min-height: 0; align-items: center; position: relative; }
   #lc { max-width: 100%; max-height: 100%; border-radius: 10px; }
-  #pad { display: none; width: 100%; justify-content: space-between; padding: 6px; gap: 6px; }
+  body.touch #lc { width: 100%; height: auto; max-height: calc(100% - 150px); object-fit: contain; flex: none; }
+  #pad { display: none; width: 100%; justify-content: space-between; padding: 6px; gap: 6px; flex: none; }
   #pad button { width: 54px; height: 54px; border-radius: 50%; font-size: 20px; background: #2b2f38; }
-  #pad .pad-l, #pad .pad-r { display: flex; gap: 6px; flex-wrap: wrap; max-width: 48%; }
+  #pad .pad-l, #pad .pad-r { display: flex; gap: 6px; flex-wrap: wrap; max-width: 48%; align-content: flex-start; }
+  #pad .pad-r { justify-content: flex-end; }
   #pad .sp { background: #6a1b9a; } #pad .ult { background: #b71c1c; }
   body.touch #pad { display: flex; } body.touch #luta-help { display: none; }
   #luta-help { font-size: 11px; color: var(--muted); padding: 4px; }
@@ -154,6 +156,6 @@
 <div id="power"><i></i></div>
 <div id="toast"></div>
 <script src="/socket.io/socket.io.js"></script>
-<script src="arcade.js?v=6"></script>
+<script src="arcade.js?v=7"></script>
 </body>
 </html>

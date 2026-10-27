@@ -97,7 +97,9 @@ let lframe = null; // último quadro vindo do servidor
 let lprev = null;
 let lframeAt = 0;
 socket.on('arcade-luta', (f) => { lprev = lframe; lframe = f; lframeAt = performance.now(); });
-if (matchMedia('(pointer: coarse)').matches) document.body.classList.add('touch');
+// Celular/tablet (ou qualquer tela com toque): mostra os botões na tela
+if (matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window || navigator.maxTouchPoints > 0 || /Android|iPhone|iPad/i.test(navigator.userAgent)) document.body.classList.add('touch');
+window.addEventListener('touchstart', () => document.body.classList.add('touch'), { once: true, passive: true });
 const lc = $('#lc');
 const lctx = lc.getContext('2d');
 lc.tabIndex = 0;

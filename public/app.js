@@ -1885,10 +1885,24 @@ let djMuted = !!store.get('voz-dj-mute', false); // mudo só para mim
 const djAudio = new Audio();
 djAudio.preload = 'auto';
 $('#audio-sink').appendChild(djAudio);
-djAudio.addEventListener('ended', () => { if (dj?.now) socket.emit('dj-ended', { key: dj.now.key }); });
+// Tenta recarregar a música neste aparelho (quando ela travou ou acabou antes da hora)
+function djRecarregar() {
+  const n = dj?.now;
+  if (!n || n.kind === 'yt') return;
+  djAudio.dataset.key = '';
+  setTimeout(() => { if (dj?.now?.key === n.key) syncDjAudio(); }, 1500);
+}
+djAudio.addEventListener('ended', () => {
+  const n = dj?.now;
+  if (!n) return;
+  socket.emit('dj-ended', { key: n.key });
+  // acabou cedo demais? então foi a conexão: recarrega e volta para o ponto certo
+  if (n.duration && djPos() < n.duration - 6) djRecarregar();
+});
 djAudio.addEventListener('error', () => {
   if (!dj?.now || !djAudio.src || djAudio.dataset.key !== dj.now.key) return;
   socket.emit('dj-ended', { key: dj.now.key, error: true });
+  djRecarregar();
 });
 const djHere = () => !!(dj && currentChannel && dj.room === currentChannel);
 const djPos = () => (dj?.now ? Math.max(0, ((dj.now.pausedAt || (Date.now() - djClock)) - dj.now.startedAt) / 1000) : 0);
@@ -2466,7 +2480,7 @@ async function tvList() {
   if (!items.length) { box.innerHTML = '<div class="chat-empty">Nenhum canal encontrado.</div>'; return; }
   box.innerHTML = items.map((c, i) => `<div class="dj-res tv-res ${c.web === false ? 'tv-only-app' : ''}" data-i="${i}">
       ${c.logo ? `<img class="dj-art tv-logo" src="${esc(c.logo)}" alt="" loading="lazy">` : '<span class="dj-art dj-art-empty">📺</span>'}
-      <span class="dj-meta"><strong>${esc(c.name)}</strong><small>${flag(c.country)} ${esc(nomePais(c.country))}${c.cats?.length ? ' · ' + esc(c.cats.slice(0, 2).join(', ')) : ''}${c.web === false ? ' · <b>só no celular</b>' : c.web ? ' · ✓ PC' : ''}</small></span>
+      <span class="dj-meta"><strong>${esc(c.name)}</strong><small>${flag(c.country)} ${esc(nomePais(c.country))}${c.cats?.length ? ' · ' + esc(c.cats.slice(0, 2).join(', ')) : ''}${c.web === false ? ' · <b>só no celular</b>' : c.web ? ' · ✓ PC' : ''}${c.geo ? ' · 🇧🇷 só no Brasil' : ''}</small></span>
       <button type="button" class="btn small primary" data-tv="${i}">Assistir</button></div>`).join('') + (r.total > items.length ? `<div class="chat-empty">Mostrando ${items.length} de ${r.total}. Digite para procurar.</div>` : '');
   box._items = items;
 }
