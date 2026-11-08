@@ -2294,7 +2294,7 @@ function toggleCamStrip() {
   toast(camStripOn ? '👥 Câmeras dos outros aparecem por cima da transmissão.' : 'Câmeras dos outros escondidas (só nesta tela).');
 }
 // Deixa um elemento arrastável dentro do cartão da transmissão, guardando a posição
-function makeDraggable(el, card, key) {
+function makeDraggable(el, card, key, aoSoltar) {
   let drag = null;
   el.addEventListener('pointerdown', (e) => {
     if (e.target.closest('button')) return;
@@ -2315,15 +2315,15 @@ function makeDraggable(el, card, key) {
   });
   const end = () => {
     if (drag) {
-      const c = card.getBoundingClientRect(), r = el.getBoundingClientRect();
-      if (c.width && r.width) store.set(key, { x: (r.left - c.left) / c.width, y: (r.top - c.top) / c.height });
+      if (aoSoltar) aoSoltar();
+      else { const c = card.getBoundingClientRect(), r = el.getBoundingClientRect(); if (c.width && r.width) store.set(key, { x: (r.left - c.left) / c.width, y: (r.top - c.top) / c.height }); }
     }
     drag = null;
   };
   el.addEventListener('pointerup', end);
   el.addEventListener('pointercancel', end);
   requestAnimationFrame(() => {
-    const sv = store.get(key, null), c = card.getBoundingClientRect();
+    const sv = key ? store.get(key, null) : null, c = card.getBoundingClientRect();
     if (sv && c.width) {
       el.style.left = `${Math.max(0, Math.min(sv.x, 0.9)) * c.width}px`;
       el.style.top = `${Math.max(0, Math.min(sv.y, 0.9)) * c.height}px`;
@@ -2331,30 +2331,22 @@ function makeDraggable(el, card, key) {
     }
   });
 }
+// chave para lembrar posição/tamanho da janelinha de cada pessoa (neste navegador)
+function camMiniKey(id) { return id === selfId ? 'eu' : String(findUser(id)?.uid || nameOf(id)); }
+let camMiniPos = store.get('voz-cammini-pos', {}) || {};
 function updateCamStrip(card, sharerId) {
-  let strip = card.querySelector('.cam-strip');
+  card.querySelectorAll('.cam-strip').forEach((s) => s.remove()); // versão antiga (fileira)
   const ch = currentCh();
   const list = camStripOn && ch
     ? ch.users.filter((u) => u.id !== sharerId && !camStripHidden.has(u.id) && camOf(u.id)).map((u) => u.id)
     : [];
   card.querySelector('.cams')?.classList.toggle('on', camStripOn);
-  if (!list.length) {
-    if (strip) { strip.querySelectorAll('video').forEach((v) => { v.srcObject = null; }); strip.remove(); }
-    return;
-  }
-  if (!strip) {
-    strip = document.createElement('div');
-    strip.className = 'cam-strip';
-    strip.title = 'Arraste para mover';
-    card.appendChild(strip);
-    makeDraggable(strip, card, 'voz-camstrip');
-  }
   // tira quem saiu / desligou a câmera
-  strip.querySelectorAll('.cam-mini').forEach((m) => {
+  card.querySelectorAll('.cam-mini').forEach((m) => {
     if (!list.includes(m.dataset.id)) { m.querySelector('video').srcObject = null; m.remove(); }
   });
-  list.forEach((id) => {
-    let m = strip.querySelector(`.cam-mini[data-id="${CSS.escape(id)}"]`);
+  list.forEach((id, i) => {
+    let m = card.querySelector(`.cam-mini[data-id="${CSS.escape(id)}"]`);
     if (!m) {
       m = document.createElement('div');
       m.className = 'cam-mini';
@@ -2364,18 +2356,39 @@ function updateCamStrip(card, sharerId) {
       m.querySelector('.x').onclick = (e) => { e.stopPropagation(); camStripHidden.add(id); renderScreens(); };
       m.querySelector('.x').onpointerdown = (e) => e.stopPropagation();
       m.appendChild(mirrorButton(id));
-      const w0 = store.get('voz-cammini-w', 0);
-      if (w0) m.style.width = `${w0}px`;
-      // puxou o canto de uma: todas ficam do mesmo tamanho, e lembra para a próxima vez
-      new ResizeObserver(() => {
-        const w = Math.round(m.getBoundingClientRect().width);
-        if (!w || Math.abs(w - (store.get('voz-cammini-w', 0) || 0)) < 2) return;
-        if (!m.matches(':active') && !camMiniResizing) return;
-        store.set('voz-cammini-w', w);
-        strip.querySelectorAll('.cam-mini').forEach((o) => { if (o !== m) o.style.width = `${w}px`; });
-      }).observe(m);
+      card.appendChild(m);
+      const key = camMiniKey(id);
+      // cada janelinha é independente: posição e tamanho lembrados por pessoa
+      m.style.visibility = 'hidden';
+      const posiciona = () => {
+        const sv = camMiniPos[key];
+        const c = card.getBoundingClientRect();
+        if (!c.width) { requestAnimationFrame(posiciona); return; } // cartão ainda sem tamanho
+        if (sv) {
+          m.style.width = `${Math.max(80, sv.w * c.width)}px`;
+          m.style.left = `${Math.max(0, Math.min(sv.x, 0.9)) * c.width}px`;
+          m.style.top = `${Math.max(0, Math.min(sv.y, 0.9)) * c.height}px`;
+        } else {
+          // sem posição salva: uma do lado da outra, embaixo à esquerda
+          const w = Math.max(88, Math.min(160, c.width * 0.14));
+          m.style.width = `${w}px`;
+          m.style.left = `${12 + i * (w + 8)}px`;
+          m.style.top = `${Math.max(0, c.height - w * 0.75 - 56)}px`;
+        }
+        m.style.right = 'auto'; m.style.bottom = 'auto';
+        m.style.visibility = '';
+      };
+      requestAnimationFrame(posiciona);
+      const salva = () => {
+        const cr = card.getBoundingClientRect(), r = m.getBoundingClientRect();
+        if (!cr.width || !r.width) return;
+        camMiniPos[key] = { x: (r.left - cr.left) / cr.width, y: (r.top - cr.top) / cr.height, w: r.width / cr.width };
+        store.set('voz-cammini-pos', camMiniPos);
+      };
+      makeDraggable(m, card, null, salva);
+      new ResizeObserver(() => { if (camMiniResizing && m.matches(':active')) salva(); }).observe(m);
       m.addEventListener('pointerdown', (e) => { const r = m.getBoundingClientRect(); camMiniResizing = e.clientX > r.right - 18 && e.clientY > r.bottom - 18; });
-      strip.appendChild(m);
+      m.addEventListener('pointerup', () => { if (camMiniResizing) { camMiniResizing = false; salva(); } });
     }
     m.querySelector('.nm').textContent = id === selfId ? 'Você' : nameOf(id);
     const v = m.querySelector('video');
