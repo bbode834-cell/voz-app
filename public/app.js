@@ -1969,9 +1969,10 @@ onmessage = (e) => {
 `;
 let clipWorkerUrl = null;
 const podeMontar = () => !!(window.MediaStreamTrackProcessor && window.MediaStreamTrackGenerator && window.OffscreenCanvas);
+// WebM primeiro: é o formato que o Chrome grava há anos (o MP4 do Chrome ainda dá problema no corte)
 function clipMime() {
   if (!window.MediaRecorder) return null;
-  const tipos = ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4;codecs=avc1,mp4a.40.2', 'video/webm;codecs=vp8,opus', 'video/webm'];
+  const tipos = ['video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4'];
   return tipos.find((t) => MediaRecorder.isTypeSupported(t)) || null;
 }
 // Onde a imagem do vídeo aparece dentro do cartão (object-fit: contain)
@@ -2124,7 +2125,7 @@ class ClipRec {
     clearTimeout(rec?._vigia);
     if (this.cur === rec) this.cur = null;
     try { if (rec && rec.state !== 'inactive') { rec._onblob = () => {}; rec.stop(); } } catch {}
-    const tipos = ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4;codecs=avc1,mp4a.40.2', 'video/webm;codecs=vp8,opus', 'video/webm'];
+    const tipos = ['video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4'];
     const i = tipos.indexOf(this.mime);
     const prox = tipos.slice(i + 1).find((t) => MediaRecorder.isTypeSupported(t));
     this.prevs = [];

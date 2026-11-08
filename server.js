@@ -257,10 +257,16 @@ async function cortaClipe(partes, ext, seg = CLIP_SEG) {
   const dir = await fsp.mkdtemp(path.join(osTmp, 'clip-'));
   try {
     const arquivos = [];
+    const extra = ext === 'mp4' ? ['-movflags', '+faststart'] : [];
     for (let i = 0; i < partes.length; i++) {
       const f = path.join(dir, `p${i}.${ext}`);
       await fsp.writeFile(f, partes[i]);
-      arquivos.push(f);
+      // O navegador grava "ao vivo" e não escreve a duração no arquivo. Sem isso, na hora de juntar
+      // os pedaços o ffmpeg sobrepõe os tempos e joga fora quase tudo (clipe de 30 s virava 5 s).
+      // Regravar o contêiner (sem recodificar) conserta a duração e os tempos.
+      const n = path.join(dir, `n${i}.${ext}`);
+      const r = await runFfmpeg(['-i', f, '-c', 'copy', '-fflags', '+genpts', ...extra, n]);
+      arquivos.push(r.ok ? n : f);
     }
     let entrada = arquivos[0];
     if (arquivos.length > 1) {
@@ -272,7 +278,6 @@ async function cortaClipe(partes, ext, seg = CLIP_SEG) {
     }
     const saida = path.join(dir, `clipe.${ext}`);
     // -sseof -30: começa 30 s antes do fim (cai no quadro-chave anterior, então pode dar 30-33 s)
-    const extra = ext === 'mp4' ? ['-movflags', '+faststart'] : [];
     let r = await runFfmpeg(['-sseof', `-${seg}`, '-i', entrada, '-c', 'copy', '-avoid_negative_ts', 'make_zero', ...extra, saida]);
     if (!r.ok) r = await runFfmpeg(['-i', entrada, '-c', 'copy', ...extra, saida]); // último recurso: inteiro
     if (!r.ok) return null;
