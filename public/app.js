@@ -1253,7 +1253,7 @@ function toggleMirror(id) {
   mirrorPref[k] = !mirrorPref[k];
   store.set('voz-espelhar', mirrorPref);
   renderCams();
-  document.querySelectorAll('.cam-pip').forEach((p) => p.querySelector('video').classList.toggle('mirror', isMirrored(p.dataset.id)));
+  document.querySelectorAll('.cam-pip, .cam-mini').forEach((p) => p.querySelector('video').classList.toggle('mirror', isMirrored(p.dataset.id)));
 }
 const MIRROR_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M8 8l-5 4 5 4"/><path d="M16 8l5 4-5 4"/></svg>';
 function mirrorButton(id) {
@@ -1720,6 +1720,7 @@ function renderScreens() {
       el.querySelector('video').srcObject = null;
       el.remove();
       screenCards.delete(id);
+      if (clipRecs.has(id)) { clipRecs.get(id).parar(); clipRecs.delete(id); }
     }
   });
 
@@ -1739,6 +1740,7 @@ function renderScreens() {
           ${mine ? '' : `<label class="screen-vol" title="Volume do som desta transmissão">
             <span class="ico">${ICON.speaker}</span><input type="range" min="0" max="100"></label>`}
           ${mine ? '' : '<button class="lat"></button>'}
+          <button class="clip"></button><button class="icon-btn clip-off" title="Desligar os clipes" hidden>⏹</button>
           <button class="icon-btn cams" title="Mostrar/esconder as câmeras dos outros por cima da transmissão">👥</button>
           <button class="icon-btn fs" title="Tela cheia">${ICON.full}</button>
           <button class="icon-btn close" title="${mine ? 'Parar de transmitir' : 'Parar de assistir'}">${ICON.close}</button>
@@ -1748,6 +1750,7 @@ function renderScreens() {
           <button class="fs-btn fs-deaf" title="Ouvir"></button>
           ${mine ? '' : `<label class="fs-vol" title="Volume desta transmissão"><span class="ico">${ICON.speaker}</span>
             <input type="range" min="0" max="100"><span class="fs-vol-val"></span></label>`}
+          <button class="fs-btn clip" title="Clipar"></button>
           <button class="fs-btn fs-exit" title="Sair da tela cheia">${ICON.exitFull}</button>
         </div>`;
       el.querySelector('.fs-mic').onclick = toggleMute;
@@ -1775,6 +1778,8 @@ function renderScreens() {
       const lat = el.querySelector('.lat');
       if (lat) { lat.onclick = toggleLatency; updateLatencyButton(el); }
       el.querySelector('.cams').onclick = toggleCamStrip;
+      el.querySelectorAll('.clip').forEach((b) => { b.onclick = () => clipToggle(id); });
+      el.querySelector('.clip-off').onclick = () => clipOff(id);
       // Volume da transmissão: a barra de cima e a da tela cheia andam juntas
       const ranges = el.querySelectorAll('.screen-vol input, .fs-vol input');
       const showVol = (v) => {
@@ -1805,6 +1810,7 @@ function renderScreens() {
     el.querySelector('.owner').textContent = mine ? 'Sua tela' : `Tela de ${nameOf(id)}`;
     updateCamPip(el, id);
     updateCamStrip(el, id);
+    updateClipButtons(el, id);
     const fc = el.querySelector('.float-cam');
     if (fc) fc.hidden = !(camStream && !camFloating && canFloat());
   });
@@ -1877,12 +1883,166 @@ function updateCamPip(card, id) {
   v.classList.toggle('mirror', isMirrored(id));
 }
 
+// ---------- 🎬 Clipes: salvar os últimos 30 s de uma transmissão ----------
+// Quando você liga o clipe numa transmissão, o navegador grava ela em pedaços de 30 s
+// (sempre guardando o pedaço anterior + o atual). Clicou em "Clipar": manda os dois
+// para o servidor, que corta os últimos 30 s e põe o vídeo no chat da sala.
+// O som do clipe = som da transmissão + vozes da chamada (inclusive a sua).
+const CLIP_SEG_MS = 30_000;
+const clipRecs = new Map(); // id da transmissão -> gravador
+function clipMime() {
+  if (!window.MediaRecorder) return null;
+  const tipos = ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4;codecs=avc1,mp4a.40.2', 'video/webm;codecs=vp8,opus', 'video/webm'];
+  return tipos.find((t) => MediaRecorder.isTypeSupported(t)) || null;
+}
+class ClipRec {
+  constructor(id) {
+    this.id = id;
+    this.mime = clipMime();
+    this.prev = null; // último pedaço completo (Blob)
+    this.cur = null; // gravador atual
+    this.curStart = 0;
+    this.saving = false;
+    this.ctx = null;
+    this.dest = null;
+    this.fontes = new Map(); // track -> source
+    this.parado = false;
+    this.rodar();
+    this.mixTimer = setInterval(() => this.atualizaVozes(), 4000);
+  }
+  video() { return this.id === selfId ? screenStream : peers.get(this.id)?.screenStream; }
+  // Mistura o som da transmissão com as vozes de todo mundo
+  stream() {
+    const v = this.video();
+    if (!v) return null;
+    const out = new MediaStream(v.getVideoTracks());
+    try {
+      if (!this.ctx) {
+        this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        this.dest = this.ctx.createMediaStreamDestination();
+      }
+      this.atualizaVozes();
+      if (this.dest.stream.getAudioTracks().length) out.addTrack(this.dest.stream.getAudioTracks()[0]);
+    } catch {}
+    return out;
+  }
+  atualizaVozes() {
+    if (!this.ctx) return;
+    const tracks = new Set();
+    const v = this.video();
+    if (v) v.getAudioTracks().forEach((t) => tracks.add(t));
+    peers.forEach((p) => { try { p.pc.getReceivers().forEach((r) => { if (r.track?.kind === 'audio' && r.track.readyState === 'live') tracks.add(r.track); }); } catch {} });
+    if (localStream && !muted) localStream.getAudioTracks().forEach((t) => tracks.add(t));
+    tracks.forEach((t) => {
+      if (this.fontes.has(t)) return;
+      try { const s = this.ctx.createMediaStreamSource(new MediaStream([t])); s.connect(this.dest); this.fontes.set(t, s); } catch {}
+    });
+    this.fontes.forEach((s, t) => { if (!tracks.has(t)) { try { s.disconnect(); } catch {} this.fontes.delete(t); } });
+  }
+  rodar() {
+    if (this.parado || !this.mime) return;
+    const st = this.stream();
+    if (!st || !st.getVideoTracks().length) { this.timer = setTimeout(() => this.rodar(), 1000); return; }
+    let rec;
+    try { rec = new MediaRecorder(st, { mimeType: this.mime, videoBitsPerSecond: 3_000_000, audioBitsPerSecond: 128_000 }); } catch (e) { console.warn('clip:', e); this.mime = null; return; }
+    const chunks = [];
+    rec.ondataavailable = (e) => { if (e.data?.size) chunks.push(e.data); };
+    rec.onstop = () => {
+      const blob = new Blob(chunks, { type: this.mime.split(';')[0] });
+      if (rec._onblob) rec._onblob(blob); else this.prev = blob;
+    };
+    rec.onerror = () => { try { rec.stop(); } catch {} };
+    rec.start(1000);
+    this.cur = rec;
+    this.curStart = Date.now();
+    this.timer = setTimeout(() => this.rotaciona(), CLIP_SEG_MS);
+  }
+  rotaciona() {
+    const rec = this.cur;
+    this.cur = null;
+    if (rec && rec.state !== 'inactive') rec.stop();
+    this.rodar();
+  }
+  segundosGravados() { return Math.min(CLIP_SEG_MS / 1000, (this.prev ? CLIP_SEG_MS / 1000 : 0) + Math.round((Date.now() - this.curStart) / 1000)); }
+  // Clicou em "Clipar": fecha o pedaço atual e manda prev + atual
+  async clipar() {
+    if (this.saving || !this.cur) return;
+    this.saving = true;
+    clearTimeout(this.timer);
+    const rec = this.cur;
+    const prev = this.prev;
+    this.cur = null;
+    const atual = await new Promise((res) => { rec._onblob = res; rec.state === 'inactive' ? res(new Blob([])) : rec.stop(); });
+    this.prev = null;
+    this.rodar(); // continua gravando para o próximo clipe
+    try {
+      const partes = prev && prev.size ? [prev, atual] : [atual];
+      const r = await fetch('/api/clip', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          Authorization: `Bearer ${authToken}`,
+          'X-Prev-Len': String(prev && prev.size ? prev.size : 0),
+          'X-Clip-De': encodeURIComponent(this.id === selfId ? myName : nameOf(this.id)),
+          'X-Clip-Sala': currentChannel || '',
+        },
+        body: new Blob(partes),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || 'Não consegui salvar o clipe.');
+      toast(`🎬 Clipe de ${j.segundos}s salvo! Está no chat da sala.`);
+    } catch (e) {
+      toast(e.message || 'Não consegui salvar o clipe.');
+    }
+    this.saving = false;
+    renderScreens();
+  }
+  parar() {
+    this.parado = true;
+    clearTimeout(this.timer);
+    clearInterval(this.mixTimer);
+    if (this.cur && this.cur.state !== 'inactive') { this.cur._onblob = () => {}; this.cur.stop(); }
+    this.cur = null; this.prev = null;
+    try { this.ctx?.close(); } catch {}
+  }
+}
+function clipToggle(id) {
+  const r = clipRecs.get(id);
+  if (r) {
+    if (r.segundosGravados() < 3) { toast('Espere alguns segundos gravando antes de clipar.'); return; }
+    r.clipar();
+    toast('🎬 Salvando o clipe…');
+    return;
+  }
+  if (!clipMime()) { toast('Este navegador não grava vídeo. Use o Chrome ou o Edge.'); return; }
+  clipRecs.set(id, new ClipRec(id));
+  toast('🎬 Gravando os últimos 30 s desta transmissão. Quando acontecer algo bonito, clique em Clipar.');
+  renderScreens();
+}
+function clipOff(id) {
+  clipRecs.get(id)?.parar();
+  clipRecs.delete(id);
+  toast('Clipes desligados nesta transmissão.');
+  renderScreens();
+}
+function updateClipButtons(el, id) {
+  const r = clipRecs.get(id);
+  el.querySelectorAll('.clip').forEach((b) => {
+    b.classList.toggle('on', !!r);
+    b.classList.toggle('busy', !!r?.saving);
+    b.textContent = r ? (r.saving ? '⏳ Salvando…' : '🎬 Clipar') : '🎬 Clipes';
+    b.title = r ? 'Salvar os últimos 30 segundos desta transmissão no chat' : 'Ligar os clipes: começa a guardar os últimos 30 segundos';
+  });
+  el.querySelectorAll('.clip-off').forEach((b) => { b.hidden = !r; });
+}
+
 // ---------- Câmeras dos outros por cima da transmissão ----------
 // Enquanto você assiste a tela de alguém, quem mais está com a câmera ligada
 // (inclusive você) aparece numa fileira de janelinhas. O botão 👥 mostra/esconde
 // todas; o × de cada uma esconde só aquela pessoa.
 let camStripOn = store.get('voz-cams-na-tela', true) !== false;
 const camStripHidden = new Set(); // pessoas escondidas com o ×
+let camMiniResizing = false; // alguém está puxando o canto de uma janelinha
 function toggleCamStrip() {
   camStripOn = !camStripOn;
   if (camStripOn) camStripHidden.clear();
@@ -1895,6 +2055,8 @@ function makeDraggable(el, card, key) {
   let drag = null;
   el.addEventListener('pointerdown', (e) => {
     if (e.target.closest('button')) return;
+    const m = e.target.closest('.cam-mini');
+    if (m) { const mr = m.getBoundingClientRect(); if (e.clientX > mr.right - 18 && e.clientY > mr.bottom - 18) return; }
     const r = el.getBoundingClientRect(), c = card.getBoundingClientRect();
     drag = { dx: e.clientX - r.left, dy: e.clientY - r.top, c };
     el.setPointerCapture(e.pointerId);
@@ -1955,8 +2117,21 @@ function updateCamStrip(card, sharerId) {
       m.className = 'cam-mini';
       m.dataset.id = id;
       m.innerHTML = '<video autoplay playsinline muted></video><span class="nm"></span><button class="x" title="Esconder esta câmera">×</button>';
+      m.title = 'Arraste para mover · puxe o canto para mudar o tamanho';
       m.querySelector('.x').onclick = (e) => { e.stopPropagation(); camStripHidden.add(id); renderScreens(); };
       m.querySelector('.x').onpointerdown = (e) => e.stopPropagation();
+      m.appendChild(mirrorButton(id));
+      const w0 = store.get('voz-cammini-w', 0);
+      if (w0) m.style.width = `${w0}px`;
+      // puxou o canto de uma: todas ficam do mesmo tamanho, e lembra para a próxima vez
+      new ResizeObserver(() => {
+        const w = Math.round(m.getBoundingClientRect().width);
+        if (!w || Math.abs(w - (store.get('voz-cammini-w', 0) || 0)) < 2) return;
+        if (!m.matches(':active') && !camMiniResizing) return;
+        store.set('voz-cammini-w', w);
+        strip.querySelectorAll('.cam-mini').forEach((o) => { if (o !== m) o.style.width = `${w}px`; });
+      }).observe(m);
+      m.addEventListener('pointerdown', (e) => { const r = m.getBoundingClientRect(); camMiniResizing = e.clientX > r.right - 18 && e.clientY > r.bottom - 18; });
       strip.appendChild(m);
     }
     m.querySelector('.nm').textContent = id === selfId ? 'Você' : nameOf(id);
@@ -2664,12 +2839,21 @@ function audHTML(t) {
   return `<div class="voice-msg" data-src="/img/${id}" data-dur="${sec}"><button type="button" class="vm-play" title="Ouvir">${VM_PLAY}</button>
     <div class="vm-bar"><i></i></div><span class="vm-time">${fmtSec(Number(sec))}</span></div>`;
 }
-const msgHTML = (t) => isAud(t) ? audHTML(t) : isImg(t)
+// Clipe de transmissão: "clip:<código>:<segundos>:<de quem era a tela>"
+const CLIP_RE = /^clip:([A-Za-z0-9_-]{16}):(\d{1,4}):([\s\S]{0,40})$/;
+const isClip = (t) => CLIP_RE.test(String(t).trim());
+function clipHTML(t) {
+  const [, id, sec, de] = String(t).trim().match(CLIP_RE);
+  return `<div class="clip-msg"><video controls preload="metadata" playsinline src="/img/${id}"></video>
+    <div class="clip-cap">🎬 Clipe da tela de ${esc(de)} · ${fmtSec(Number(sec))}
+    <a href="/img/${id}" download="clipe-${esc(de).replace(/[^\w-]+/g, '_')}-${id.slice(0, 6)}" title="Baixar o clipe">⬇ baixar</a></div></div>`;
+}
+const msgHTML = (t) => isClip(t) ? clipHTML(t) : isAud(t) ? audHTML(t) : isImg(t)
   ? `<img class="chat-photo" src="/img/${String(t).trim().slice(4)}" alt="Foto" loading="lazy">`
   : isGif(t)
     ? `<img class="chat-gif" src="${esc(String(t).trim())}" alt="GIF" loading="lazy">`
     : linkify(t);
-const msgPreview = (t) => (isAud(t) ? `🎤 Áudio (${fmtSec(Number(String(t).trim().match(AUD_RE)[2]))})` : isImg(t) ? '📷 Foto' : isGif(t) ? '🎞️ GIF' : t);
+const msgPreview = (t) => (isClip(t) ? '🎬 Clipe' : isAud(t) ? `🎤 Áudio (${fmtSec(Number(String(t).trim().match(AUD_RE)[2]))})` : isImg(t) ? '📷 Foto' : isGif(t) ? '🎞️ GIF' : t);
 
 // ---------- Mandar fotos (chat da chamada e mensagens diretas) ----------
 // A foto é diminuída aqui mesmo (no máximo 1600 px) antes de subir para o servidor

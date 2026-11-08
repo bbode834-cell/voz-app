@@ -229,6 +229,101 @@ app.post('/api/img', express.raw({ type: () => true, limit: MUSIC_MAX }), async 
     erro(res, 500, 'Não consegui guardar o arquivo.');
   }
 });
+// ---------- 🎬 Clipes (últimos 30 s de uma transmissão) ----------
+// O navegador grava a transmissão em pedaços de 30 s e, quando a pessoa clica em "Clipar",
+// manda o pedaço anterior + o atual. Aqui o ffmpeg junta os dois e corta os últimos 30 s
+// (sem recodificar, por isso é rápido). O clipe fica guardado como as fotos e vai para o chat.
+const CLIP_MAX = 80 * 1024 * 1024;
+const CLIP_SEG = 30; // segundos
+let ffmpegBin = null;
+try { ffmpegBin = require('ffmpeg-static'); } catch { console.log('ffmpeg-static não instalado: clipes vão sem corte exato.'); }
+const clipUploads = new Map(); // usuário -> horários dos últimos clipes
+const osTmp = require('os').tmpdir();
+const fsp = require('fs').promises;
+function runFfmpeg(args) {
+  return new Promise((resolve) => {
+    const { execFile } = require('child_process');
+    execFile(ffmpegBin, ['-hide_banner', '-nostdin', '-y', ...args], { timeout: 60_000, maxBuffer: 4 * 1024 * 1024 }, (err, _out, stderr) => resolve({ ok: !err, log: String(stderr || '') }));
+  });
+}
+// Lê "Duration: 00:00:31.20" do que o ffmpeg imprime
+function duracaoDoLog(log) {
+  const m = /Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(log);
+  return m ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) : 0;
+}
+async function cortaClipe(partes, ext) {
+  const dir = await fsp.mkdtemp(path.join(osTmp, 'clip-'));
+  try {
+    const arquivos = [];
+    for (let i = 0; i < partes.length; i++) {
+      const f = path.join(dir, `p${i}.${ext}`);
+      await fsp.writeFile(f, partes[i]);
+      arquivos.push(f);
+    }
+    let entrada = arquivos[0];
+    if (arquivos.length > 1) {
+      const lista = path.join(dir, 'lista.txt');
+      await fsp.writeFile(lista, arquivos.map((f) => `file '${f}'`).join('\n'));
+      entrada = path.join(dir, `junto.${ext}`);
+      const r = await runFfmpeg(['-f', 'concat', '-safe', '0', '-i', lista, '-c', 'copy', entrada]);
+      if (!r.ok) entrada = arquivos[arquivos.length - 1]; // não juntou: usa só o pedaço mais novo
+    }
+    const saida = path.join(dir, `clipe.${ext}`);
+    // -sseof -30: começa 30 s antes do fim (cai no quadro-chave anterior, então pode dar 30-33 s)
+    const extra = ext === 'mp4' ? ['-movflags', '+faststart'] : [];
+    let r = await runFfmpeg(['-sseof', `-${CLIP_SEG}`, '-i', entrada, '-c', 'copy', '-avoid_negative_ts', 'make_zero', ...extra, saida]);
+    if (!r.ok) r = await runFfmpeg(['-i', entrada, '-c', 'copy', ...extra, saida]); // último recurso: inteiro
+    if (!r.ok) return null;
+    const dados = await fsp.readFile(saida);
+    const info = await runFfmpeg(['-i', saida, '-f', 'null', '-']);
+    return { dados, segundos: Math.round(duracaoDoLog(info.log)) || CLIP_SEG };
+  } finally {
+    fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+app.options('/api/clip', (req, res) => res.sendStatus(204));
+app.post('/api/clip', express.raw({ type: () => true, limit: CLIP_MAX }), async (req, res) => {
+  try {
+    const u = await userFromReq(req);
+    if (!u || u.status !== 'approved') return erro(res, 401, 'Entre de novo.');
+    const now = Date.now();
+    const t = (clipUploads.get(u.id) || []).filter((x) => now - x < 60_000);
+    if (t.length >= 4) return erro(res, 429, 'Calma! Espere um pouco antes do próximo clipe.');
+    const corpo = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    const prevLen = Math.max(0, Number(req.headers['x-prev-len'] || 0) | 0);
+    if (!corpo.length || prevLen > corpo.length) return erro(res, 400, 'Clipe vazio.');
+    const partes = prevLen ? [corpo.subarray(0, prevLen), corpo.subarray(prevLen)] : [corpo];
+    const mp4 = corpo.length > 12 && corpo.toString('ascii', 4, 8) === 'ftyp';
+    const ext = mp4 ? 'mp4' : 'webm';
+    const quem = String(req.headers['x-clip-de'] || '').slice(0, 40);
+    const sala = String(req.headers['x-clip-sala'] || '');
+    t.push(now);
+    clipUploads.set(u.id, t);
+    let dados = partes[partes.length - 1], segundos = CLIP_SEG;
+    if (ffmpegBin) {
+      const r = await cortaClipe(partes, ext);
+      if (r) { dados = r.dados; segundos = r.segundos; }
+    }
+    if (dados.length > MUSIC_MAX) return erro(res, 413, 'O clipe ficou grande demais. Tente de novo com qualidade menor.');
+    const id = crypto.randomBytes(12).toString('base64url');
+    await banco.addImg({ id, dono: u.id, mime: mp4 ? 'video/mp4' : 'video/webm', dados });
+    // Vai para o chat da sala, como se a pessoa tivesse mandado
+    const ch = byId(sala);
+    const live = [...io.sockets.sockets.values()].find((s) => s.data.channel === sala && s.data.user?.id === u.id);
+    const me = ch?.users.get(live?.id);
+    if (ch && me) {
+      const msg = { id: ++chatSeq, from: live.id, name: me.name, avatar: me.avatar && me.avatar.startsWith('p:') ? me.avatar : '', text: `clip:${id}:${segundos}:${decodeURIComponent(quem)}`, ts: Date.now() };
+      ch.chat.push(msg);
+      if (ch.chat.length > CHAT_KEEP) ch.chat.splice(0, ch.chat.length - CHAT_KEEP);
+      io.to(ch.id).emit('chat', msg);
+    }
+    res.json({ ok: true, id, segundos, url: `/img/${id}` });
+  } catch (e) {
+    if (e.type === 'entity.too.large') return erro(res, 413, 'Clipe grande demais.');
+    console.error('clip:', e.message);
+    erro(res, 500, 'Não consegui salvar o clipe.');
+  }
+});
 app.get('/img/:id', async (req, res) => {
   try {
     const id = String(req.params.id || '');
