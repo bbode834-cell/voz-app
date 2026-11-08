@@ -1739,7 +1739,7 @@ function renderScreens() {
           ${mine ? '' : `<label class="screen-vol" title="Volume do som desta transmissão">
             <span class="ico">${ICON.speaker}</span><input type="range" min="0" max="100"></label>`}
           ${mine ? '' : '<button class="lat"></button>'}
-
+          <button class="icon-btn cams" title="Mostrar/esconder as câmeras dos outros por cima da transmissão">👥</button>
           <button class="icon-btn fs" title="Tela cheia">${ICON.full}</button>
           <button class="icon-btn close" title="${mine ? 'Parar de transmitir' : 'Parar de assistir'}">${ICON.close}</button>
         </div>
@@ -1774,6 +1774,7 @@ function renderScreens() {
       };
       const lat = el.querySelector('.lat');
       if (lat) { lat.onclick = toggleLatency; updateLatencyButton(el); }
+      el.querySelector('.cams').onclick = toggleCamStrip;
       // Volume da transmissão: a barra de cima e a da tela cheia andam juntas
       const ranges = el.querySelectorAll('.screen-vol input, .fs-vol input');
       const showVol = (v) => {
@@ -1803,6 +1804,7 @@ function renderScreens() {
     el.querySelector('.screen-waiting').hidden = live;
     el.querySelector('.owner').textContent = mine ? 'Sua tela' : `Tela de ${nameOf(id)}`;
     updateCamPip(el, id);
+    updateCamStrip(el, id);
     const fc = el.querySelector('.float-cam');
     if (fc) fc.hidden = !(camStream && !camFloating && canFloat());
   });
@@ -1873,6 +1875,96 @@ function updateCamPip(card, id) {
   const v = pip.querySelector('video');
   if (v.srcObject !== st) { v.srcObject = st; v.play().catch(() => {}); }
   v.classList.toggle('mirror', isMirrored(id));
+}
+
+// ---------- Câmeras dos outros por cima da transmissão ----------
+// Enquanto você assiste a tela de alguém, quem mais está com a câmera ligada
+// (inclusive você) aparece numa fileira de janelinhas. O botão 👥 mostra/esconde
+// todas; o × de cada uma esconde só aquela pessoa.
+let camStripOn = store.get('voz-cams-na-tela', true) !== false;
+const camStripHidden = new Set(); // pessoas escondidas com o ×
+function toggleCamStrip() {
+  camStripOn = !camStripOn;
+  if (camStripOn) camStripHidden.clear();
+  store.set('voz-cams-na-tela', camStripOn);
+  renderScreens();
+  toast(camStripOn ? '👥 Câmeras dos outros aparecem por cima da transmissão.' : 'Câmeras dos outros escondidas (só nesta tela).');
+}
+// Deixa um elemento arrastável dentro do cartão da transmissão, guardando a posição
+function makeDraggable(el, card, key) {
+  let drag = null;
+  el.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('button')) return;
+    const r = el.getBoundingClientRect(), c = card.getBoundingClientRect();
+    drag = { dx: e.clientX - r.left, dy: e.clientY - r.top, c };
+    el.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const { c } = drag;
+    const x = Math.max(0, Math.min(e.clientX - c.left - drag.dx, c.width - el.offsetWidth));
+    const y = Math.max(0, Math.min(e.clientY - c.top - drag.dy, c.height - el.offsetHeight));
+    el.style.left = `${x}px`; el.style.top = `${y}px`;
+    el.style.right = 'auto'; el.style.bottom = 'auto';
+  });
+  const end = () => {
+    if (drag) {
+      const c = card.getBoundingClientRect(), r = el.getBoundingClientRect();
+      if (c.width && r.width) store.set(key, { x: (r.left - c.left) / c.width, y: (r.top - c.top) / c.height });
+    }
+    drag = null;
+  };
+  el.addEventListener('pointerup', end);
+  el.addEventListener('pointercancel', end);
+  requestAnimationFrame(() => {
+    const sv = store.get(key, null), c = card.getBoundingClientRect();
+    if (sv && c.width) {
+      el.style.left = `${Math.max(0, Math.min(sv.x, 0.9)) * c.width}px`;
+      el.style.top = `${Math.max(0, Math.min(sv.y, 0.9)) * c.height}px`;
+      el.style.right = 'auto'; el.style.bottom = 'auto';
+    }
+  });
+}
+function updateCamStrip(card, sharerId) {
+  let strip = card.querySelector('.cam-strip');
+  const ch = currentCh();
+  const list = camStripOn && ch
+    ? ch.users.filter((u) => u.id !== sharerId && !camStripHidden.has(u.id) && camOf(u.id)).map((u) => u.id)
+    : [];
+  card.querySelector('.cams')?.classList.toggle('on', camStripOn);
+  if (!list.length) {
+    if (strip) { strip.querySelectorAll('video').forEach((v) => { v.srcObject = null; }); strip.remove(); }
+    return;
+  }
+  if (!strip) {
+    strip = document.createElement('div');
+    strip.className = 'cam-strip';
+    strip.title = 'Arraste para mover';
+    card.appendChild(strip);
+    makeDraggable(strip, card, 'voz-camstrip');
+  }
+  // tira quem saiu / desligou a câmera
+  strip.querySelectorAll('.cam-mini').forEach((m) => {
+    if (!list.includes(m.dataset.id)) { m.querySelector('video').srcObject = null; m.remove(); }
+  });
+  list.forEach((id) => {
+    let m = strip.querySelector(`.cam-mini[data-id="${CSS.escape(id)}"]`);
+    if (!m) {
+      m = document.createElement('div');
+      m.className = 'cam-mini';
+      m.dataset.id = id;
+      m.innerHTML = '<video autoplay playsinline muted></video><span class="nm"></span><button class="x" title="Esconder esta câmera">×</button>';
+      m.querySelector('.x').onclick = (e) => { e.stopPropagation(); camStripHidden.add(id); renderScreens(); };
+      m.querySelector('.x').onpointerdown = (e) => e.stopPropagation();
+      strip.appendChild(m);
+    }
+    m.querySelector('.nm').textContent = id === selfId ? 'Você' : nameOf(id);
+    const v = m.querySelector('video');
+    const st = camOf(id);
+    if (v.srcObject !== st) { v.srcObject = st; v.play().catch(() => {}); }
+    v.classList.toggle('mirror', isMirrored(id));
+  });
 }
 
 // ---------- 🤖 DJ King (bot de música) ----------
