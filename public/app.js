@@ -2103,16 +2103,35 @@ class ClipRec {
     let rec;
     try { rec = new MediaRecorder(st, { mimeType: this.mime, videoBitsPerSecond: 3_000_000, audioBitsPerSecond: 128_000, videoKeyFrameIntervalDuration: 2000 }); } catch (e) { console.warn('clip:', e); this.mime = null; return; }
     const chunks = [];
+    rec._mime = this.mime;
     rec.ondataavailable = (e) => { if (e.data?.size) chunks.push(e.data); };
     rec.onstop = () => {
-      const blob = new Blob(chunks, { type: this.mime.split(';')[0] });
-      if (rec._onblob) rec._onblob(blob); else this.guarda(blob, rec._sec || 0);
+      clearTimeout(rec._vigia);
+      const blob = new Blob(chunks, { type: rec._mime.split(';')[0] });
+      if (rec._onblob) { const f = rec._onblob; rec._onblob = null; f(blob); } else this.guarda(blob, rec._sec || 0);
     };
-    rec.onerror = () => { try { rec.stop(); } catch {} };
-    rec.start(1000);
+    rec.onerror = (e) => { console.warn('clip gravador:', e.error || e); this.trocaFormato(rec); };
+    try { rec.start(1000); } catch (e) { console.warn('clip start:', e); this.trocaFormato(rec); return; }
     this.cur = rec;
     this.curStart = Date.now();
     this.timer = setTimeout(() => this.rotaciona(), CLIP_SEG_MS);
+    // Vigia: se em 4 s não chegou nenhum pedaço de vídeo, esse formato não está funcionando aqui
+    rec._vigia = setTimeout(() => { if (!chunks.length && this.cur === rec) this.trocaFormato(rec); }, 4000);
+  }
+  // O formato escolhido (ex.: MP4) não gravou: tenta o próximo (WebM); se nada funcionar, desiste
+  trocaFormato(rec) {
+    clearTimeout(this.timer);
+    clearTimeout(rec?._vigia);
+    if (this.cur === rec) this.cur = null;
+    try { if (rec && rec.state !== 'inactive') { rec._onblob = () => {}; rec.stop(); } } catch {}
+    const tipos = ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4;codecs=avc1,mp4a.40.2', 'video/webm;codecs=vp8,opus', 'video/webm'];
+    const i = tipos.indexOf(this.mime);
+    const prox = tipos.slice(i + 1).find((t) => MediaRecorder.isTypeSupported(t));
+    this.prevs = [];
+    if (!prox) { this.mime = null; console.warn('clip: nenhum formato gravou'); toast('Não consegui gravar clipes neste navegador.'); renderScreens(); return; }
+    console.warn('clip: trocando formato', this.mime, '->', prox);
+    this.mime = prox;
+    this.rodar();
   }
   rotaciona() {
     const rec = this.cur;
@@ -2131,8 +2150,10 @@ class ClipRec {
   // Clicou em "Clipar": fecha o pedaço atual e manda os pedaços guardados + o atual
   // (o servidor corta os últimos N segundos que já passaram)
   async clipar(seg = clipSeg) {
-    if (this.saving || !this.cur) return;
+    if (this.saving) return;
+    if (!this.cur) { toast(this.mime ? 'O gravador ainda está começando. Tente de novo em alguns segundos.' : 'Não consegui gravar clipes neste navegador.'); return; }
     this.saving = true;
+    renderScreens();
     clearTimeout(this.timer);
     const rec = this.cur;
     const secAtual = (Date.now() - this.curStart) / 1000;
@@ -2141,12 +2162,19 @@ class ClipRec {
     let soma = secAtual;
     for (let i = this.prevs.length - 1; i >= 0 && soma < seg; i--) { prevs.unshift(this.prevs[i].blob); soma += this.prevs[i].sec; }
     this.cur = null;
-    const atual = await new Promise((res) => { rec._onblob = res; rec.state === 'inactive' ? res(new Blob([])) : rec.stop(); });
+    const atual = await new Promise((res) => {
+      rec._onblob = res;
+      // se o gravador não fechar em 4 s, segue com o que tiver
+      const t = setTimeout(() => { if (rec._onblob) { rec._onblob = null; res(new Blob([])); } }, 4000);
+      rec.addEventListener('stop', () => clearTimeout(t), { once: true });
+      try { rec.state === 'inactive' ? rec.onstop() : rec.stop(); } catch (e) { clearTimeout(t); if (rec._onblob) { rec._onblob = null; res(new Blob([])); } }
+    });
     // o pedaço fechado agora continua valendo para o próximo clipe
     this.guarda(atual, secAtual);
     this.rodar(); // continua gravando para o próximo clipe
     try {
       const partes = [...prevs, atual].filter((b) => b && b.size);
+      if (!partes.length) throw new Error('O gravador não produziu vídeo. Tente de novo em alguns segundos.');
       const r = await fetch('/api/clip', {
         method: 'POST',
         headers: {

@@ -234,7 +234,9 @@ app.post('/api/img', express.raw({ type: () => true, limit: MUSIC_MAX }), async 
 // manda o pedaço anterior + o atual. Aqui o ffmpeg junta os dois e corta os últimos 30 s
 // (sem recodificar, por isso é rápido). O clipe fica guardado como as fotos e vai para o chat.
 const CLIP_MAX = 80 * 1024 * 1024;
-const CLIP_SEG = 30; // segundos
+const CLIP_SEG = 30; // segundos (padrão)
+const CLIP_OPCOES = [30, 45, 60]; // quanto a pessoa pode escolher
+const CLIP_STORE_MAX = 40 * 1024 * 1024; // clipe de 1 min em 720p dá uns 20 MB
 let ffmpegBin = null;
 try { ffmpegBin = require('ffmpeg-static'); } catch { console.log('ffmpeg-static não instalado: clipes vão sem corte exato.'); }
 const clipUploads = new Map(); // usuário -> horários dos últimos clipes
@@ -251,7 +253,7 @@ function duracaoDoLog(log) {
   const m = /Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(log);
   return m ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) : 0;
 }
-async function cortaClipe(partes, ext) {
+async function cortaClipe(partes, ext, seg = CLIP_SEG) {
   const dir = await fsp.mkdtemp(path.join(osTmp, 'clip-'));
   try {
     const arquivos = [];
@@ -271,12 +273,12 @@ async function cortaClipe(partes, ext) {
     const saida = path.join(dir, `clipe.${ext}`);
     // -sseof -30: começa 30 s antes do fim (cai no quadro-chave anterior, então pode dar 30-33 s)
     const extra = ext === 'mp4' ? ['-movflags', '+faststart'] : [];
-    let r = await runFfmpeg(['-sseof', `-${CLIP_SEG}`, '-i', entrada, '-c', 'copy', '-avoid_negative_ts', 'make_zero', ...extra, saida]);
+    let r = await runFfmpeg(['-sseof', `-${seg}`, '-i', entrada, '-c', 'copy', '-avoid_negative_ts', 'make_zero', ...extra, saida]);
     if (!r.ok) r = await runFfmpeg(['-i', entrada, '-c', 'copy', ...extra, saida]); // último recurso: inteiro
     if (!r.ok) return null;
     const dados = await fsp.readFile(saida);
     const info = await runFfmpeg(['-i', saida, '-f', 'null', '-']);
-    return { dados, segundos: Math.round(duracaoDoLog(info.log)) || CLIP_SEG };
+    return { dados, segundos: Math.round(duracaoDoLog(info.log)) || seg };
   } finally {
     fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
   }
@@ -290,21 +292,25 @@ app.post('/api/clip', express.raw({ type: () => true, limit: CLIP_MAX }), async 
     const t = (clipUploads.get(u.id) || []).filter((x) => now - x < 60_000);
     if (t.length >= 4) return erro(res, 429, 'Calma! Espere um pouco antes do próximo clipe.');
     const corpo = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-    const prevLen = Math.max(0, Number(req.headers['x-prev-len'] || 0) | 0);
-    if (!corpo.length || prevLen > corpo.length) return erro(res, 400, 'Clipe vazio.');
-    const partes = prevLen ? [corpo.subarray(0, prevLen), corpo.subarray(prevLen)] : [corpo];
+    // Os pedaços vêm colados no corpo; o cabeçalho diz o tamanho de cada um (ex.: "1200,3400,900")
+    const tamanhos = String(req.headers['x-partes'] || '').split(',').map((x) => Number(x) | 0).filter((x) => x > 0);
+    const soma = tamanhos.reduce((a, b) => a + b, 0);
+    if (!corpo.length || !tamanhos.length || soma !== corpo.length) return erro(res, 400, 'Clipe vazio.');
+    const partes = []; let pos = 0;
+    for (const n of tamanhos) { partes.push(corpo.subarray(pos, pos + n)); pos += n; }
+    const seg = CLIP_OPCOES.includes(Number(req.headers['x-clip-seg'])) ? Number(req.headers['x-clip-seg']) : CLIP_SEG;
     const mp4 = corpo.length > 12 && corpo.toString('ascii', 4, 8) === 'ftyp';
     const ext = mp4 ? 'mp4' : 'webm';
     const quem = String(req.headers['x-clip-de'] || '').slice(0, 40);
     const sala = String(req.headers['x-clip-sala'] || '');
     t.push(now);
     clipUploads.set(u.id, t);
-    let dados = partes[partes.length - 1], segundos = CLIP_SEG;
+    let dados = partes[partes.length - 1], segundos = seg;
     if (ffmpegBin) {
-      const r = await cortaClipe(partes, ext);
+      const r = await cortaClipe(partes, ext, seg);
       if (r) { dados = r.dados; segundos = r.segundos; }
     }
-    if (dados.length > MUSIC_MAX) return erro(res, 413, 'O clipe ficou grande demais. Tente de novo com qualidade menor.');
+    if (dados.length > CLIP_STORE_MAX) return erro(res, 413, 'O clipe ficou grande demais. Tente um clipe mais curto.');
     const id = crypto.randomBytes(12).toString('base64url');
     await banco.addImg({ id, dono: u.id, mime: mp4 ? 'video/mp4' : 'video/webm', dados });
     // Vai para o chat da sala, como se a pessoa tivesse mandado

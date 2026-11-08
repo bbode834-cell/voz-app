@@ -978,3 +978,10 @@ body.has-media .watermark { display: none; }
 .clip-cap { font-size: 12px; color: var(--muted); margin-top: 4px; display: flex; gap: 10px; align-items: center; }
 .clip-cap a { color: var(--accent, #f5b82e); text-decoration: none; }
 .screen-card .screen-tools .clip-off[hidden] { display: none; }
+.clip-pop { position: absolute; z-index: 6; background: #1f2126; border: 1px solid #3a3d45; border-radius: 12px; padding: 8px; display: flex; flex-direction: column; gap: 6px; min-width: 220px; box-shadow: 0 8px 24px rgba(0,0,0,.6); }
+.clip-pop-t { font-size: 12px; color: var(--muted); padding: 0 4px 2px; }
+.clip-pop button { background: #2b2f38; color: #fff; border: 0; border-radius: 8px; padding: 8px 10px; font-size: 14px; cursor: pointer; text-align: left; }
+.clip-pop button.sel { outline: 2px solid var(--accent, #f5b82e); }
+.clip-pop button:hover:not(:disabled) { background: #3a3f4b; }
+.clip-pop button:disabled { opacity: .45; cursor: not-allowed; }
+.clip-pop button small { color: var(--muted); font-size: 11px; }
