@@ -2361,6 +2361,12 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Quem está com a câmera aberta pode espelhá-la para todo mundo (os outros veem invertida)
+  socket.on('cam-flip', ({ on } = {}) => {
+    const u = byId(socket.data.channel)?.users.get(socket.id);
+    if (u && !!u.camFlip !== !!on) { u.camFlip = !!on; broadcastChannels(); }
+  });
+
   // 🎵 Música: quem está tocando o som de uma aba para a chamada (o som vai direto entre os aparelhos)
   socket.on('music', ({ on } = {}) => {
     const u = byId(socket.data.channel)?.users.get(socket.id);

@@ -472,6 +472,8 @@ body.chat-open .quality > span { display: none; }
 @media (hover: none) { .mirror-btn { opacity: .75; } }
 .mirror-btn:hover { background: rgba(0,0,0,.85); }
 .tile .mirror-btn { left: auto; right: 8px; top: auto; bottom: 8px; }
+.tile .mirror-btn.flip-all { right: 42px; }
+.mirror-btn.flip-all.on { background: #f5b82e; color: #000; opacity: 1; }
 .cam-pip video { position: static !important; display: block; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
 /* Fileira com as câmeras dos outros por cima da transmissão */
 .cam-strip { position: absolute; left: 12px; bottom: 56px; z-index: 3; display: flex; gap: 6px; flex-wrap: wrap; max-width: 60%;

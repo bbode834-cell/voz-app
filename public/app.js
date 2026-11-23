@@ -1401,6 +1401,7 @@ async function toggleCam() {
   // A câmera vai separada da tela: não fica na frente do seu jogo, e quem assiste
   // vê ela dentro da transmissão e coloca onde quiser
   socket.emit('cam', { on: true });
+  if (camFlipTodos) socket.emit('cam-flip', { on: true });
   syncCamSenders();
   renderCams();
   renderControls();
@@ -1588,6 +1589,7 @@ function camFromFloating() {
   closeFloatingCam();
   if (camStream) {
     socket.emit('cam', { on: true });
+    if (camFlipTodos) socket.emit('cam-flip', { on: true });
     syncCamSenders();
   }
   renderCams();
@@ -1601,7 +1603,28 @@ const camVideos = new Map(); // id -> <video>
 // O botão ⇄ inverte isso para cada pessoa, e a escolha fica guardada neste navegador.
 let mirrorPref = store.get('voz-espelhar', {}) || {};
 function mirrorKey(id) { return id === selfId ? 'eu' : String(findUser(id)?.uid || id); }
-function isMirrored(id) { return (id === selfId) !== !!mirrorPref[mirrorKey(id)]; }
+// Base: a sua câmera espelhada, a dos outros do jeito que a pessoa mandou (ela pode ter espelhado para todos)
+function isMirrored(id) { const base = id === selfId ? true : !!findUser(id)?.camFlip; return base !== !!mirrorPref[mirrorKey(id)]; }
+// Espelhar a MINHA câmera para todo mundo (quem está com ela aberta decide)
+let camFlipTodos = store.get('voz-espelhar-todos', false) === true;
+function toggleCamFlipTodos() {
+  camFlipTodos = !camFlipTodos;
+  store.set('voz-espelhar-todos', camFlipTodos);
+  socket.emit('cam-flip', { on: camFlipTodos });
+  toast(camFlipTodos ? '⇄ Os outros agora veem sua câmera espelhada.' : 'Os outros veem sua câmera normal.');
+  renderCams();
+}
+const FLIP_ALL_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M8 8l-5 4 5 4"/><path d="M16 8l5 4-5 4"/><circle cx="19" cy="5" r="2.5"/><circle cx="5" cy="5" r="2.5"/></svg>';
+function flipAllButton() {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'mirror-btn flip-all' + (camFlipTodos ? ' on' : '');
+  b.title = camFlipTodos ? 'Os outros veem sua câmera espelhada (clique para desfazer)' : 'Espelhar sua câmera para todo mundo';
+  b.innerHTML = FLIP_ALL_SVG;
+  b.onclick = (e) => { e.stopPropagation(); toggleCamFlipTodos(); };
+  b.onpointerdown = (e) => e.stopPropagation();
+  return b;
+}
 function toggleMirror(id) {
   const k = mirrorKey(id);
   mirrorPref[k] = !mirrorPref[k];
@@ -5670,6 +5693,7 @@ function renderMain() {
       t.prepend(v);
       v.play().catch(() => {});
       t.appendChild(mirrorButton(u.id));
+      if (u.id === selfId) t.appendChild(flipAllButton());
     }
     tiles.appendChild(t);
   });
