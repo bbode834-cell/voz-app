@@ -610,6 +610,20 @@ app.post('/api/ajustes', async (req, res) => {
     erro(res, 500, 'Erro no servidor.');
   }
 });
+// Cenários do palco para o aplicativo (SVG pronto) e seus parâmetros
+const cenas = require('./public/cenas.js');
+app.get('/api/cenas', (req, res) => { res.set('Cache-Control', 'public, max-age=600'); res.json(cenas.cenasPublic()); });
+app.get('/cena/:tema.svg', (req, res) => {
+  const c = cenas.CENAS[req.params.tema];
+  if (!c) return res.status(404).end();
+  res.set('Content-Type', 'image/svg+xml').set('Cache-Control', 'public, max-age=86400');
+  res.send(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 640" preserveAspectRatio="xMidYMid slice">${c.svg(cenas.semente(String(req.query.s || 'app')))}</svg>`);
+});
+app.get('/assento/:tipo.svg', (req, res) => {
+  const cor = /^#[0-9a-f]{6}$/i.test(String(req.query.cor || '')) ? String(req.query.cor) : '#8b5cf6';
+  res.set('Content-Type', 'image/svg+xml').set('Cache-Control', 'public, max-age=86400');
+  res.send(cenas.assentoSVG(String(req.params.tipo), cor).replace('<svg ', '<svg xmlns="http://www.w3.org/2000/svg" '));
+});
 // Páginas de termos e privacidade também em endereços curtos
 app.get('/termos', (req, res) => res.sendFile(path.join(__dirname, 'public', 'termos.html')));
 app.get('/privacidade', (req, res) => res.sendFile(path.join(__dirname, 'public', 'privacidade.html')));

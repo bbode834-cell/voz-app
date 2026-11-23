@@ -336,9 +336,11 @@ svg { display: block; }
   grid-template-columns: 1fr; grid-auto-rows: minmax(0, 1fr);
 }
 .screens[hidden] { display: none; }
-.screens[data-count="2"] { grid-template-columns: 1fr 1fr; }
-.screens[data-count="3"], .screens[data-count="4"] { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
-.screens[data-count="5"], .screens[data-count="6"] { grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr 1fr; }
+/* as colunas acompanham o número real de transmissões na tela: nunca sobra coluna vazia */
+.screens[data-count="2"] { grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); }
+.screens[data-count="3"], .screens[data-count="4"] { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+.screens[data-count="5"], .screens[data-count="6"] { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+.screens[data-count="1"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
 @media (max-width: 720px) {
   .screens[data-count] { grid-template-columns: 1fr; grid-template-rows: none; grid-auto-rows: 220px; overflow-y: auto; }
 }
