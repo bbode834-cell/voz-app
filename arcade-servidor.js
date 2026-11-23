@@ -384,16 +384,19 @@ function jogadasPossiveis(hand, chain) {
   return out;
 }
 
-module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcastChannels, rank, RANK }) {
+module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcastChannels, rank, RANK, srvAtual, comSrv, srvDoPedido, emitSrv, servers }) {
   const MAX_SEATS = 4;
-  const arcade = { id: 'bot-arcade', name: 'Arcade King', avatar: 'p:arcade', room: null, game: null, seats: [null, null, null, null], started: false, state: null, timer: null };
-  const pub = () => ({ id: arcade.id, name: arcade.name, avatar: arcade.avatar, room: arcade.room });
+  // Um Arcade King por servidor (o servidor "atual" vem do contexto, ver server.js)
+  const arcades = new Map();
+  function A() { const k = srvAtual(); if (!arcades.has(k)) arcades.set(k, { id: 'bot-arcade', name: 'Arcade King', avatar: 'p:arcade', room: null, game: null, seats: [null, null, null, null], started: false, state: null, timer: null }); return arcades.get(k); }
+  const salaView = () => `arcade-view:${srvAtual()}`;
+  const pub = () => ({ id: A().id, name: A().name, avatar: A().avatar, room: A().room });
   // O dominó manda a mão de cada um só para ele: o snapshot público esconde as mãos
   const snapshot = (uid) => {
     let state = null;
-    if (arcade.state && arcade.game === 'sinuca') state = { ...arcade.state, balls: arcade.state.balls.map((b) => ({ id: b.id, x: Math.round(b.x * 10) / 10, y: Math.round(b.y * 10) / 10, in: b.in })) };
-    if (arcade.state && arcade.game === 'domino') {
-      const st = arcade.state;
+    if (A().state && A().game === 'sinuca') state = { ...arcade.state, balls: A().state.balls.map((b) => ({ id: b.id, x: Math.round(b.x * 10) / 10, y: Math.round(b.y * 10) / 10, in: b.in })) };
+    if (A().state && A().game === 'domino') {
+      const st = A().state;
       const seat = uid != null ? cadeira(uid) : -1;
       const counts = {};
       for (const c of st.ordem) counts[c] = st.hands[c].length;
@@ -401,13 +404,13 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
         hand: seat >= 0 ? st.hands[seat] : null, jogadas: seat >= 0 && st.phase === 'play' && st.turn === seat ? jogadasPossiveis(st.hands[seat], st.chain) : [],
         revel: st.phase === 'over' ? st.hands : null };
     }
-    if (arcade.state && arcade.game === 'luta') {
-      const st = arcade.state;
+    if (A().state && A().game === 'luta') {
+      const st = A().state;
       state = { ordem: st.ordem, phase: st.phase, pick: st.pick, ready: st.ready, arena: st.arena, round: st.round, wins: st.wins, winner: st.winner, msg: st.msg, roundWinner: st.roundWinner,
         frame: quadroLuta(st) };
     }
-    if (arcade.state && arcade.game === 'cartas') {
-      const st = arcade.state;
+    if (A().state && A().game === 'cartas') {
+      const st = A().state;
       const seat = uid != null ? cadeira(uid) : -1;
       const counts = {};
       for (const c of st.ordem) counts[c] = st.hands[c].length;
@@ -416,77 +419,80 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
         hand: seat >= 0 ? st.hands[seat] : null,
         jogaveis: seat >= 0 && st.phase === 'play' && st.turn === seat ? st.hands[seat].map((c, i) => (podeJogarCarta(c, st) && (st.drew == null || i === st.hands[seat].length - 1) ? i : -1)).filter((i) => i >= 0) : [] };
     }
-    return { id: arcade.id, name: arcade.name, avatar: arcade.avatar, room: arcade.room, game: arcade.game, seats: arcade.seats, started: arcade.started, state, W, H, R, POCKET_R, serverNow: Date.now(),
-      luta: arcade.game === 'luta' ? { lutadores: LUTADORES, arenas: ARENAS } : undefined };
+    return { id: A().id, name: A().name, avatar: A().avatar, room: A().room, game: A().game, seats: A().seats, started: A().started, state, W, H, R, POCKET_R, serverNow: Date.now(),
+      luta: A().game === 'luta' ? { lutadores: LUTADORES, arenas: ARENAS } : undefined };
   };
   const quadroLuta = (st) => (st.f ? { t: Math.round(st.t * 100) / 100, timer: Math.ceil(st.timer), cd: st.cdT ? Math.ceil(st.cdT) : 0, phase: st.phase,
     f: st.f.map((f) => ({ k: f.key, x: Math.round(f.x), y: Math.round(f.y), hp: Math.max(0, Math.round(f.hp)), hpMax: f.hpMax, en: Math.round(f.en), face: f.face, st: f.st, frozen: f.frozen > 0, slow: f.slow > 0, burn: f.burn > 0, invis: f.invis > 0, stun: f.stun > 0 })),
     proj: st.proj.map((p) => [p.tipo, Math.round(p.x), Math.round(p.y), p.vx > 0 ? 1 : -1]),
     fx: st.fx.filter((e) => e.tipo !== 'golpe').map((e) => [e.tipo, Math.round(e.x), Math.round((e.t) * 100) / 100, e.dmg || 0, Math.round(e.y || 0)]) } : null);
   function broadcast() {
-    if ((arcade.game === 'domino' || arcade.game === 'cartas') && arcade.state) {
-      for (const s of io.sockets.sockets.values()) s.emit('arcade', snapshot(s.data.user?.id));
-    } else io.emit('arcade', snapshot());
+    const srv = srvAtual();
+    if ((A().game === 'domino' || A().game === 'cartas') && A().state) {
+      for (const s of io.sockets.sockets.values()) if (s.data.user) emitSrvUm(s, srv, snapshot(s.data.user.id));
+    } else emitSrv(srv, 'arcade', snapshot());
   }
-  const naSala = (uid) => !!arcade.room && socketsOf(uid).some((s) => s.data.channel === arcade.room);
-  const cadeira = (uid) => arcade.seats.findIndex((s) => s && s.uid === uid);
+  // só para quem é membro do servidor
+  const emitSrvUm = (s, srv, dados) => { const sv = servers().get(srv); const u = s.data.user; if (!sv || !u) return; if (u.role === 'owner' || u.role === 'mod' || sv.dono === Number(u.id) || sv.membros.has(Number(u.id))) s.emit('arcade', { ...dados, srv }); };
+  const naSala = (uid) => !!A().room && socketsOf(uid).some((s) => s.data.channel === A().room);
+  const cadeira = (uid) => A().seats.findIndex((s) => s && s.uid === uid);
 
   function pararJogo() {
-    clearInterval(arcade.timer);
-    arcade.timer = null;
-    arcade.state = null;
-    arcade.game = null;
-    arcade.started = false;
-    arcade.seats = [null, null, null, null];
+    clearInterval(A().timer);
+    A().timer = null;
+    A().state = null;
+    A().game = null;
+    A().started = false;
+    A().seats = [null, null, null, null];
   }
-  const sentados = () => arcade.seats.filter(Boolean).length;
+  const sentados = () => A().seats.filter(Boolean).length;
   function encerra(msgFn) {
-    const st = arcade.state;
+    const st = A().state;
     if (!st || st.phase === 'over') return;
-    clearInterval(arcade.timer);
-    arcade.timer = null;
+    clearInterval(A().timer);
+    A().timer = null;
     st.phase = 'over';
     msgFn(st);
   }
   function voltarParaBots() {
     pararJogo();
-    arcade.room = null;
+    A().room = null;
     broadcast();
   }
   // Quem saiu da sala perde a cadeira
   function limpaCadeiras() {
     let mudou = false;
-    arcade.seats = arcade.seats.map((s) => {
+    A().seats = A().seats.map((s) => {
       if (s && !naSala(s.uid)) { mudou = true; return null; }
       return s;
     });
-    if (mudou && arcade.state && arcade.state.phase !== 'over') saiuDaPartida();
+    if (mudou && A().state && A().state.phase !== 'over') saiuDaPartida();
     return mudou;
   }
   // Alguém da partida saiu: tira da ordem; se sobrou um (ou um time), acabou
   function saiuDaPartida() {
-    const st = arcade.state;
+    const st = A().state;
     if (!st) return;
-    st.ordem = st.ordem.filter((c) => arcade.seats[c]);
-    if (arcade.game === 'sinuca') {
+    st.ordem = st.ordem.filter((c) => A().seats[c]);
+    if (A().game === 'sinuca') {
       const times = new Set(st.ordem.map(timeDe));
       if (times.size <= 1) encerra((s) => { s.winner = st.ordem.length ? timeDe(st.ordem[0]) : null; s.msg = st.ordem.length ? `${nomeTime(s.winner)} venceu (o adversário saiu).` : 'Todo mundo saiu da mesa.'; });
-      else if (!arcade.seats[st.turn]) { st.turn = st.ordem[0]; st.phase = st.phase === 'moving' ? 'moving' : 'aim'; }
-    } else if (arcade.game === 'luta') {
-      if (st.ordem.length <= 1) encerra((s) => { s.winner = st.ordem[0] ?? null; s.msg = st.ordem.length ? `${arcade.seats[st.ordem[0]].name} venceu (o rival saiu).` : 'Todo mundo saiu.'; });
-    } else if (arcade.game === 'domino' || arcade.game === 'cartas') {
-      if (st.ordem.length <= 1) encerra((s) => { s.winner = st.ordem[0] ?? null; s.msg = st.ordem.length ? `${arcade.seats[st.ordem[0]].name} venceu (os outros saíram).` : 'Todo mundo saiu.'; });
-      else if (!arcade.seats[st.turn]) st.turn = st.ordem[0];
+      else if (!A().seats[st.turn]) { st.turn = st.ordem[0]; st.phase = st.phase === 'moving' ? 'moving' : 'aim'; }
+    } else if (A().game === 'luta') {
+      if (st.ordem.length <= 1) encerra((s) => { s.winner = st.ordem[0] ?? null; s.msg = st.ordem.length ? `${A().seats[st.ordem[0]].name} venceu (o rival saiu).` : 'Todo mundo saiu.'; });
+    } else if (A().game === 'domino' || A().game === 'cartas') {
+      if (st.ordem.length <= 1) encerra((s) => { s.winner = st.ordem[0] ?? null; s.msg = st.ordem.length ? `${A().seats[st.ordem[0]].name} venceu (os outros saíram).` : 'Todo mundo saiu.'; });
+      else if (!A().seats[st.turn]) st.turn = st.ordem[0];
     }
   }
   const nomeTime = (t) => {
-    const ns = arcade.seats.map((s, i) => (s && timeDe(i) === t ? s.name : null)).filter(Boolean);
+    const ns = A().seats.map((s, i) => (s && timeDe(i) === t ? s.name : null)).filter(Boolean);
     return ns.length > 1 ? `Dupla ${ns.join(' e ')}` : ns[0] || `Time ${t + 1}`;
   }
 
   // ---- regras da sinuca ----
   function tacada(seat, angle, power) {
-    const st = arcade.state;
+    const st = A().state;
     const cue = st.balls.find((b) => b.id === 0);
     if (cue.in) { cue.in = false; cue.x = W * 0.25; cue.y = H / 2; }
     const p = Math.max(80, Math.min(MAX_POWER, Number(power) || 0));
@@ -498,29 +504,29 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
     st.msg = '';
     const ev = { pocketed: [], firstHit: null, cushion: false };
     const antes = st.balls.filter((b) => b.in).map((b) => b.id);
-    clearInterval(arcade.timer);
+    clearInterval(A().timer);
     let ticks = 0;
-    arcade.timer = setInterval(() => {
+    A().timer = setInterval(() => {
       // 120 passos/s de física, 24 quadros/s para a tela
       for (let i = 0; i < 5; i++) passo(st.balls, ev);
       ticks += 1;
       if (!emMovimento(st.balls) || ticks > 24 * 18) {
-        clearInterval(arcade.timer);
-        arcade.timer = null;
+        clearInterval(A().timer);
+        A().timer = null;
         for (const b of st.balls) { b.vx = 0; b.vy = 0; }
         resolveTacada(seat, ev, antes);
         broadcast();
         return;
       }
-      io.to('arcade-view').volatile.emit('arcade-balls', st.balls.filter((b) => !b.in).map((b) => [b.id, Math.round(b.x * 10) / 10, Math.round(b.y * 10) / 10]));
+      io.to(salaView()).volatile.emit('arcade-balls', st.balls.filter((b) => !b.in).map((b) => [b.id, Math.round(b.x * 10) / 10, Math.round(b.y * 10) / 10]));
     }, 1000 / 24);
   }
 
   function resolveTacada(seat, ev, antes) {
-    const st = arcade.state;
+    const st = A().state;
     const time = timeDe(seat);
     const outroTime = 1 - time;
-    const nome = (i) => arcade.seats[i]?.name || 'Jogador';
+    const nome = (i) => A().seats[i]?.name || 'Jogador';
     const novas = ev.pocketed.filter((id) => !antes.includes(id));
     const brancaCaiu = novas.includes(0);
     const oitoCaiu = novas.includes(8);
@@ -574,16 +580,16 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
 
   // ---- luta: laço de 30 quadros/s ----
   function comecaLuta() {
-    const st = arcade.state;
+    const st = A().state;
     iniciaRound(st);
-    clearInterval(arcade.timer);
+    clearInterval(A().timer);
     let last = Date.now();
-    arcade.timer = setInterval(() => {
+    A().timer = setInterval(() => {
       const now = Date.now();
       const dt = Math.min(0.05, (now - last) / 1000);
       last = now;
-      const st2 = arcade.state;
-      if (!st2 || arcade.game !== 'luta') { clearInterval(arcade.timer); arcade.timer = null; return; }
+      const st2 = A().state;
+      if (!st2 || A().game !== 'luta') { clearInterval(A().timer); A().timer = null; return; }
       if (st2.phase === 'roundEnd') {
         st2.cdT -= dt;
         if (st2.cdT <= 0) {
@@ -591,8 +597,8 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
             st2.phase = 'over';
             const v = st2.wins[0] === st2.wins[1] ? null : st2.wins[0] > st2.wins[1] ? 0 : 1;
             st2.winner = v == null ? null : st2.ordem[v];
-            st2.msg = v == null ? 'Empate!' : `🏆 ${arcade.seats[st2.ordem[v]]?.name || 'Alguém'} venceu a luta!`;
-            clearInterval(arcade.timer); arcade.timer = null;
+            st2.msg = v == null ? 'Empate!' : `🏆 ${A().seats[st2.ordem[v]]?.name || 'Alguém'} venceu a luta!`;
+            clearInterval(A().timer); A().timer = null;
             broadcast();
             return;
           }
@@ -600,7 +606,7 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
           iniciaRound(st2);
           broadcast();
         }
-        io.to('arcade-view').volatile.emit('arcade-luta', quadroLuta(st2));
+        io.to(salaView()).volatile.emit('arcade-luta', quadroLuta(st2));
         return;
       }
       const fase = st2.phase;
@@ -609,11 +615,11 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
       if (st2.phase !== fase) {
         if (st2.phase === 'roundEnd') {
           const rw = st2.roundWinner;
-          st2.msg = rw < 0 ? 'Empate no round!' : `${arcade.seats[st2.ordem[rw]]?.name || 'Alguém'} venceu o round ${st2.round}!`;
+          st2.msg = rw < 0 ? 'Empate no round!' : `${A().seats[st2.ordem[rw]]?.name || 'Alguém'} venceu o round ${st2.round}!`;
         }
         broadcast();
       }
-      io.to('arcade-view').volatile.emit('arcade-luta', quadroLuta(st2));
+      io.to(salaView()).volatile.emit('arcade-luta', quadroLuta(st2));
       if (acabou) broadcast();
     }, 1000 / 30);
   }
@@ -628,8 +634,8 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
     return c;
   }
   function jogaCarta(seat, idx, cor) {
-    const st = arcade.state;
-    const nome = (i) => arcade.seats[i]?.name || 'Jogador';
+    const st = A().state;
+    const nome = (i) => A().seats[i]?.name || 'Jogador';
     const hand = st.hands[seat];
     const carta = hand[idx];
     if (!carta) return 'Carta inválida.';
@@ -672,8 +678,8 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
     return null;
   }
   function compraVez(seat) {
-    const st = arcade.state;
-    const nome = (i) => arcade.seats[i]?.name || 'Jogador';
+    const st = A().state;
+    const nome = (i) => A().seats[i]?.name || 'Jogador';
     if (st.drew === seat) {
       // já comprou e não quer/pode jogar: passa
       st.drew = null;
@@ -691,28 +697,28 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
     return null;
   }
   function gritaUno(seat) {
-    const st = arcade.state;
+    const st = A().state;
     if (st.hands[seat].length > 2) return 'Só dá para gritar UNO com 1 carta (ou prestes a ficar com 1).';
     st.uno[seat] = true;
     if (st.unoPend && st.unoPend.seat === seat) st.unoPend = null;
-    st.msg = `${arcade.seats[seat].name}: UNO! 🗣️`;
+    st.msg = `${A().seats[seat].name}: UNO! 🗣️`;
     return null;
   }
   function pegouUno(seat) {
-    const st = arcade.state;
+    const st = A().state;
     const p = st.unoPend;
     if (!p || p.seat === seat) return 'Ninguém para pegar agora.';
     if (st.hands[p.seat].length !== 1) { st.unoPend = null; return 'Já passou.'; }
     compraCartas(st, p.seat, 2);
     st.unoPend = null;
-    st.msg = `😅 ${arcade.seats[p.seat].name} esqueceu de gritar UNO e comprou 2 (${arcade.seats[seat].name} pegou).`;
+    st.msg = `😅 ${A().seats[p.seat].name} esqueceu de gritar UNO e comprou 2 (${A().seats[seat].name} pegou).`;
     return null;
   }
 
   // ---- dominó ----
   function jogaDomino(seat, idx, lado) {
-    const st = arcade.state;
-    const nome = (i) => arcade.seats[i]?.name || 'Jogador';
+    const st = A().state;
+    const nome = (i) => A().seats[i]?.name || 'Jogador';
     const hand = st.hands[seat];
     const pos = jogadasPossiveis(hand, st.chain).find((j) => j.i === idx);
     if (!pos) return 'Essa pedra não encaixa.';
@@ -735,8 +741,8 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
     return null;
   }
   function passaDomino(seat) {
-    const st = arcade.state;
-    const nome = (i) => arcade.seats[i]?.name || 'Jogador';
+    const st = A().state;
+    const nome = (i) => A().seats[i]?.name || 'Jogador';
     if (jogadasPossiveis(st.hands[seat], st.chain).length) return 'Você tem pedra para jogar.';
     if (st.monte.length) {
       st.hands[seat].push(st.monte.pop());
@@ -763,15 +769,16 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
   io.on('connection', (socket) => {
     const me = () => socket.data.user;
     const isMod = () => RANK[me().role] >= RANK.mod;
-    socket.emit('arcade', snapshot(me().id));
     const pode = () => isMod() || naSala(me().id);
+    // cada evento arcade-* roda no contexto do servidor do pedido
+    const on = (ev, h) => socket.on(ev, (dados, ack) => comSrv(srvDoPedido(socket, dados), () => h(dados, ack)));
     // A tela do jogo avisa que quer receber as bolas em movimento
-    socket.on('arcade-hello', () => socket.join('arcade-view'));
+    on('arcade-hello', () => socket.join(salaView()));
 
-    socket.on('arcade-move', ({ to } = {}, ack = () => {}) => {
+    on('arcade-move', ({ to } = {}, ack = () => {}) => {
       if (to === BOTS_ROOM || to == null) {
-        if (!pode() && arcade.room) return ack({ error: 'Só quem está na chamada com o Arcade pode devolver ele.' });
-        const from = arcade.room;
+        if (!pode() && A().room) return ack({ error: 'Só quem está na chamada com o Arcade pode devolver ele.' });
+        const from = A().room;
         voltarParaBots();
         ack({ ok: true });
         broadcastChannels();
@@ -781,9 +788,9 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
       const ch = byId(to);
       if (!ch) return ack({ error: 'Sala não encontrada.' });
       if (socket.data.channel !== ch.id && !naSala(me().id) && !isMod()) return ack({ error: 'Entre na chamada primeiro e puxe o Arcade para ela.' });
-      const from = arcade.room;
+      const from = A().room;
       if (from !== ch.id) pararJogo();
-      arcade.room = ch.id;
+      A().room = ch.id;
       ack({ ok: true });
       broadcastChannels();
       broadcast();
@@ -792,65 +799,65 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
     });
 
     // Escolher o jogo (por enquanto só sinuca) e sentar/levantar
-    socket.on('arcade-game', ({ game } = {}, ack = () => {}) => {
+    on('arcade-game', ({ game } = {}, ack = () => {}) => {
       if (!pode()) return ack({ error: 'Puxe o Arcade King para a sua chamada primeiro.' });
       if (game == null) { pararJogo(); ack({ ok: true }); broadcast(); return; } // volta para a escolha de jogo
       if (!['sinuca', 'domino', 'cartas', 'luta'].includes(game)) return ack({ error: 'Jogo desconhecido.' });
       pararJogo();
-      arcade.game = game;
+      A().game = game;
       ack({ ok: true });
       broadcast();
     });
     // Começar a partida (qualquer um sentado, com 2+ sentados)
-    socket.on('arcade-start', (_d, ack = () => {}) => {
-      if (!arcade.game) return ack({ error: 'Escolha um jogo.' });
+    on('arcade-start', (_d, ack = () => {}) => {
+      if (!A().game) return ack({ error: 'Escolha um jogo.' });
       limpaCadeiras();
       if (cadeira(me().id) < 0 && !isMod()) return ack({ error: 'Sente na mesa para começar.' });
       if (sentados() < 2) return ack({ error: 'Precisa de pelo menos 2 jogadores.' });
-      if (arcade.state && arcade.state.phase !== 'over') return ack({ error: 'A partida já está rolando.' });
-      arcade.started = true;
-      arcade.state = arcade.game === 'sinuca' ? novoJogo(arcade.seats) : arcade.game === 'cartas' ? novoCartas(arcade.seats) : arcade.game === 'luta' ? novaLuta(arcade.seats) : novoDomino(arcade.seats);
-      if (arcade.game === 'domino') arcade.state.msg = arcade.state.msg.replace('%NOME%', arcade.seats[arcade.state.turn].name);
+      if (A().state && A().state.phase !== 'over') return ack({ error: 'A partida já está rolando.' });
+      A().started = true;
+      A().state = A().game === 'sinuca' ? novoJogo(A().seats) : A().game === 'cartas' ? novoCartas(A().seats) : A().game === 'luta' ? novaLuta(A().seats) : novoDomino(A().seats);
+      if (A().game === 'domino') A().state.msg = A().state.msg.replace('%NOME%', A().seats[A().state.turn].name);
       ack({ ok: true });
       broadcast();
     });
-    socket.on('arcade-sit', (_d, ack = () => {}) => {
+    on('arcade-sit', (_d, ack = () => {}) => {
       if (!naSala(me().id)) return ack({ error: 'Entre na chamada com o Arcade para jogar.' });
-      if (!arcade.game) return ack({ error: 'Escolha um jogo primeiro.' });
+      if (!A().game) return ack({ error: 'Escolha um jogo primeiro.' });
       limpaCadeiras();
       if (cadeira(me().id) >= 0) return ack({ ok: true });
-      if (arcade.state && arcade.state.phase !== 'over') return ack({ error: 'A partida já começou. Espere acabar para entrar.' });
-      const livre = arcade.seats.findIndex((s) => !s);
+      if (A().state && A().state.phase !== 'over') return ack({ error: 'A partida já começou. Espere acabar para entrar.' });
+      const livre = A().seats.findIndex((s) => !s);
       if (livre < 0) return ack({ error: 'A mesa está cheia (4 jogadores).' });
-      if (arcade.game === 'luta' && sentados() >= 2) return ack({ error: 'A luta é 1x1: as duas cadeiras já estão ocupadas.' });
-      arcade.seats[livre] = { uid: me().id, name: me().name, avatar: me().avatar };
+      if (A().game === 'luta' && sentados() >= 2) return ack({ error: 'A luta é 1x1: as duas cadeiras já estão ocupadas.' });
+      A().seats[livre] = { uid: me().id, name: me().name, avatar: me().avatar };
       ack({ ok: true });
       broadcast();
     });
-    socket.on('arcade-stand', (_d, ack = () => {}) => {
+    on('arcade-stand', (_d, ack = () => {}) => {
       const i = cadeira(me().id);
       if (i < 0) return ack({ ok: true });
-      arcade.seats[i] = null;
-      if (arcade.state && arcade.state.phase !== 'over') saiuDaPartida();
+      A().seats[i] = null;
+      if (A().state && A().state.phase !== 'over') saiuDaPartida();
       ack({ ok: true });
       broadcast();
     });
-    socket.on('arcade-reset', (_d, ack = () => {}) => {
+    on('arcade-reset', (_d, ack = () => {}) => {
       if (!pode()) return ack({ error: 'Só quem está na chamada pode reiniciar.' });
-      if (!arcade.game) return ack({ error: 'Escolha um jogo.' });
-      clearInterval(arcade.timer);
-      arcade.timer = null;
+      if (!A().game) return ack({ error: 'Escolha um jogo.' });
+      clearInterval(A().timer);
+      A().timer = null;
       limpaCadeiras();
-      if (sentados() < 2) { arcade.state = null; arcade.started = false; ack({ ok: true }); broadcast(); return; }
-      arcade.state = arcade.game === 'sinuca' ? novoJogo(arcade.seats) : arcade.game === 'cartas' ? novoCartas(arcade.seats) : arcade.game === 'luta' ? novaLuta(arcade.seats) : novoDomino(arcade.seats);
-      if (arcade.game === 'domino') arcade.state.msg = arcade.state.msg.replace('%NOME%', arcade.seats[arcade.state.turn].name);
+      if (sentados() < 2) { A().state = null; A().started = false; ack({ ok: true }); broadcast(); return; }
+      A().state = A().game === 'sinuca' ? novoJogo(A().seats) : A().game === 'cartas' ? novoCartas(A().seats) : A().game === 'luta' ? novaLuta(A().seats) : novoDomino(A().seats);
+      if (A().game === 'domino') A().state.msg = A().state.msg.replace('%NOME%', A().seats[A().state.turn].name);
       ack({ ok: true });
       broadcast();
     });
     // Luta: escolhas e botões
-    socket.on('arcade-luta', ({ action, pick, arena, inp } = {}, ack = () => {}) => {
-      const st = arcade.state;
-      if (!st || arcade.game !== 'luta') return ack({ error: 'Sem jogo.' });
+    on('arcade-luta', ({ action, pick, arena, inp } = {}, ack = () => {}) => {
+      const st = A().state;
+      if (!st || A().game !== 'luta') return ack({ error: 'Sem jogo.' });
       const seat = cadeira(me().id);
       const idx = st.ordem.indexOf(seat);
       if (idx < 0) return ack({ error: 'Você está só assistindo (a luta é 1x1).' });
@@ -881,9 +888,9 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
       broadcast();
     });
     // Cartas: { action: 'play'|'draw'|'uno'|'pegou', i, cor }
-    socket.on('arcade-cartas', ({ action, i, cor } = {}, ack = () => {}) => {
-      const st = arcade.state;
-      if (!st || arcade.game !== 'cartas') return ack({ error: 'Sem jogo.' });
+    on('arcade-cartas', ({ action, i, cor } = {}, ack = () => {}) => {
+      const st = A().state;
+      if (!st || A().game !== 'cartas') return ack({ error: 'Sem jogo.' });
       limpaCadeiras();
       const seat = cadeira(me().id);
       if (seat < 0) return ack({ error: 'Você está só assistindo.' });
@@ -899,9 +906,9 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
       broadcast();
     });
     // Dominó: jogar { i, lado } e passar/comprar
-    socket.on('arcade-domino', ({ action, i, lado } = {}, ack = () => {}) => {
-      const st = arcade.state;
-      if (!st || arcade.game !== 'domino') return ack({ error: 'Sem jogo.' });
+    on('arcade-domino', ({ action, i, lado } = {}, ack = () => {}) => {
+      const st = A().state;
+      if (!st || A().game !== 'domino') return ack({ error: 'Sem jogo.' });
       limpaCadeiras();
       const seat = cadeira(me().id);
       if (seat < 0) return ack({ error: 'Você está só assistindo.' });
@@ -913,9 +920,9 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
       broadcast();
     });
     // Tacada: { angle (rad), power (0..1) }
-    socket.on('arcade-shot', ({ angle, power } = {}, ack = () => {}) => {
-      const st = arcade.state;
-      if (!st || arcade.game !== 'sinuca') return ack({ error: 'Sem jogo.' });
+    on('arcade-shot', ({ angle, power } = {}, ack = () => {}) => {
+      const st = A().state;
+      if (!st || A().game !== 'sinuca') return ack({ error: 'Sem jogo.' });
       limpaCadeiras();
       const i = cadeira(me().id);
       if (i < 0) return ack({ error: 'Você está só assistindo. Toque em "Jogar" para sentar.' });
@@ -929,9 +936,9 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
       broadcast();
     });
     // Bola na mão: { x, y }
-    socket.on('arcade-place', ({ x, y } = {}, ack = () => {}) => {
-      const st = arcade.state;
-      if (!st || arcade.game !== 'sinuca') return ack({ error: 'Sem jogo.' });
+    on('arcade-place', ({ x, y } = {}, ack = () => {}) => {
+      const st = A().state;
+      if (!st || A().game !== 'sinuca') return ack({ error: 'Sem jogo.' });
       const i = cadeira(me().id);
       if (i < 0 || st.turn !== i || st.phase !== 'aim' || !st.inHand) return ack({ error: 'Agora não dá para mover a branca.' });
       const cue = st.balls.find((b) => b.id === 0);
@@ -946,11 +953,14 @@ module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcas
 
   return {
     pub,
-    onLeave(chId, usersLeft) {
-      if (arcade.room !== chId) return;
-      if (usersLeft === 0) { voltarParaBots(); return; }
-      if (limpaCadeiras()) broadcast();
+    mandaEstado(socket, srv) { comSrv(srv, () => socket.emit('arcade', { ...snapshot(socket.data.user?.id), srv })); },
+    onLeave(chId, usersLeft, srv) {
+      comSrv(srv || byId(chId)?.srv, () => {
+        if (A().room !== chId) return;
+        if (usersLeft === 0) { voltarParaBots(); return; }
+        if (limpaCadeiras()) broadcast();
+      });
     },
-    onChannelDeleted(chId) { if (arcade.room === chId) voltarParaBots(); },
+    onChannelDeleted(chId, srv) { comSrv(srv || byId(chId)?.srv, () => { if (A().room === chId) voltarParaBots(); }); },
   };
 };

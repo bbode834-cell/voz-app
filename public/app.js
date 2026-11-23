@@ -15,6 +15,32 @@ const $ = (s) => document.querySelector(s);
 // Só conecta depois do login (o servidor confere o "crachá" de acesso)
 let authToken = null;
 const socket = io({ autoConnect: false, auth: (cb) => cb({ token: authToken }) });
+// Cada servidor tem os próprios bots: todo pedido de DJ/TV/Arcade leva o servidor atual
+{
+  const _emit = socket.emit.bind(socket);
+  socket.emit = (ev, ...args) => {
+    if (/^(dj|tv|arcade)-/.test(ev) && typeof currentServer !== 'undefined' && currentServer) {
+      if (args.length && args[0] && typeof args[0] === 'object' && !Array.isArray(args[0])) args[0] = { ...args[0], srv: currentServer };
+      else if (!args.length || typeof args[0] === 'function') args.unshift({ srv: currentServer });
+    }
+    return _emit(ev, ...args);
+  };
+}
+// Estado dos bots de cada servidor (o da tela é o do servidor atual)
+const botsPorSrv = {};
+function guardaBot(tipo, st) {
+  if (!st || !st.srv) return true;
+  (botsPorSrv[st.srv] ||= {})[tipo] = st;
+  return st.srv === currentServer;
+}
+let botsSrvAplicado = null;
+function aplicaBotsDoServidor() {
+  if (!currentServer || botsSrvAplicado === currentServer) return;
+  botsSrvAplicado = currentServer;
+  const b = botsPorSrv[currentServer];
+  if (!b || !b.dj || !b.tv || !b.arcade) socket.emit('bots-get', { srv: currentServer });
+  for (const tipo of ['dj', 'tv', 'arcade']) if (b && b[tipo]) socket.listeners(tipo).forEach((fn) => fn(b[tipo]));
+}
 
 // ---------- Ícones ----------
 const svg = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
@@ -1897,6 +1923,7 @@ function escolheServidor(id, { silencioso = false } = {}) {
   currentServer = id;
   store.set('voz-servidor', id);
   closeTextRoom();
+  aplicaBotsDoServidor();
   renderAll();
   if (!silencioso) toast(`🏰 ${srvOf(id).nome}`);
 }
@@ -1911,6 +1938,7 @@ socket.on('channels', (data) => {
   const daSala = currentChannel && channelsState.find((c) => c.id === currentChannel)?.srv;
   if (daSala && daSala !== currentServer) { currentServer = daSala; store.set('voz-servidor', daSala); }
   if (!srvOf(currentServer)) { currentServer = serversState[0]?.id || null; if (currentServer) store.set('voz-servidor', currentServer); }
+  aplicaBotsDoServidor();
   if (textRoom && !channelsState.some((c) => c.id === textRoom)) closeTextRoom();
   botInfo = data.bot || botInfo;
   const saved = store.get('voz-canais', null);
@@ -2955,6 +2983,7 @@ const djUrl = (t) => (t.url.startsWith('/') ? location.origin + t.url : t.url);
 const fmtDur = (s) => (s == null || !isFinite(s) ? '' : `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`);
 
 socket.on('dj', (st) => {
+  if (!guardaBot('dj', st)) return;
   dj = st;
   djClock = Date.now() - (st.serverNow || Date.now());
   syncDjAudio();
@@ -3405,6 +3434,7 @@ const PAISES = { BR: 'Brasil', PT: 'Portugal', US: 'Estados Unidos', AR: 'Argent
 const nomePais = (cc) => PAISES[cc] || cc || 'Outros';
 
 socket.on('tv', (st) => {
+  if (!guardaBot('tv', st)) return;
   tv = st;
   syncTv();
   renderTv();
@@ -3554,7 +3584,7 @@ $('#tv-results').addEventListener('click', async (e) => {
 // ---------- 🕹️ Arcade King (mini-jogos) ----------
 let arcade = null;
 const arcadeHere = () => !!(arcade && currentChannel && arcade.room === currentChannel);
-socket.on('arcade', (st) => { arcade = st; renderArcade(); renderChannels(); });
+socket.on('arcade', (st) => { if (!guardaBot('arcade', st)) return; arcade = st; renderArcade(); renderChannels(); });
 async function arcadeMove(to) {
   if (!to) return toast('Entre numa sala primeiro, depois chame o Arcade.');
   const r = await emitAck('arcade-move', { to });
@@ -5848,8 +5878,8 @@ function animaReacao({ tipo, de, alvo }) {
       for (let i = 0; i < n; i++) {
         const p = document.createElement('span');
         p.className = 'reacao pedaco';
-        p.textContent = tipo === 'tomate' ? (i % 3 === 0 ? '🍅' : '🔴') : '🍿';
-        if (tipo === 'tomate' && i % 3 !== 0) p.classList.add('gota');
+        if (tipo === 'tomate') { p.textContent = i % 3 === 0 ? '🍅' : '🔴'; if (i % 3 !== 0) p.classList.add('gota'); }
+        else { p.classList.add('kernel', `k${i % 4}`); } // pipoca estourada: grãozinhos brancos, não saquinhos
         camada.appendChild(p);
         const ang = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 1.3, vel = 60 + Math.random() * 90;
         const vx = Math.cos(ang) * vel, vy = Math.sin(ang) * vel, g = 260, T = 0.9 + Math.random() * 0.4;

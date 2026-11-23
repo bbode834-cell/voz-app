@@ -1601,3 +1601,9 @@ body.app #secure-warning { display: none; }
 #stage:fullscreen .cinema { width: min(100%, calc(100vh * 1000 / 640)); max-height: 100vh; border-radius: 0; border: 0; margin: 0 auto; }
 #stage:fullscreen .main-header { display: none; }
 .fs-btn { font-weight: 800; }
+
+/* grão de pipoca estourada (estouro do 🍿) */
+#reacoes .kernel { width: 13px; height: 12px; margin: -6px 0 0 -6px; border-radius: 55% 45% 50% 50% / 60% 55% 45% 40%; background: radial-gradient(circle at 35% 30%, #fffdf5, #f7edc8 55%, #e8d49a); box-shadow: 0 1px 2px rgba(0,0,0,.5), inset -2px -2px 3px rgba(190,160,90,.6); }
+#reacoes .kernel.k1 { width: 10px; height: 11px; border-radius: 45% 55% 40% 60% / 50% 40% 60% 50%; }
+#reacoes .kernel.k2 { width: 14px; height: 10px; border-radius: 60% 40% 55% 45% / 40% 60% 40% 60%; }
+#reacoes .kernel.k3 { width: 11px; height: 13px; border-radius: 50% 50% 45% 55% / 55% 45% 60% 40%; background: radial-gradient(circle at 40% 35%, #fffdf5, #f3e3b0 60%, #d9c27f); }

@@ -921,17 +921,34 @@ async function montaFaixa(item, by) {
 // Fica na sala "Bots". Quem está numa chamada puxa ele para lá; o que ele toca cada
 // aparelho reproduz sozinho (o som não passa pelo servidor), todos no mesmo ponto.
 const BOTS_ROOM = 'bots';
-const dj = {
-  id: 'bot-dj',
-  name: 'DJ King',
-  avatar: 'p:robo',
-  room: null, // null = sala dos Bots; senão o id do canal
-  queue: [], // próximas: { key, kind, url, title, artist, art, duration }
-  now: null, // tocando: { ...faixa, startedAt (ms, quando o "0:00" começou), pausedAt (ms | null) }
-  timer: null,
-  history: [], // as últimas que tocaram (mais recente no fim), para o botão ⏮
-  repeat: 'off', // 'off' | 'all' (a fila gira) | 'one' (repete a música atual)
-};
+// Cada servidor (comunidade) tem os seus próprios bots. O "servidor atual" de uma operação
+// vem do contexto assíncrono (AsyncLocalStorage): os eventos dj-*/tv-*/arcade-* rodam dentro
+// dele, e os timers que eles disparam herdam o mesmo contexto.
+const { AsyncLocalStorage } = require('async_hooks');
+const botCtx = new AsyncLocalStorage();
+const srvAtual = () => botCtx.getStore() || SRV_MAIN;
+const comSrv = (srv, fn) => botCtx.run(String(srv || SRV_MAIN), fn);
+// servidor de um pedido: o que o cliente mandou (srv), senão o da sala em que a pessoa está
+const srvDoPedido = (socket, dados) => (dados && typeof dados === 'object' && dados.srv && servers.has(String(dados.srv))) ? String(dados.srv) : (byId(socket.data.channel)?.srv || socket.data.srv || SRV_MAIN);
+// manda o estado de um bot só para quem é membro do servidor dele
+function emitSrv(srv, evento, dados) {
+  for (const s of io.sockets.sockets.values()) if (s.data.user && ehMembro(srv, s.data.user)) s.emit(evento, { ...dados, srv });
+}
+const djs = new Map(); // srvId -> estado do DJ
+function novoDj() {
+  return {
+    id: 'bot-dj',
+    name: 'DJ King',
+    avatar: 'p:robo',
+    room: null, // null = sala dos Bots; senão o id do canal
+    queue: [], // próximas: { key, kind, url, title, artist, art, duration }
+    now: null, // tocando: { ...faixa, startedAt (ms, quando o "0:00" começou), pausedAt (ms | null) }
+    timer: null,
+    history: [], // as últimas que tocaram (mais recente no fim), para o botão ⏮
+    repeat: 'off', // 'off' | 'all' (a fila gira) | 'one' (repete a música atual)
+  };
+}
+function DJ() { const k = srvAtual(); if (!djs.has(k)) djs.set(k, novoDj()); return djs.get(k); }
 const DJ_HIST_MAX = 30;
 // Uma faixa para tocar de novo: ganha chave nova para todo aparelho recarregar do zero
 function djDeNovo(t) {
@@ -940,80 +957,80 @@ function djDeNovo(t) {
 }
 let djSeq = 0;
 function djPublic() {
-  return { id: dj.id, name: dj.name, avatar: dj.avatar, room: dj.room };
+  return { id: DJ().id, name: DJ().name, avatar: DJ().avatar, room: DJ().room };
 }
 function djState() {
-  const { timer, ...rest } = dj;
+  const { timer, ...rest } = DJ();
   return { ...rest, serverNow: Date.now() };
 }
-function broadcastDj() { io.emit('dj', djState()); }
+function broadcastDj() { emitSrv(srvAtual(), 'dj', djState()); }
 function djStop() {
-  clearTimeout(dj.timer);
-  dj.timer = null;
+  clearTimeout(DJ().timer);
+  DJ().timer = null;
 }
 // Toca a próxima da fila (ou para, se acabou)
 function djNext({ natural = false } = {}) {
   djStop();
-  const acabou = dj.now;
+  const acabou = DJ().now;
   if (acabou) {
     // Repetir uma: toca a mesma de novo (só quando acabou sozinha, não quando alguém pula)
-    if (natural && dj.repeat === 'one') {
-      dj.now = { ...djDeNovo(acabou), startedAt: Date.now(), pausedAt: null };
+    if (natural && DJ().repeat === 'one') {
+      DJ().now = { ...djDeNovo(acabou), startedAt: Date.now(), pausedAt: null };
       djArmTimer();
       broadcastDj();
       return;
     }
-    dj.history.push(djDeNovo(acabou));
-    while (dj.history.length > DJ_HIST_MAX) dj.history.shift();
+    DJ().history.push(djDeNovo(acabou));
+    while (DJ().history.length > DJ_HIST_MAX) DJ().history.shift();
     // Repetir todas: a música que acabou volta para o fim da fila
-    if (dj.repeat === 'all') dj.queue.push(djDeNovo(acabou));
+    if (DJ().repeat === 'all') DJ().queue.push(djDeNovo(acabou));
   }
-  const t = dj.queue.shift();
-  if (!t) { dj.now = null; broadcastDj(); return; }
-  dj.now = { ...t, startedAt: Date.now(), pausedAt: null };
+  const t = DJ().queue.shift();
+  if (!t) { DJ().now = null; broadcastDj(); return; }
+  DJ().now = { ...t, startedAt: Date.now(), pausedAt: null };
   djArmTimer();
   broadcastDj();
 }
 // Posição atual (segundos) da música que está tocando
 function djPos() {
-  const n = dj.now;
+  const n = DJ().now;
   if (!n) return 0;
   return ((n.pausedAt || Date.now()) - n.startedAt) / 1000;
 }
 // ⏮ Voltar: com mais de 4 s tocando, recomeça a atual; senão volta para a anterior
 function djVoltar() {
-  const n = dj.now;
+  const n = DJ().now;
   if (n && n.kind === 'yt' && n.list && n.index > 0 && djPos() < 4) {
     n.index -= 1; n.startedAt = Date.now(); n.pausedAt = null; n.nowTitle = ''; n.nowVideo = '';
     broadcastDj();
     return;
   }
-  if (n && (djPos() >= 4 || !dj.history.length)) {
+  if (n && (djPos() >= 4 || !DJ().history.length)) {
     djStop();
-    dj.now = { ...djDeNovo(n), ...(n.list ? { index: n.index } : {}), startedAt: Date.now(), pausedAt: null };
+    DJ().now = { ...djDeNovo(n), ...(n.list ? { index: n.index } : {}), startedAt: Date.now(), pausedAt: null };
     djArmTimer();
     broadcastDj();
     return;
   }
-  const ant = dj.history.pop();
+  const ant = DJ().history.pop();
   if (!ant) return;
   djStop();
-  if (n) dj.queue.unshift(djDeNovo(n)); // a atual volta para o começo da fila
-  dj.now = { ...ant, startedAt: Date.now(), pausedAt: null };
+  if (n) DJ().queue.unshift(djDeNovo(n)); // a atual volta para o começo da fila
+  DJ().now = { ...ant, startedAt: Date.now(), pausedAt: null };
   djArmTimer();
   broadcastDj();
 }
 // Quando a música deve acabar (se a duração é conhecida), passa para a próxima sozinho
 function djArmTimer() {
   djStop();
-  const n = dj.now;
+  const n = DJ().now;
   if (!n || n.pausedAt || !n.duration) return;
   const left = n.duration * 1000 - (Date.now() - n.startedAt);
-  dj.timer = setTimeout(() => djNext({ natural: true }), Math.max(500, left + 1500));
+  DJ().timer = setTimeout(() => djNext({ natural: true }), Math.max(500, left + 1500));
 }
 // Playlist do YouTube: passa para o próximo vídeo dela (ou para a próxima da fila, se acabou)
 function djAvanca({ natural = false } = {}) {
-  const n = dj.now;
+  const n = DJ().now;
   if (n && n.kind === 'yt' && n.list && (n.count == null || n.index + 1 < n.count)) {
     n.index += 1;
     n.startedAt = Date.now();
@@ -1026,13 +1043,13 @@ function djAvanca({ natural = false } = {}) {
   djNext({ natural });
 }
 function djPause() {
-  const n = dj.now;
+  const n = DJ().now;
   if (!n || n.pausedAt) return;
   n.pausedAt = Date.now();
   djStop();
 }
 function djResume() {
-  const n = dj.now;
+  const n = DJ().now;
   if (!n || !n.pausedAt) return;
   n.startedAt += Date.now() - n.pausedAt;
   n.pausedAt = null;
@@ -1176,12 +1193,13 @@ const tvPublicItem = (i) => ({ id: i.id, name: i.name, country: i.country, cats:
 setTimeout(() => carregaTv(), 3000);
 setInterval(() => carregaTv(), 12 * 60 * 60 * 1000);
 
-const tv = { id: 'bot-tv', name: 'TV King', avatar: 'p:tv', room: null, channel: null, since: 0 };
-function tvPublic() { return { id: tv.id, name: tv.name, avatar: tv.avatar, room: tv.room }; }
-function tvState() { return { id: tv.id, name: tv.name, avatar: tv.avatar, room: tv.room, channel: tv.channel ? tvPublicItem(tv.channel) : null, since: tv.since, serverNow: Date.now() }; }
-function broadcastTv() { io.emit('tv', tvState()); }
+const tvs = new Map(); // srvId -> estado da TV
+function TV() { const k = srvAtual(); if (!tvs.has(k)) tvs.set(k, { id: 'bot-tv', name: 'TV King', avatar: 'p:tv', room: null, channel: null, since: 0 }); return tvs.get(k); }
+function tvPublic() { return { id: TV().id, name: TV().name, avatar: TV().avatar, room: TV().room }; }
+function tvState() { return { id: TV().id, name: TV().name, avatar: TV().avatar, room: TV().room, channel: TV().channel ? tvPublicItem(TV().channel) : null, since: TV().since, serverNow: Date.now() }; }
+function broadcastTv() { emitSrv(srvAtual(), 'tv', tvState()); }
 
-let arcadeBot = { pub: () => null, onLeave() {}, onChannelDeleted() {} };
+let arcadeBot = { pub: () => null, onLeave() {}, onChannelDeleted() {}, mandaEstado() {} };
 
 // Cada pessoa só recebe os servidores em que está e as salas deles
 function snapshotFor(user) {
@@ -1189,9 +1207,9 @@ function snapshotFor(user) {
   const ids = new Set(meus.map((sv) => sv.id));
   return {
     namesVersion,
-    bot: djPublic(),
-    bots: [djPublic(), tvPublic(), arcadeBot.pub()].filter(Boolean),
-    servers: meus.map((sv) => serverPublic(sv, user)),
+    bot: comSrv(meus[0]?.id, djPublic),
+    bots: comSrv(meus[0]?.id, () => [djPublic(), tvPublic(), arcadeBot.pub()].filter(Boolean)),
+    servers: meus.map((sv) => ({ ...serverPublic(sv, user), bots: comSrv(sv.id, () => [djPublic(), tvPublic(), arcadeBot.pub()].filter(Boolean)) })),
     channels: channels.filter((c) => ids.has(c.srv)).map((c) => ({
       id: c.id,
       name: c.name,
@@ -1236,16 +1254,11 @@ function leave(socket) {
   socket.leave(ch.id);
   socket.data.channel = null;
   // Sala ficou vazia com o DJ lá dentro? Ele volta sozinho para a sala Bots (e pausa a música).
-  if (dj.room === ch.id && ch.users.size === 0) {
-    dj.room = null;
-    djPause();
-    broadcastDj();
-  }
-  if (tv.room === ch.id && ch.users.size === 0) {
-    tv.room = null;
-    broadcastTv();
-  }
-  arcadeBot.onLeave(ch.id, ch.users.size);
+  if (ch.users.size === 0) comSrv(ch.srv, () => {
+    if (DJ().room === ch.id) { DJ().room = null; djPause(); broadcastDj(); }
+    if (TV().room === ch.id) { TV().room = null; broadcastTv(); }
+  });
+  arcadeBot.onLeave(ch.id, ch.users.size, ch.srv);
   broadcastChannels();
 }
 
@@ -1316,9 +1329,11 @@ async function apagaServidor(sv, por = 'TalKing') {
   const membros = [...sv.membros.keys()];
   for (const uid of membros) tiraDoServidorPor(sv.id, uid, 'servidor-apagado', por);
   for (const c of channels.filter((x) => x.srv === sv.id)) {
-    if (dj.room === c.id) { dj.room = null; djPause(); broadcastDj(); }
-    if (tv.room === c.id) { tv.room = null; broadcastTv(); }
-    arcadeBot.onChannelDeleted(c.id);
+    comSrv(c.srv, () => {
+      if (DJ().room === c.id) { DJ().room = null; djPause(); broadcastDj(); }
+      if (TV().room === c.id) { TV().room = null; broadcastTv(); }
+    });
+    arcadeBot.onChannelDeleted(c.id, c.srv);
     channels.splice(channels.indexOf(c), 1);
   }
   servers.delete(sv.id);
@@ -1365,7 +1380,7 @@ io.use(async (socket, next) => {
   }
 });
 
-arcadeBot = require('./arcade-servidor')(io, { byId, socketsOf, BOTS_ROOM, broadcastChannels, RANK });
+arcadeBot = require('./arcade-servidor')(io, { byId, socketsOf, BOTS_ROOM, broadcastChannels, RANK, srvAtual, comSrv, srvDoPedido, emitSrv, servers: () => servers });
 
 // ---------- Pedidos: alteração feita por moderador do TalKing só vale depois que o dono confirma ----------
 const EVENTOS_COM_APROVACAO = {
@@ -1423,6 +1438,7 @@ io.on('connection', (socket) => {
   socket.data.handlers = {};
   const onOriginal = socket.on.bind(socket);
   socket.on = (evento, handler) => {
+    if (/^(dj|tv)-/.test(evento)) return onOriginal(evento, (dados, ack) => comSrv(srvDoPedido(socket, dados), () => handler(dados, ack)));
     if (!EVENTOS_COM_APROVACAO[evento]) return onOriginal(evento, handler);
     socket.data.handlers[evento] = handler;
     return onOriginal(evento, async (dados = {}, ack = () => {}) => {
@@ -1660,15 +1676,18 @@ io.on('connection', (socket) => {
   });
 
   // ---------- 🤖 DJ King ----------
-  socket.emit('dj', djState());
+  // Estado dos bots de cada servidor em que a pessoa está (cada servidor tem os seus)
+  const mandaBots = (srv) => comSrv(srv, () => { socket.emit('dj', { ...djState(), srv }); socket.emit('tv', { ...tvState(), srv }); arcadeBot.mandaEstado(socket, srv); });
+  for (const sv of servers.values()) if (ehMembro(sv.id, me())) mandaBots(sv.id);
+  socket.on('bots-get', ({ srv } = {}) => { if (srv && servers.has(String(srv)) && ehMembro(String(srv), me())) mandaBots(String(srv)); });
   // Pode mandar no bot: quem está na chamada onde ele está (ou está puxando ele para a sua), e moderadores
-  const podeDj = () => isMod() || (socket.data.channel && socket.data.channel === dj.room);
+  const podeDj = () => isMod() || podeGerir(srvAtual(), me()) || (socket.data.channel && socket.data.channel === DJ().room);
 
   socket.on('dj-move', ({ to } = {}, ack = () => {}) => {
     if (to === BOTS_ROOM || to == null) {
-      if (!podeDj() && dj.room) return ack({ error: 'Só quem está na chamada com o DJ pode devolver ele.' });
-      const from = dj.room;
-      dj.room = null;
+      if (!podeDj() && DJ().room) return ack({ error: 'Só quem está na chamada com o DJ pode devolver ele.' });
+      const from = DJ().room;
+      DJ().room = null;
       djPause();
       ack({ ok: true });
       broadcastChannels();
@@ -1679,9 +1698,9 @@ io.on('connection', (socket) => {
     const ch = byId(to);
     if (!ch) return ack({ error: 'Sala não encontrada.' });
     if (socket.data.channel !== ch.id && !isMod()) return ack({ error: 'Entre na chamada primeiro e puxe o DJ para ela.' });
-    const from = dj.room;
-    dj.room = ch.id;
-    if (dj.now) djResume();
+    const from = DJ().room;
+    DJ().room = ch.id;
+    if (DJ().now) djResume();
     ack({ ok: true });
     broadcastChannels();
     broadcastDj();
@@ -1707,7 +1726,7 @@ io.on('connection', (socket) => {
   socket.on('dj-add', async (item = {}, ack = () => {}) => {
     try {
       if (!podeDj()) return ack({ error: 'Puxe o DJ King para a sua chamada primeiro.' });
-      if (dj.queue.length >= 50) return ack({ error: 'A fila está cheia (50 músicas).' });
+      if (DJ().queue.length >= 50) return ack({ error: 'A fila está cheia (50 músicas).' });
       let t;
       try {
         t = await montaFaixa(item, me().name);
@@ -1718,10 +1737,10 @@ io.on('connection', (socket) => {
         throw e;
       }
       if (!t) return ack({ error: 'Não consegui adicionar essa música.' });
-      dj.queue.push(t);
-      ack({ ok: true, position: dj.queue.length });
-      if (!dj.now) djNext(); else broadcastDj();
-      if (dj.room) io.to(dj.room).emit('dj-info', { text: `🎵 ${me().name} adicionou "${t.title}" na fila.` });
+      DJ().queue.push(t);
+      ack({ ok: true, position: DJ().queue.length });
+      if (!DJ().now) djNext(); else broadcastDj();
+      if (DJ().room) io.to(DJ().room).emit('dj-info', { text: `🎵 ${me().name} adicionou "${t.title}" na fila.` });
     } catch (e) {
       console.error('dj-add:', e.message);
       ack({ error: 'Não consegui adicionar agora.' });
@@ -1731,17 +1750,17 @@ io.on('connection', (socket) => {
   socket.on('dj-ctrl', ({ action, key } = {}, ack = () => {}) => {
     if (!podeDj()) return ack({ error: 'Só quem está na chamada com o DJ pode controlar ele.' });
     if (action === 'pause') djPause();
-    else if (action === 'play') { if (dj.now) djResume(); else djNext(); }
+    else if (action === 'play') { if (DJ().now) djResume(); else djNext(); }
     else if (action === 'skip') { djAvanca(); ack({ ok: true }); return; } // numa playlist: próximo vídeo
     else if (action === 'skip-all') { djNext(); ack({ ok: true }); return; } // pula a playlist inteira
     else if (action === 'prev') { djVoltar(); ack({ ok: true }); return; } // ⏮ recomeça ou volta a anterior
     else if (action === 'repeat') { // 🔁 desligado → todas → uma → desligado
-      dj.repeat = dj.repeat === 'off' ? 'all' : dj.repeat === 'all' ? 'one' : 'off';
-      if (dj.room) io.to(dj.room).emit('dj-info', { text: dj.repeat === 'all' ? `🔁 ${me().name} ligou repetir a fila toda.` : dj.repeat === 'one' ? `🔂 ${me().name} ligou repetir esta música.` : `${me().name} desligou o repetir.` });
+      DJ().repeat = DJ().repeat === 'off' ? 'all' : DJ().repeat === 'all' ? 'one' : 'off';
+      if (DJ().room) io.to(DJ().room).emit('dj-info', { text: DJ().repeat === 'all' ? `🔁 ${me().name} ligou repetir a fila toda.` : DJ().repeat === 'one' ? `🔂 ${me().name} ligou repetir esta música.` : `${me().name} desligou o repetir.` });
     }
-    else if (action === 'remove') dj.queue = dj.queue.filter((t) => t.key !== key);
-    else if (action === 'clear') dj.queue = [];
-    else if (action === 'stop') { djStop(); dj.now = null; dj.queue = []; }
+    else if (action === 'remove') DJ().queue = DJ().queue.filter((t) => t.key !== key);
+    else if (action === 'clear') DJ().queue = [];
+    else if (action === 'stop') { djStop(); DJ().now = null; DJ().queue = []; }
     else return ack({ error: 'Comando desconhecido.' });
     ack({ ok: true });
     broadcastDj();
@@ -1749,20 +1768,20 @@ io.on('connection', (socket) => {
 
   // Um aparelho avisou que a música acabou (ou não abriu): passa para a próxima
   socket.on('dj-ended', ({ key, index, error: err, last } = {}) => {
-    const n = dj.now;
+    const n = DJ().now;
     if (!n || n.key !== key) return;
-    if (!socket.data.channel || socket.data.channel !== dj.room) return;
+    if (!socket.data.channel || socket.data.channel !== DJ().room) return;
     if (n.kind === 'yt' && n.list) {
       // Vários aparelhos avisam o mesmo fim: só vale o do vídeo atual
       if (Number.isInteger(index) && index !== n.index) return;
-      if (err && dj.room) io.to(dj.room).emit('dj-info', { text: '⚠️ Um vídeo da playlist não pode tocar fora do YouTube. Pulando.' });
+      if (err && DJ().room) io.to(DJ().room).emit('dj-info', { text: '⚠️ Um vídeo da playlist não pode tocar fora do YouTube. Pulando.' });
       if (last) { djNext({ natural: !err }); return; }
       djAvanca({ natural: !err });
       return;
     }
     // Um aparelho só não decide: a música só é pulada quando a MAIORIA da sala avisa
     // (erro ou fim antes da hora). Fim na hora certa (perto da duração) vale na primeira.
-    const ouvintes = new Set([...io.sockets.adapter.rooms.get(dj.room) || []].map((sid) => io.sockets.sockets.get(sid)?.data.user?.id).filter(Boolean));
+    const ouvintes = new Set([...io.sockets.adapter.rooms.get(DJ().room) || []].map((sid) => io.sockets.sockets.get(sid)?.data.user?.id).filter(Boolean));
     const tocado = n.pausedAt ? 0 : (Date.now() - n.startedAt) / 1000;
     const fimNormal = !err && (!n.duration || tocado >= n.duration - 6);
     if (!fimNormal) {
@@ -1774,16 +1793,16 @@ io.on('connection', (socket) => {
         if (n.votos.size === 1) socket.emit('dj-info', { text: `⚠️ A música travou só no seu aparelho. Toque em ⏭ se quiser pular para todo mundo.` });
         return;
       }
-      if (dj.room) io.to(dj.room).emit('dj-info', { text: `⚠️ Não deu para tocar "${n.title}" na maioria dos aparelhos. Pulando.` });
+      if (DJ().room) io.to(DJ().room).emit('dj-info', { text: `⚠️ Não deu para tocar "${n.title}" na maioria dos aparelhos. Pulando.` });
     }
     djNext({ natural: fimNormal });
   });
 
   // O player do YouTube de um aparelho conta o que está tocando (título, posição na playlist, tamanho)
   socket.on('dj-yt-meta', ({ key, index, count, title, author, video } = {}) => {
-    const n = dj.now;
+    const n = DJ().now;
     if (!n || n.kind !== 'yt' || n.key !== key) return;
-    if (!socket.data.channel || socket.data.channel !== dj.room) return;
+    if (!socket.data.channel || socket.data.channel !== DJ().room) return;
     let mudou = false;
     if (Number.isInteger(count) && count > 0 && count !== n.count) { n.count = count; mudou = true; }
     if (index === n.index || !n.list) {
@@ -1828,12 +1847,12 @@ io.on('connection', (socket) => {
 
   // ---------- 📺 TV King ----------
   socket.emit('tv', tvState());
-  const podeTv = () => isMod() || (socket.data.channel && socket.data.channel === tv.room);
+  const podeTv = () => isMod() || (socket.data.channel && socket.data.channel === TV().room);
   socket.on('tv-move', ({ to } = {}, ack = () => {}) => {
     if (to === BOTS_ROOM || to == null) {
-      if (!podeTv() && tv.room) return ack({ error: 'Só quem está na chamada com a TV pode devolver ela.' });
-      const from = tv.room;
-      tv.room = null;
+      if (!podeTv() && TV().room) return ack({ error: 'Só quem está na chamada com a TV pode devolver ela.' });
+      const from = TV().room;
+      TV().room = null;
       ack({ ok: true });
       broadcastChannels();
       broadcastTv();
@@ -1843,8 +1862,8 @@ io.on('connection', (socket) => {
     const ch = byId(to);
     if (!ch) return ack({ error: 'Sala não encontrada.' });
     if (socket.data.channel !== ch.id && !isMod()) return ack({ error: 'Entre na chamada primeiro e puxe a TV para ela.' });
-    const from = tv.room;
-    tv.room = ch.id;
+    const from = TV().room;
+    TV().room = ch.id;
     ack({ ok: true });
     broadcastChannels();
     broadcastTv();
@@ -1874,15 +1893,15 @@ io.on('connection', (socket) => {
     if (!podeTv()) return ack({ error: 'Puxe a TV King para a sua chamada primeiro.' });
     const it = tvCat.byId.get(String(id || ''));
     if (!it) return ack({ error: 'Canal não encontrado.' });
-    tv.channel = it;
-    tv.since = Date.now();
+    TV().channel = it;
+    TV().since = Date.now();
     ack({ ok: true });
     broadcastTv();
-    if (tv.room) io.to(tv.room).emit('dj-info', { text: `📺 ${me().name} colocou no canal ${it.name}.` });
+    if (TV().room) io.to(TV().room).emit('dj-info', { text: `📺 ${me().name} colocou no canal ${it.name}.` });
   });
   socket.on('tv-off', (_d, ack = () => {}) => {
     if (!podeTv()) return ack({ error: 'Só quem está na chamada com a TV pode desligar.' });
-    tv.channel = null;
+    TV().channel = null;
     ack({ ok: true });
     broadcastTv();
   });
@@ -1918,6 +1937,7 @@ io.on('connection', (socket) => {
       await banco.setMember(id, me().id, 'dono');
       servers.set(id, sv);
       registra(me(), 'servidor-criado', n);
+      mandaBots(id);
       // Todo servidor nasce com uma sala de voz e uma de mensagens
       const voz = makeChannel(novoIdSala(), 'Geral', id, 'voz');
       channels.push(voz);
@@ -1964,6 +1984,7 @@ io.on('connection', (socket) => {
       await banco.setMember(sv.id, me().id, 'membro');
       await banco.useInvite(c);
       registra(me(), 'entrou-servidor', sv.nome);
+      mandaBots(sv.id);
       ack({ ok: true, id: sv.id });
       broadcastChannels();
       for (const c2 of channels) if (c2.srv === sv.id && c2.tipo === 'texto') { const m = { id: ++chatSeq, from: 'sys', name: 'TalKing', avatar: '', text: `👋 ${me().name} entrou no servidor.`, ts: Date.now(), sys: true, channel: c2.id }; c2.chat.push(m); if (c2.chat.length > CHAT_KEEP) c2.chat.shift(); emitTexto(c2, m); }
@@ -2114,9 +2135,11 @@ io.on('connection', (socket) => {
       leave(s);
     }
     channels.splice(channels.indexOf(ch), 1);
-    if (dj.room === ch.id) { dj.room = null; djPause(); broadcastDj(); }
-    if (tv.room === ch.id) { tv.room = null; broadcastTv(); }
-    arcadeBot.onChannelDeleted(ch.id);
+    comSrv(ch.srv, () => {
+      if (DJ().room === ch.id) { DJ().room = null; djPause(); broadcastDj(); }
+      if (TV().room === ch.id) { TV().room = null; broadcastTv(); }
+    });
+    arcadeBot.onChannelDeleted(ch.id, ch.srv);
     namesVersion = Date.now();
     ack({ ok: true });
     broadcastChannels();
@@ -2451,7 +2474,7 @@ io.on('connection', (socket) => {
     sv.membros.set(Number(u.id), 'membro');
     await banco.setMember(sv.id, u.id, 'membro');
     registra(u, 'entrou-servidor', `${sv.nome} · colocado por ${me().name}`);
-    for (const sk of socketsOf(Number(u.id))) sk.emit('channels', snapshotFor(sk.data.user));
+    for (const sk of socketsOf(Number(u.id))) { sk.emit('channels', snapshotFor(sk.data.user)); comSrv(sv.id, () => { sk.emit('dj', { ...djState(), srv: sv.id }); sk.emit('tv', { ...tvState(), srv: sv.id }); arcadeBot.mandaEstado(sk, sv.id); }); }
     ack({ ok: true });
   });
   // Painel do dono: registro de atividade
@@ -2519,7 +2542,7 @@ io.on('connection', (socket) => {
   });
 });
 
-if (process.env.KL_TEST) module.exports._dj = { dj, djNext, djVoltar, djAvanca, djDeNovo };
+if (process.env.KL_TEST) module.exports._dj = { get dj() { return DJ(); }, djNext, djVoltar, djAvanca, djDeNovo };
 banco.init()
   .then(carregaAjustes)
   .then(loadServers)
