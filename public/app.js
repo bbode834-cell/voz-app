@@ -50,6 +50,7 @@ let myAvatar = '';
 let me = null;            // minha conta { id, username, name, avatar, role }
 let loggedIn = false;
 let modMuted = false;     // um moderador fechou meu microfone
+let plateiaMudoAviso = false; // já avisei que a plateia desta sala não fala
 authToken = store.get('voz-token', null);
 let selfId = null;
 let currentChannel = null; // id do canal (c1, c2...)
@@ -65,6 +66,9 @@ let floatWin = null;      // janelinha (Document PiP) ou o <video> em PiP
 let closingFloat = false;
 const watching = new Set(); // transmissões que estou assistindo (ids)
 let muted = false;
+// 🎭 Palco: estou na plateia (mudo, sem transmitir) ou no palco?
+let palcoMode = false; // a sala atual é um palco
+let noPalco = false; // eu estou no palco
 let deafened = false;
 let joining = false;
 const volumes = store.get('voz-volumes', {});            // nome do amigo -> 0..1
@@ -408,7 +412,17 @@ socket.on('me', (u) => {
   myAvatar = me.avatar || '';
   renderAll();
   renderSettings();
+  if (pendingInvite) { const c = pendingInvite; pendingInvite = null; entrarComConvite(c); }
 });
+async function entrarComConvite(codigo) {
+  const c = String(codigo || '').trim().split('/').pop();
+  if (!c) return;
+  const r = await emitAck('srv-join', { codigo: c });
+  if (r?.error) return toast(r.error);
+  const nome = () => srvOf(r.id)?.nome || 'servidor';
+  // o snapshot novo chega logo depois do ack
+  setTimeout(() => { escolheServidor(r.id, { silencioso: true }); toast(r.ja ? `Você já está no servidor ${nome()}.` : `🎉 Você entrou no servidor ${nome()}!`); }, 300);
+}
 
 // Ao abrir: se já entrou antes, continua logado
 (async function boot() {
@@ -735,11 +749,34 @@ socket.on('connect', () => {
 
 setInterval(() => { if (currentChannel && socket.connected) fetch('/config', { cache: 'no-store' }).catch(() => {}); }, 4 * 60 * 1000);
 
+const TIPO_INFO = {
+  voz: { ico: ICON.speaker, emoji: '🔊', nome: 'Sala de voz', desc: 'Conversa, câmera e transmissão de tela' },
+  texto: { ico: '💬', emoji: '💬', nome: 'Sala de mensagens', desc: 'Só texto, fotos e clipes; não precisa entrar em chamada' },
+  palco: { ico: '🎭', emoji: '🎭', nome: 'Palco (cinema)', desc: 'Até 2 no palco transmitindo; a plateia assiste e conversa' },
+};
 async function createChannel() {
-  const nome = prompt('Nome da nova sala:', '');
+  // Escolhe o tipo numa caixinha, depois o nome
+  const tipo = await escolheTipoSala();
+  if (!tipo) return;
+  let tema, plateia;
+  if (tipo === 'palco') { const e = await escolheTema('ar-livre'); if (!e) return; tema = e.tema; plateia = { mic: e.mic, cam: e.cam }; }
+  const nome = prompt(`Nome da nova ${TIPO_INFO[tipo].nome.toLowerCase()}:`, '');
   if (nome === null) return;
-  const res = await emitAck('create-channel', { name: nome });
-  if (res?.error) toast(res.error); else toast(`Sala "${nome.trim()}" criada!`);
+  const res = await emitAck('create-channel', { name: nome, srv: currentServer, tipo, tema, plateia });
+  if (res?.error) toast(res.error); else toast(`${TIPO_INFO[tipo].emoji} Sala "${nome.trim()}" criada!`);
+}
+function escolheTipoSala() {
+  return new Promise((res) => {
+    document.querySelectorAll('.tipo-pop').forEach((p) => p.remove());
+    const pop = document.createElement('div');
+    pop.className = 'modal';
+    pop.innerHTML = `<div class="modal-card tipo-pop"><h2>Que tipo de sala?</h2>${Object.entries(TIPO_INFO).map(([k, t]) => `<button type="button" class="tipo-opt" data-tipo="${k}"><span class="tipo-emoji">${t.emoji}</span><span><strong>${t.nome}</strong><small>${t.desc}</small></span></button>`).join('')}<button type="button" class="btn tipo-cancel">Cancelar</button></div>`;
+    document.body.appendChild(pop);
+    const fim = (v) => { pop.remove(); res(v); };
+    pop.querySelectorAll('.tipo-opt').forEach((b) => { b.onclick = () => fim(b.dataset.tipo); });
+    pop.querySelector('.tipo-cancel').onclick = () => fim(null);
+    pop.onclick = (e) => { if (e.target === pop) fim(null); };
+  });
 }
 
 async function deleteChannel(ch) {
@@ -801,6 +838,9 @@ async function joinChannel(id) {
     setTimeout(() => { syncDjAudio(); renderDj(); syncTv(); renderTv(); renderArcade(); }, 0);
     modMuted = !!res.modMuted;
     if (modMuted) { muted = true; applyMicState(); }
+    palcoMode = res.tipo === 'palco';
+    noPalco = false;
+    if (palcoMode) toast('🎭 Você está na plateia: pode falar à vontade. Para transmitir, peça para subir ao palco.');
     chatMsgs = Array.isArray(res.chat) ? res.chat.slice() : [];
     chatUnread = 0;
     renderChat(true);
@@ -821,6 +861,7 @@ async function joinChannel(id) {
 function leaveChannel(switching = false) {
   rejoinId = null;
   if (!currentChannel) return;
+  palcoMode = false; noPalco = false;
   stopShare();
   stopCam();
   stopMusic();
@@ -1068,9 +1109,14 @@ async function tuneCamSenders(peer) {
 async function toggleCam() {
   if (camStream) return stopCam();
   if (!currentChannel) return;
+  // Na plateia do palco a câmera é pequenininha (só aparece na bolinha da poltrona): resolução baixa pra não pesar
+  const plateia = palcoMode && !noPalco;
+  if (plateia && currentCh()?.plateia?.cam === 'mudo') return toast('🚫 Nesta sala a plateia fica sem câmera. Peça para subir ao palco.');
   try {
     camStream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24, max: 30 }, facingMode: 'user' },
+      video: plateia
+        ? { width: { ideal: 240 }, height: { ideal: 240 }, frameRate: { ideal: 15, max: 15 }, facingMode: 'user' }
+        : { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24, max: 30 }, facingMode: 'user' },
       audio: false,
     });
   } catch {
@@ -1521,8 +1567,33 @@ async function tuneScreenSenders(peer) {
 }
 
 // ---------- Eventos do servidor ----------
+// ---------- 🏰 Servidores (comunidades) ----------
+let serversState = []; // [{ id, nome, icone, dono, membros, cargo }]
+let currentServer = store.get('voz-servidor', null);
+const textUnread = new Map(); // sala de texto -> mensagens não lidas
+const srvOf = (id) => serversState.find((sv) => sv.id === id);
+const myCargo = (srvId = currentServer) => srvOf(srvId)?.cargo || null;
+const podeGerirSrv = (srvId = currentServer) => myCargo(srvId) === 'dono' || myCargo(srvId) === 'mod' || isMod();
+function escolheServidor(id, { silencioso = false } = {}) {
+  if (!srvOf(id)) return;
+  currentServer = id;
+  store.set('voz-servidor', id);
+  closeTextRoom();
+  renderAll();
+  if (!silencioso) toast(`🏰 ${srvOf(id).nome}`);
+}
+// Link de convite aberto no navegador: /entrar/<código>
+let pendingInvite = new URLSearchParams(location.search).get('convite') || (location.pathname.match(/^\/entrar\/([A-Za-z0-9_-]{4,16})/) || [])[1] || null;
+if (pendingInvite) history.replaceState(null, '', '/');
+
 socket.on('channels', (data) => {
   channelsState = data.channels;
+  serversState = data.servers || serversState;
+  // Servidor atual: o da sala em que estou, senão o salvo, senão o primeiro
+  const daSala = currentChannel && channelsState.find((c) => c.id === currentChannel)?.srv;
+  if (daSala && daSala !== currentServer) { currentServer = daSala; store.set('voz-servidor', daSala); }
+  if (!srvOf(currentServer)) { currentServer = serversState[0]?.id || null; if (currentServer) store.set('voz-servidor', currentServer); }
+  if (textRoom && !channelsState.some((c) => c.id === textRoom)) closeTextRoom();
   botInfo = data.bot || botInfo;
   const saved = store.get('voz-canais', null);
   if (data.namesVersion > 0 && (!saved || data.namesVersion >= saved.version)) {
@@ -1535,7 +1606,16 @@ socket.on('channels', (data) => {
   [...watching].forEach((id) => { if (!isSharing(id)) watching.delete(id); });
   peers.forEach((p, id) => { if (p.camStream && !findUser(id)?.cam) p.camStream = null; });
   const meEntry = currentChannel && findUser(selfId);
-  if (meEntry) modMuted = !!meEntry.modMuted;
+  if (meEntry) {
+    modMuted = !!meEntry.modMuted;
+    if (modMuted && !muted) { muted = true; applyMicState(); renderControls(); }
+    // Sala de palco com plateia sem microfone: avisa uma vez quando passa a valer pra mim
+    if (!!meEntry.plateiaMudo !== plateiaMudoAviso) {
+      plateiaMudoAviso = !!meEntry.plateiaMudo;
+      if (plateiaMudoAviso) toast('🔇 Nesta sala a plateia fica sem microfone. Peça para subir ao palco para falar.');
+      else if (modMuted === false && muted) toast('🎙️ Seu microfone foi liberado. Clique no microfone para falar.');
+    }
+  }
   // Janelinha de um amigo aberta: atualiza os botões de moderação
   if (volTarget && !$('#vol-pop').hidden) { const vu = findUser(volTarget); if (vu) renderModTools(vu); else closeVolume(); }
   syncScreenSenders();
@@ -1563,8 +1643,21 @@ socket.on('peer-left', ({ id }) => {
 
 socket.on('share-started', ({ id }) => {
   if (id === selfId || !currentChannel) return;
+  if (palcoMode) { watch(id); toast(`🎬 ${nameOf(id)} começou a transmitir no palco.`); playSound('transmissao'); renderAll(); return; }
   toast(`${nameOf(id)} começou a transmitir a tela. Clique em "Assistir" para ver.`);
   playSound('transmissao');
+  renderAll();
+});
+// 🎭 Subi ao palco / desci do palco
+socket.on('stage', ({ on, by }) => {
+  noPalco = !!on;
+  if (on) {
+    toast(`🎭 ${by} te colocou no palco! Agora você pode transmitir a tela.`);
+    playSound('fone-on');
+  } else {
+    if (screenStream) stopShare();
+    toast('🎭 Você voltou para a plateia.');
+  }
   renderAll();
 });
 
@@ -1613,6 +1706,10 @@ socket.on('kicked', ({ by, motivo }) => {
 socket.on('banned', ({ by, motivo }) => {
   logout(motivo === 'apagada' ? 'Sua conta foi apagada.' : `Sua conta foi banida por ${by}.`);
 });
+socket.on('cam-denied', () => {
+  if (camStream) stopCam();
+  toast('🚫 Nesta sala a plateia fica sem câmera.');
+});
 socket.on('mod-muted', ({ on, by }) => {
   modMuted = on;
   if (on) {
@@ -1660,6 +1757,7 @@ socket.on('disconnect', (reason) => {
 async function toggleShare() {
   if (screenStream) return stopShare();
   if (!currentChannel) return;
+  if (palcoMode && !noPalco) return toast('🎭 Só quem está no palco transmite a tela. Peça para subir ao palco.');
   if (!navigator.mediaDevices?.getDisplayMedia) return toast('Seu navegador não permite compartilhar a tela.');
 
   let stream;
@@ -3384,6 +3482,7 @@ function renderChat(scrollDown = false) {
     let html = '';
     let prev = null;
     for (const m of chatMsgs) {
+      if (m.sys) { html += `<div class="chat-sys">${esc(m.text)}</div>`; prev = null; continue; }
       const grouped = prev && prev.from === m.from && m.ts - prev.ts < 5 * 60 * 1000;
       const live = findUser(m.from);
       const u = { name: m.name, avatar: live?.avatar || m.avatar };
@@ -3400,6 +3499,16 @@ function renderChat(scrollDown = false) {
 }
 
 socket.on('chat', (m) => {
+  if (m.channel) { // sala de mensagens do servidor
+    const lista = textMsgs.get(m.channel) || [];
+    lista.push(m);
+    if (lista.length > 100) lista.shift();
+    textMsgs.set(m.channel, lista);
+    if (m.channel === textRoom) renderTextRoom(m.uid === me.id);
+    else if (!m.sys) { textUnread.set(m.channel, (textUnread.get(m.channel) || 0) + 1); renderChannels(); }
+    if (m.uid !== me.id && !m.sys) { playSound('mensagem'); const pv = msgPreview(m.text); if (m.channel !== textRoom) toast(`💬 ${m.name} em #${channelsState.find((c) => c.id === m.channel)?.name || ''}: ${pv.length > 60 ? pv.slice(0, 60) + '…' : pv}`); }
+    return;
+  }
   if (!currentChannel) return;
   chatMsgs.push(m);
   if (chatMsgs.length > 100) chatMsgs.shift();
@@ -4579,7 +4688,7 @@ function applyMicState() {
 function toggleMute() {
   if (modMuted && (muted || deafened)) {
     if (deafened) { deafened = false; playSound('fone-on'); applyVolumes(); renderControls(); }
-    return toast('🛡️ Um moderador fechou seu microfone. Só ele pode liberar.');
+    return toast(findUser(selfId)?.plateiaMudo ? '🔇 Nesta sala a plateia fica sem microfone. Peça para subir ao palco.' : '🛡️ Um moderador fechou seu microfone. Só ele pode liberar.');
   }
   if (deafened) { deafened = false; muted = false; playSound('fone-on'); }
   else { muted = !muted; playSound(muted ? 'mic-off' : 'mic-on'); }
@@ -4802,17 +4911,22 @@ function renderAll() {
 }
 
 function renderChannels() {
+  renderServerBar();
   const wrap = $('#channels');
   wrap.innerHTML = '';
-  channelsState.forEach((ch) => {
+  const gerente = podeGerirSrv();
+  channelsState.filter((c) => c.srv === currentServer).forEach((ch) => {
+    const tipo = ch.tipo || 'voz';
     const el = document.createElement('div');
-    el.className = 'channel' + (ch.id === currentChannel ? ' active' : '');
+    el.className = `channel tipo-${tipo}` + (ch.id === currentChannel || ch.id === textRoom ? ' active' : '');
+    const naoLidas = textUnread.get(ch.id) || 0;
+    const conta = tipo === 'texto' ? (naoLidas ? `<small class="chat-badge">${naoLidas}</small>` : '') : `<small>${ch.users.length}/${tipo === 'palco' ? config.maxPerChannel * 2 : config.maxPerChannel}</small>`;
     el.innerHTML = `
       <div class="channel-row">
-        <button class="channel-btn">${ICON.speaker}<span>${esc(ch.name)}</span><small>${ch.users.length}/${config.maxPerChannel}</small></button>
-        ${isMod() ? `<button class="rename-btn" title="Trocar nome da sala">${ICON.pencil}</button><button class="rename-btn del-btn" title="Apagar sala">${ICON.close}</button>` : ''}
+        <button class="channel-btn" title="${TIPO_INFO[tipo].nome}">${TIPO_INFO[tipo].ico}<span>${esc(ch.name)}</span>${conta}</button>
+        ${gerente ? `<button class="rename-btn" title="Trocar nome da sala">${ICON.pencil}</button><button class="rename-btn del-btn" title="Apagar sala">${ICON.close}</button>` : ''}
       </div>`;
-    el.querySelector('.channel-btn').onclick = () => joinChannel(ch.id);
+    el.querySelector('.channel-btn').onclick = () => (tipo === 'texto' ? openTextRoom(ch.id) : joinChannel(ch.id));
     const rb = el.querySelector('.rename-btn:not(.del-btn)');
     if (rb) rb.onclick = () => renameChannel(ch);
     const db = el.querySelector('.del-btn');
@@ -4850,10 +4964,10 @@ function renderChannels() {
       li.innerHTML = `${avatarHTML({ name: dj.name, avatar: dj.avatar })}<span class="mname">${esc(dj.name)}</span><span class="bot-badge">BOT</span>${dj.now && !dj.now.pausedAt ? '<span class="cam-ico" title="Tocando">🎵</span>' : ''}`;
       ul.appendChild(li);
     }
-    el.appendChild(ul);
+    if (tipo !== 'texto') el.appendChild(ul);
     wrap.appendChild(el);
   });
-  if (isMod()) {
+  if (gerente) {
     const add = document.createElement('button');
     add.className = 'new-channel';
     add.innerHTML = '➕ Nova sala';
@@ -4886,6 +5000,207 @@ function renderChannels() {
   }
 }
 
+// ---- 🏰 Barra do servidor (pílula + lista para trocar) ----
+function srvIconHTML(sv, cls = 'avatar srv-icon') {
+  const el = document.createElement('span');
+  el.className = cls;
+  fillAvatar(el, sv.nome, sv.icone || '');
+  return el.outerHTML;
+}
+function renderServerBar() {
+  const sv = srvOf(currentServer);
+  const pill = $('#srv-pill');
+  if (!sv) { pill.hidden = true; return; }
+  pill.hidden = false;
+  const ic = $('#srv-icon');
+  fillAvatar(ic, sv.nome, sv.icone || '');
+  $('#srv-name').textContent = sv.nome;
+  pill.title = `${sv.nome} · ${sv.membros} membro(s) · clique para trocar de servidor ou abrir o menu`;
+}
+function toggleSrvPop(force) {
+  const pop = $('#srv-pop');
+  const abrir = force ?? pop.hidden;
+  if (!abrir) { pop.hidden = true; return; }
+  const sv = srvOf(currentServer);
+  pop.innerHTML = `
+    ${sv ? `<div class="srv-pop-head">${srvIconHTML(sv)}<div><strong>${esc(sv.nome)}</strong><small>${sv.membros} membro(s) · você é ${CARGO_NOME[sv.cargo] || 'membro'}</small></div></div>
+    <button type="button" class="srv-item" data-act="convite">🔗 Convidar amigos</button>
+    <button type="button" class="srv-item" data-act="membros">👥 Membros</button>
+    ${podeGerirSrv() ? '<button type="button" class="srv-item" data-act="editar">✏️ Nome e ícone</button>' : ''}
+    ${sv.cargo === 'dono' ? (sv.id === 'talking' ? '' : '<button type="button" class="srv-item danger" data-act="apagar">🗑️ Apagar servidor</button>') : '<button type="button" class="srv-item danger" data-act="sair">🚪 Sair do servidor</button>'}
+    <hr class="sep" />` : ''}
+    <div class="srv-pop-title">Seus servidores</div>
+    ${serversState.map((x) => `<button type="button" class="srv-item srv-choice${x.id === currentServer ? ' on' : ''}" data-srv="${esc(x.id)}">${srvIconHTML(x, 'avatar srv-icon small')}<span>${esc(x.nome)}</span><small>${x.membros}</small></button>`).join('')}
+    <button type="button" class="srv-item" data-act="novo">➕ Criar servidor ou entrar com convite</button>`;
+  pop.querySelectorAll('[data-srv]').forEach((b) => { b.onclick = () => { pop.hidden = true; escolheServidor(b.dataset.srv); }; });
+  pop.querySelectorAll('[data-act]').forEach((b) => { b.onclick = () => { pop.hidden = true; srvAction(b.dataset.act); }; });
+  pop.hidden = false;
+  setTimeout(() => document.addEventListener('pointerdown', (e) => { if (!pop.contains(e.target) && !$('#srv-pill').contains(e.target)) pop.hidden = true; }, { once: true }), 0);
+}
+const CARGO_NOME = { dono: 'dono', mod: 'moderador', membro: 'membro' };
+$('#srv-pill').onclick = () => toggleSrvPop();
+async function srvAction(act) {
+  const sv = srvOf(currentServer);
+  if (act === 'novo') return abreNovoServidor();
+  if (!sv) return;
+  if (act === 'convite') return abreConvite(sv);
+  if (act === 'membros') return abreMembros(sv);
+  if (act === 'editar') {
+    const nome = prompt('Nome do servidor:', sv.nome);
+    if (nome === null) return;
+    const r = await emitAck('srv-edit', { id: sv.id, nome });
+    if (r?.error) toast(r.error); else toast('Nome atualizado.');
+    return;
+  }
+  if (act === 'sair') {
+    if (!confirm(`Sair do servidor "${sv.nome}"? Você vai precisar de um convite para voltar.`)) return;
+    const r = await emitAck('srv-leave', { id: sv.id });
+    if (r?.error) toast(r.error); else { toast(`Você saiu de ${sv.nome}.`); currentServer = null; }
+    return;
+  }
+  if (act === 'apagar') {
+    if (!confirm(`Apagar o servidor "${sv.nome}" com todas as salas? Isso não tem volta.`)) return;
+    const r = await emitAck('srv-delete', { id: sv.id });
+    if (r?.error) toast(r.error); else { toast('Servidor apagado.'); currentServer = null; }
+  }
+}
+function abreNovoServidor() {
+  const m = $('#srv-new');
+  $('#srv-new-name').value = '';
+  $('#srv-join-code').value = '';
+  const grid = $('#srv-new-icons');
+  grid.innerHTML = '';
+  let icone = '';
+  const marca = () => grid.querySelectorAll('button').forEach((b) => b.classList.toggle('sel', b.dataset.a === icone));
+  const none = document.createElement('button'); none.type = 'button'; none.dataset.a = ''; none.textContent = 'Aa'; none.title = 'Só a inicial'; none.className = 'srv-ico-letra';
+  none.onclick = () => { icone = ''; marca(); };
+  grid.appendChild(none);
+  (avatarList || []).slice(0, 24).forEach((a) => {
+    const b = document.createElement('button'); b.type = 'button'; b.dataset.a = `p:${a.id}`;
+    b.innerHTML = `<img src="avatars/${a.id}.svg" alt="${esc(a.nome)}">`;
+    b.onclick = () => { icone = `p:${a.id}`; marca(); };
+    grid.appendChild(b);
+  });
+  marca();
+  m.hidden = false;
+  $('#srv-new-name').focus();
+  $('#srv-new-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const r = await emitAck('srv-create', { nome: $('#srv-new-name').value, icone });
+    if (r?.error) return toast(r.error);
+    m.hidden = true;
+    setTimeout(() => { escolheServidor(r.id, { silencioso: true }); toast('🏰 Servidor criado! Convide seus amigos pelo menu do servidor.'); abreConvite(srvOf(r.id)); }, 300);
+  };
+  $('#srv-join-btn').onclick = async () => { const c = $('#srv-join-code').value.trim(); if (!c) return; m.hidden = true; entrarComConvite(c); };
+}
+$('#srv-new-close').onclick = () => { $('#srv-new').hidden = true; };
+$('#srv-new').onclick = (e) => { if (e.target === $('#srv-new')) $('#srv-new').hidden = true; };
+function abreSrvModal(titulo, html) {
+  $('#srv-m-title').textContent = titulo;
+  $('#srv-m-body').innerHTML = html;
+  $('#srv-modal').hidden = false;
+}
+$('#srv-m-close').onclick = () => { $('#srv-modal').hidden = true; };
+$('#srv-modal').onclick = (e) => { if (e.target === $('#srv-modal')) $('#srv-modal').hidden = true; };
+async function abreConvite(sv, novo = false) {
+  const r = await emitAck('srv-invite', { id: sv.id, novo });
+  if (r?.error) return toast(r.error);
+  const link = `${location.origin}/entrar/${r.codigo}`;
+  abreSrvModal(`Convidar para ${sv.nome}`, `
+    <p>Mande este link para quem você quer no servidor. Quem abrir e tiver conta entra na hora.</p>
+    <div class="invite-row"><input id="invite-link" readonly value="${esc(link)}" /><button type="button" id="invite-copy" class="btn primary">Copiar</button></div>
+    <p class="sec-hint">Quem ainda não tem conta cria uma pelo mesmo link (e entra depois que o dono do TalKing aprovar).</p>
+    ${podeGerirSrv(sv.id) ? '<button type="button" id="invite-new" class="btn small">Gerar link novo (o antigo para de valer)</button>' : ''}`);
+  $('#invite-copy').onclick = async () => { try { await navigator.clipboard.writeText(link); toast('Link copiado!'); } catch { $('#invite-link').select(); } };
+  const bn = $('#invite-new');
+  if (bn) bn.onclick = () => abreConvite(sv, true);
+}
+async function abreMembros(sv) {
+  const r = await emitAck('srv-members', { id: sv.id });
+  if (r?.error) return toast(r.error);
+  const meuCargo = srvOf(sv.id)?.cargo;
+  const posso = (m) => (meuCargo === 'dono' || isMod()) ? m.cargo !== 'dono' : meuCargo === 'mod' && m.cargo === 'membro';
+  abreSrvModal(`Membros de ${sv.nome} (${r.membros.length})`, `<div class="acc-list">${r.membros.map((m) => `
+    <div class="acc-row member-row">
+      ${avatarHTML({ name: m.name, avatar: m.avatar })}
+      <div class="acc-info"><strong>${esc(m.name)}</strong><small>${CARGO_NOME[m.cargo]} · ${m.online ? '🟢 online' : 'offline'}</small></div>
+      ${m.id !== me.id && posso(m) ? `<div class="acc-actions">
+        ${meuCargo === 'dono' ? (m.cargo === 'mod' ? `<button type="button" class="btn small" data-act="membro" data-uid="${m.id}">Tirar moderador</button>` : `<button type="button" class="btn small" data-act="mod" data-uid="${m.id}">Dar moderador</button>`) : ''}
+        <button type="button" class="btn small" data-act="kick" data-uid="${m.id}">Expulsar</button>
+        <button type="button" class="btn small danger" data-act="ban" data-uid="${m.id}">Banir</button>
+        ${meuCargo === 'dono' ? `<button type="button" class="btn small" data-act="coroa" data-uid="${m.id}" title="Passar o servidor para essa pessoa">👑</button>` : ''}
+      </div>` : ''}
+    </div>`).join('')}</div>`);
+  $('#srv-m-body').querySelectorAll('[data-act]').forEach((b) => {
+    b.onclick = async () => {
+      const act = b.dataset.act, uid = Number(b.dataset.uid);
+      const nome = r.membros.find((m) => m.id === uid)?.name || '';
+      if (act === 'ban' && !confirm(`Banir ${nome} do servidor? A pessoa não consegue mais entrar, nem com convite.`)) return;
+      if (act === 'coroa' && !confirm(`Passar o servidor "${sv.nome}" para ${nome}? Você vira moderador.`)) return;
+      const x = await emitAck('srv-member', { id: sv.id, uid, action: act });
+      if (x?.error) return toast(x.error);
+      toast('Feito.');
+      abreMembros(sv);
+    };
+  });
+}
+
+// ---- 💬 Sala de mensagens do servidor ----
+let textRoom = null;
+const textMsgs = new Map(); // sala -> mensagens
+async function openTextRoom(id) {
+  const ch = channelsState.find((c) => c.id === id);
+  if (!ch) return;
+  if (textRoom && textRoom !== id) socket.emit('text-close', { id: textRoom });
+  const r = await emitAck('text-open', { id });
+  if (r?.error) return toast(r.error);
+  textRoom = id;
+  textMsgs.set(id, r.chat || []);
+  textUnread.delete(id);
+  $('#text-name').textContent = ch.name;
+  $('#text-room').hidden = false;
+  document.body.classList.add('text-open');
+  renderTextRoom(true);
+  renderChannels();
+  $('#text-input').focus();
+}
+function closeTextRoom() {
+  if (!textRoom) return;
+  socket.emit('text-close', { id: textRoom });
+  textRoom = null;
+  $('#text-room').hidden = true;
+  document.body.classList.remove('text-open');
+}
+function renderTextRoom(scrollDown = false) {
+  const list = $('#text-list');
+  const msgs = textMsgs.get(textRoom) || [];
+  const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 60;
+  if (!msgs.length) list.innerHTML = '<div class="chat-empty">Nenhuma mensagem ainda. Diga oi! 👋</div>';
+  else {
+    let html = '', prev = null;
+    for (const m of msgs) {
+      if (m.sys) { html += `<div class="chat-sys">${esc(m.text)}</div>`; prev = null; continue; }
+      const grouped = prev && prev.name === m.name && m.ts - prev.ts < 5 * 60 * 1000;
+      html += grouped
+        ? `<div class="chat-msg cont"><div class="chat-text">${msgHTML(m.text)}</div></div>`
+        : `<div class="chat-msg">${avatarHTML({ name: m.name, avatar: m.avatar })}<div class="chat-body"><div class="chat-meta"><strong>${esc(m.name)}</strong><time>${hhmm(m.ts)}</time></div><div class="chat-text">${msgHTML(m.text)}</div></div></div>`;
+      prev = m;
+    }
+    list.innerHTML = html;
+  }
+  if (scrollDown || atBottom) list.scrollTop = list.scrollHeight;
+}
+$('#text-close').onclick = () => { closeTextRoom(); renderChannels(); };
+$('#text-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = $('#text-input');
+  const text = input.value.trim();
+  if (!text || !textRoom) return;
+  input.value = '';
+  const r = await emitAck('chat-send', { text, channel: textRoom });
+  if (r?.error) toast(r.error);
+});
+
 function renderMain() {
   const ch = channelsState.find((c) => c.id === currentChannel);
   $('#main-title').textContent = ch ? ch.name : 'Escolha um canal de voz';
@@ -4898,7 +5213,9 @@ function renderMain() {
 
   const tiles = $('#tiles');
   tiles.innerHTML = '';
+  document.body.classList.toggle('palco', !!ch && ch.tipo === 'palco');
   if (!ch) return;
+  if (ch.tipo === 'palco') { renderCinema(ch, tiles); return; }
   ch.users.forEach((u) => {
     const isMe = u.id === selfId;
     const vol = volumeOf(u.name);
@@ -4935,6 +5252,682 @@ function renderMain() {
     }
     tiles.appendChild(t);
   });
+}
+
+// ---- 🎭 Palco: cenários (ar livre, teatro, estádio, cinema particular). A plateia vira avatar sentado ----
+// Gerador de números "aleatórios" fixo por sala: as estrelas e os assentos ficam sempre no mesmo lugar
+function semente(str) { let h = 2166136261; for (const c of String(str)) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return () => { h ^= h << 13; h ^= h >>> 17; h ^= h << 5; return ((h >>> 0) % 10000) / 10000; }; }
+function assentoSVG(tipo, cor) {
+  // vistos de trás, simples e coloridos
+  if (tipo === 'poltrona') return `<svg viewBox="0 0 80 60"><rect x="8" y="6" width="64" height="40" rx="12" fill="${cor}"/><rect x="2" y="28" width="76" height="22" rx="8" fill="${cor}" style="filter:brightness(.8)"/><rect x="10" y="48" width="8" height="10" rx="2" fill="#3b2a1a"/><rect x="62" y="48" width="8" height="10" rx="2" fill="#3b2a1a"/></svg>`;
+  if (tipo === 'puff') return `<svg viewBox="0 0 80 60"><ellipse cx="40" cy="44" rx="36" ry="14" fill="${cor}" style="filter:brightness(.75)"/><path d="M8 40 Q10 10 40 8 Q70 10 72 40 Q60 50 40 50 Q20 50 8 40Z" fill="${cor}"/></svg>`;
+  if (tipo === 'praia') return `<svg viewBox="0 0 80 60"><path d="M14 10 L66 10 L62 40 L18 40 Z" fill="${cor}"/><rect x="6" y="38" width="68" height="10" rx="5" fill="${cor}" style="filter:brightness(.8)"/><path d="M12 10 L6 58 M68 10 L74 58 M10 48 L22 58 M70 48 L58 58" stroke="#d4a373" stroke-width="3" stroke-linecap="round"/></svg>`;
+  if (tipo === 'tapete') return `<svg viewBox="0 0 80 60"><rect x="2" y="30" width="76" height="24" rx="10" fill="${cor}" opacity=".9"/><rect x="10" y="36" width="60" height="12" rx="6" fill="${cor}" style="filter:brightness(.8)"/></svg>`;
+  // teatro: poltrona de veludo com friso dourado
+  if (tipo === 'veludo') return `<svg viewBox="0 0 80 60"><rect x="10" y="4" width="60" height="44" rx="14" fill="${cor}"/><rect x="14" y="8" width="52" height="36" rx="11" fill="none" stroke="#f3c969" stroke-width="2" opacity=".8"/><rect x="2" y="30" width="76" height="22" rx="7" fill="${cor}" style="filter:brightness(.72)"/><rect x="2" y="30" width="76" height="4" fill="#f3c969" opacity=".7"/><rect x="8" y="50" width="10" height="8" rx="2" fill="#5a3b1f"/><rect x="62" y="50" width="10" height="8" rx="2" fill="#5a3b1f"/></svg>`;
+  // estádio: cadeira de plástico da arquibancada
+  if (tipo === 'arquibancada') return `<svg viewBox="0 0 80 60"><rect x="12" y="4" width="56" height="40" rx="8" fill="${cor}"/><rect x="18" y="10" width="44" height="6" rx="3" fill="#000" opacity=".15"/><rect x="18" y="20" width="44" height="6" rx="3" fill="#000" opacity=".15"/><rect x="6" y="36" width="68" height="16" rx="5" fill="${cor}" style="filter:brightness(.78)"/><rect x="2" y="52" width="76" height="6" rx="2" fill="#6b7280"/></svg>`;
+  // sala de estar: pedaço de sofá visto de trás (encosto + assento + braços)
+  if (tipo === 'sofa') return `<svg viewBox="0 0 80 60"><rect x="4" y="6" width="72" height="34" rx="10" fill="${cor}"/><rect x="4" y="6" width="72" height="34" rx="10" fill="#000" opacity=".08"/><rect x="0" y="30" width="80" height="22" rx="8" fill="${cor}" style="filter:brightness(.82)"/><rect x="0" y="26" width="10" height="26" rx="5" fill="${cor}" style="filter:brightness(.9)"/><rect x="70" y="26" width="10" height="26" rx="5" fill="${cor}" style="filter:brightness(.9)"/><rect x="10" y="52" width="6" height="6" fill="#5a3b1f"/><rect x="64" y="52" width="6" height="6" fill="#5a3b1f"/></svg>`;
+  // TalKing: cadeira de vidro com borda neon
+  if (tipo === 'neon') return `<svg viewBox="0 0 80 60"><defs><linearGradient id="nk-${cor.slice(1)}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset=".55" stop-color="#8b5cf6"/><stop offset="1" stop-color="#f472b6"/></linearGradient></defs><rect x="10" y="4" width="60" height="42" rx="16" fill="${cor}" opacity=".55"/><rect x="10" y="4" width="60" height="42" rx="16" fill="none" stroke="url(#nk-${cor.slice(1)})" stroke-width="2.5"/><rect x="2" y="30" width="76" height="22" rx="9" fill="${cor}" opacity=".7"/><rect x="2" y="30" width="76" height="22" rx="9" fill="none" stroke="url(#nk-${cor.slice(1)})" stroke-width="2.5"/><ellipse cx="40" cy="57" rx="22" ry="3" fill="#22d3ee" opacity=".5"/></svg>`;
+  // cinema particular: poltrona reclinável de couro com porta-copos
+  return `<svg viewBox="0 0 80 60"><rect x="8" y="2" width="64" height="46" rx="16" fill="${cor}"/><path d="M20 10 Q40 4 60 10" stroke="#000" stroke-width="2" opacity=".25" fill="none"/><rect x="0" y="30" width="80" height="24" rx="9" fill="${cor}" style="filter:brightness(.7)"/><circle cx="8" cy="36" r="4" fill="#111"/><circle cx="72" cy="36" r="4" fill="#111"/><rect x="24" y="52" width="32" height="6" rx="2" fill="#1f1f1f"/></svg>`;
+}
+function estrelasSVG(rnd, n, ymax) { let s = ''; for (let i = 0; i < n; i++) { const x = rnd() * 1000, y = rnd() * ymax, r = 0.6 + rnd() * 1.6; s += `<circle cx="${x.toFixed(0)}" cy="${y.toFixed(0)}" r="${r.toFixed(1)}" fill="#fff" opacity="${(0.4 + rnd() * 0.6).toFixed(2)}"/>`; } return s; }
+// Cada cenário: desenho (1000x640), retângulo interno da telona (onde a transmissão aparece), fileiras da plateia e os assentos
+const CENAS = {
+  'ar-livre': {
+    nome: 'Ar livre', emoji: '🌙', desc: 'Telona na grama, lua e estrelas',
+    tela: { x: 152, y: 42, w: 696, h: 386 },
+    porta: { x: 3, y: 82 }, // entra pela lateral da grama
+    filas: [{ y: 95, k: 1, cap: 6 }, { y: 87, k: 0.86, cap: 7 }, { y: 80, k: 0.74, cap: 8 }, { y: 74, k: 0.64, cap: 9 }],
+    assentos: ['poltrona', 'puff', 'praia', 'tapete'], cores: ['#e85d9a', '#f59e0b', '#38bdf8', '#a78bfa', '#34d399', '#fb7185', '#facc15'],
+    svg(rnd) {
+      const arvore = (x, y, k, cor) => `<g transform="translate(${x} ${y}) scale(${k})"><rect x="-6" y="0" width="12" height="70" fill="#120a2a"/><ellipse cx="0" cy="-10" rx="46" ry="38" fill="${cor}"/><ellipse cx="-22" cy="10" rx="34" ry="28" fill="${cor}"/><ellipse cx="24" cy="12" rx="34" ry="28" fill="${cor}"/><ellipse cx="0" cy="-40" rx="30" ry="26" fill="${cor}"/></g>`;
+      const moita = (x, y, k) => `<ellipse cx="${x}" cy="${y}" rx="${34 * k}" ry="${16 * k}" fill="#143d2a"/>`;
+      return `<defs>
+      <linearGradient id="ceu" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0b0624"/><stop offset=".6" stop-color="#2a1056"/><stop offset="1" stop-color="#6b2a8a"/></linearGradient>
+      <linearGradient id="grama" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1f7a44"/><stop offset="1" stop-color="#0f4a2a"/></linearGradient>
+      <radialGradient id="lua" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#fff8d6"/><stop offset=".7" stop-color="#ffe9a3"/><stop offset="1" stop-color="#ffe9a3" stop-opacity="0"/></radialGradient>
+      <linearGradient id="feixe" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#fff" stop-opacity=".18"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+    </defs>
+    <rect width="1000" height="640" fill="url(#ceu)"/>
+    ${estrelasSVG(rnd, 80, 420)}
+    <circle cx="80" cy="64" r="40" fill="url(#lua)"/><circle cx="80" cy="64" r="26" fill="#fff6cf"/>
+    <path d="M0 460 Q500 400 1000 460 L1000 640 L0 640Z" fill="#1a0f3a"/>
+    ${arvore(70, 380, 1.0, '#17123a')}${arvore(940, 390, 0.95, '#17123a')}${arvore(130, 430, .55, '#1b1545')}${arvore(880, 432, .55, '#1b1545')}
+    <path d="M0 478 Q250 450 500 470 Q750 490 1000 470 L1000 640 L0 640Z" fill="url(#grama)"/>
+    ${moita(50, 490, 1)}${moita(950, 496, 1.1)}${moita(280, 484, .7)}${moita(720, 488, .8)}
+    <polygon points="500,630 152,44 848,44" fill="url(#feixe)"/>
+    <rect x="300" y="420" width="14" height="62" fill="#2b2140"/><rect x="686" y="420" width="14" height="62" fill="#2b2140"/>
+    <rect x="140" y="30" width="720" height="410" rx="8" fill="#120b26"/>
+    <rect x="152" y="42" width="696" height="386" rx="4" fill="#0a0716"/>`;
+    },
+  },
+  teatro: {
+    nome: 'Teatro', emoji: '🎭', desc: 'Cortinas de veludo, arco dourado e lustre',
+    tela: { x: 152, y: 42, w: 696, h: 386 },
+    porta: { x: 3, y: 92 }, // entra pelo corredor lateral
+    filas: [{ y: 96, k: 1, cap: 6 }, { y: 88, k: 0.86, cap: 7 }, { y: 81, k: 0.74, cap: 8 }, { y: 75, k: 0.64, cap: 9 }],
+    assentos: ['veludo'], cores: ['#9f1239', '#b91c1c', '#881337', '#a21caf', '#7f1d1d'],
+    svg(rnd) {
+      let pregas = '';
+      for (let i = 0; i < 7; i++) { const x = 8 + i * 20; pregas += `<path d="M${x} 0 Q${x + 10} 220 ${x + 4} 470" stroke="#5a0a1a" stroke-width="7" fill="none" opacity=".55"/><path d="M${1000 - x} 0 Q${990 - x} 220 ${996 - x} 470" stroke="#5a0a1a" stroke-width="7" fill="none" opacity=".55"/>`; }
+      let luzes = '';
+      for (let i = 0; i < 12; i++) { const x = 170 + i * 60; luzes += `<ellipse cx="${x}" cy="478" rx="26" ry="10" fill="#ffd27a" opacity=".22"/><circle cx="${x}" cy="482" r="4" fill="#ffe9a3"/>`; }
+      let cristais = '';
+      for (let i = 0; i < 9; i++) { const a = (i / 8) * Math.PI; cristais += `<line x1="500" y1="30" x2="${(500 + Math.cos(a) * 48).toFixed(0)}" y2="${(30 + Math.sin(a) * 26 + 10).toFixed(0)}" stroke="#f3c969" stroke-width="1.5"/><circle cx="${(500 + Math.cos(a) * 48).toFixed(0)}" cy="${(30 + Math.sin(a) * 26 + 12).toFixed(0)}" r="4" fill="#fff3c4"/>`; }
+      return `<defs>
+      <linearGradient id="t-parede" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1a0508"/><stop offset="1" stop-color="#3a0b14"/></linearGradient>
+      <linearGradient id="t-cortina" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#7a0f22"/><stop offset=".5" stop-color="#b3182f"/><stop offset="1" stop-color="#6e0c1d"/></linearGradient>
+      <linearGradient id="t-piso" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5b3a1e"/><stop offset="1" stop-color="#2a1708"/></linearGradient>
+      <linearGradient id="t-ouro" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f3c969"/><stop offset=".5" stop-color="#b8860b"/><stop offset="1" stop-color="#f3c969"/></linearGradient>
+    </defs>
+    <rect width="1000" height="640" fill="url(#t-parede)"/>
+    <!-- lustre -->
+    <line x1="500" y1="0" x2="500" y2="26" stroke="#f3c969" stroke-width="2"/>${cristais}<circle cx="500" cy="30" r="9" fill="#ffe9a3"/><ellipse cx="500" cy="46" rx="70" ry="22" fill="#ffd27a" opacity=".12"/>
+    <!-- piso do palco -->
+    <path d="M0 470 L1000 470 L1000 640 L0 640Z" fill="url(#t-piso)"/>
+    <path d="M0 470 L1000 470" stroke="#f3c969" stroke-width="3"/>
+    ${luzes}
+    <!-- arco dourado -->
+    <rect x="128" y="18" width="744" height="434" rx="14" fill="none" stroke="url(#t-ouro)" stroke-width="12"/>
+    <rect x="140" y="30" width="720" height="410" rx="8" fill="#120b26"/>
+    <rect x="152" y="42" width="696" height="386" rx="4" fill="#0a0716"/>
+    <!-- cortinas laterais -->
+    <path d="M0 0 L150 0 Q120 230 165 470 L0 470Z" fill="url(#t-cortina)"/>
+    <path d="M1000 0 L850 0 Q880 230 835 470 L1000 470Z" fill="url(#t-cortina)"/>
+    ${pregas}
+    <path d="M110 300 Q160 330 150 370" stroke="#f3c969" stroke-width="10" fill="none" stroke-linecap="round"/><path d="M890 300 Q840 330 850 370" stroke="#f3c969" stroke-width="10" fill="none" stroke-linecap="round"/>
+    <path d="M0 0 L1000 0 L1000 36 Q750 70 500 50 Q250 70 0 36Z" fill="#8a1127"/><path d="M0 36 Q250 70 500 50 Q750 70 1000 36" stroke="#f3c969" stroke-width="5" fill="none"/>`;
+    },
+  },
+  estadio: {
+    nome: 'Estádio', emoji: '🏟️', desc: 'Telão gigante, holofotes e arquibancada',
+    tela: { x: 162, y: 60, w: 676, h: 370 },
+    porta: { x: 3, y: 90 }, // entra pelo túnel da arquibancada
+    filas: [{ y: 97, k: 1, cap: 7 }, { y: 90, k: 0.88, cap: 8 }, { y: 84, k: 0.78, cap: 9 }, { y: 79, k: 0.68, cap: 10 }],
+    assentos: ['arquibancada'], cores: ['#2563eb', '#dc2626', '#facc15', '#16a34a', '#f97316', '#e5e7eb'],
+    svg(rnd) {
+      let torcida = '';
+      for (let i = 0; i < 260; i++) { const x = rnd() * 1000, y = 300 + rnd() * 150; torcida += `<circle cx="${x.toFixed(0)}" cy="${y.toFixed(0)}" r="${(2.2 + rnd() * 2).toFixed(1)}" fill="${['#f87171', '#60a5fa', '#fde047', '#e5e7eb', '#4ade80'][Math.floor(rnd() * 5)]}" opacity=".85"/>`; }
+      const torre = (x) => `<rect x="${x - 6}" y="60" width="12" height="260" fill="#374151"/><rect x="${x - 52}" y="40" width="104" height="30" rx="4" fill="#1f2937"/><rect x="${x - 46}" y="46" width="92" height="18" fill="#fff8d6"/><polygon points="${x - 60},70 ${x + 60},70 ${x + 260},640 ${x - 260},640" fill="#fff" opacity=".07"/>`;
+      let linhas = '';
+      for (let i = 0; i < 9; i++) linhas += `<line x1="0" y1="${500 + i * 18}" x2="1000" y2="${500 + i * 18}" stroke="#fff" stroke-width="1" opacity="${i % 2 ? .06 : .12}"/>`;
+      return `<defs>
+      <linearGradient id="e-ceu" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#020617"/><stop offset="1" stop-color="#1e3a5f"/></linearGradient>
+      <linearGradient id="e-campo" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#15803d"/><stop offset="1" stop-color="#14532d"/></linearGradient>
+      <linearGradient id="e-aco" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#6b7280"/><stop offset=".5" stop-color="#d1d5db"/><stop offset="1" stop-color="#6b7280"/></linearGradient>
+    </defs>
+    <rect width="1000" height="640" fill="url(#e-ceu)"/>
+    ${estrelasSVG(rnd, 50, 260)}
+    ${torre(60)}${torre(940)}
+    <!-- arquibancada do outro lado -->
+    <path d="M0 300 L1000 300 L1000 460 L0 460Z" fill="#1f2937"/>
+    <path d="M0 330 L1000 330 M0 360 L1000 360 M0 390 L1000 390 M0 420 L1000 420" stroke="#111827" stroke-width="4"/>
+    ${torcida}
+    <rect x="0" y="456" width="1000" height="14" fill="#0f172a"/>
+    <!-- campo -->
+    <path d="M0 470 L1000 470 L1000 640 L0 640Z" fill="url(#e-campo)"/>
+    ${linhas}
+    <line x1="0" y1="490" x2="1000" y2="490" stroke="#fff" stroke-width="3" opacity=".8"/><circle cx="500" cy="490" r="80" fill="none" stroke="#fff" stroke-width="3" opacity=".6"/>
+    <!-- telão suspenso -->
+    <rect x="300" y="0" width="10" height="46" fill="url(#e-aco)"/><rect x="690" y="0" width="10" height="46" fill="url(#e-aco)"/>
+    <rect x="148" y="44" width="704" height="402" rx="10" fill="#111827" stroke="url(#e-aco)" stroke-width="8"/>
+    <rect x="162" y="60" width="676" height="370" rx="4" fill="#030712"/>
+    <rect x="300" y="446" width="400" height="10" rx="3" fill="#374151"/>`;
+    },
+  },
+  cinema: {
+    nome: 'Cinema particular', emoji: '🍿', desc: 'Sala escura, poltronas de couro e luzes de parede',
+    tela: { x: 152, y: 42, w: 696, h: 386 },
+    porta: { x: 3, y: 92 }, // entra pela porta lateral (lado da placa SAÍDA)
+    filas: [{ y: 96, k: 1, cap: 5 }, { y: 88, k: 0.86, cap: 6 }, { y: 81, k: 0.74, cap: 7 }, { y: 75, k: 0.64, cap: 8 }],
+    assentos: ['reclinavel'], cores: ['#3f3f46', '#44403c', '#7f1d1d', '#1e293b', '#292524'],
+    svg(rnd) {
+      let teto = '';
+      for (let i = 0; i < 40; i++) { const x = rnd() * 1000, y = rnd() * 24; teto += `<circle cx="${x.toFixed(0)}" cy="${y.toFixed(0)}" r="${(0.8 + rnd()).toFixed(1)}" fill="#fff" opacity=".6"/>`; }
+      const arandela = (x, y) => `<ellipse cx="${x}" cy="${y}" rx="40" ry="70" fill="#ffb366" opacity=".16"/><path d="M${x - 12} ${y} L${x + 12} ${y} L${x + 8} ${y - 22} L${x - 8} ${y - 22}Z" fill="#ffd9a8"/><rect x="${x - 3}" y="${y}" width="6" height="14" fill="#8a6a3a"/>`;
+      let carpete = '';
+      for (let i = 0; i < 14; i++) carpete += `<path d="M${i * 80 - 40} 640 L${i * 80 + 20} 478 L${i * 80 + 36} 478 L${i * 80 + 10} 640Z" fill="#000" opacity=".12"/>`;
+      return `<defs>
+      <linearGradient id="c-parede" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0608"/><stop offset="1" stop-color="#2a1218"/></linearGradient>
+      <linearGradient id="c-carpete" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4a1020"/><stop offset="1" stop-color="#1b0609"/></linearGradient>
+      <linearGradient id="c-cortina" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#3b0a14"/><stop offset=".5" stop-color="#6e1225"/><stop offset="1" stop-color="#3b0a14"/></linearGradient>
+    </defs>
+    <rect width="1000" height="640" fill="url(#c-parede)"/>
+    ${teto}
+    <!-- carpete -->
+    <path d="M0 478 L1000 478 L1000 640 L0 640Z" fill="url(#c-carpete)"/>${carpete}
+    <!-- luzes de parede -->
+    ${arandela(60, 250)}${arandela(940, 250)}${arandela(60, 420)}${arandela(940, 420)}
+    <!-- placa de saída -->
+    <rect x="18" y="40" width="64" height="26" rx="4" fill="#064e3b"/><text x="50" y="59" font-size="16" font-family="sans-serif" font-weight="700" fill="#6ee7b7" text-anchor="middle">SAÍDA</text>
+    <!-- caixas de som -->
+    <rect x="96" y="150" width="34" height="120" rx="6" fill="#111"/><circle cx="113" cy="180" r="10" fill="#222"/><circle cx="113" cy="235" r="12" fill="#222"/>
+    <rect x="870" y="150" width="34" height="120" rx="6" fill="#111"/><circle cx="887" cy="180" r="10" fill="#222"/><circle cx="887" cy="235" r="12" fill="#222"/>
+    <!-- cortinas meio abertas -->
+    <path d="M110 20 L170 20 Q150 240 180 450 L110 450Z" fill="url(#c-cortina)"/><path d="M890 20 L830 20 Q850 240 820 450 L890 450Z" fill="url(#c-cortina)"/>
+    <!-- tela -->
+    <rect x="140" y="30" width="720" height="410" rx="6" fill="#000"/>
+    <rect x="152" y="42" width="696" height="386" rx="3" fill="#07070a"/>
+    <rect x="140" y="438" width="720" height="6" fill="#ffb366" opacity=".25"/>
+    <!-- luzinhas do corredor -->
+    <circle cx="500" cy="500" r="3" fill="#ffd9a8"/><circle cx="500" cy="540" r="3" fill="#ffd9a8"/><circle cx="500" cy="585" r="3" fill="#ffd9a8"/><circle cx="500" cy="628" r="3" fill="#ffd9a8"/>`;
+    },
+  },
+  talking: {
+    nome: 'TalKing', emoji: '👑', desc: 'Vidro e neon, na cara do TalKing',
+    tela: { x: 152, y: 48, w: 696, h: 386 },
+    porta: { x: 3, y: 88 }, // entra pelo lado do pilar
+    filas: [{ y: 96, k: 1, cap: 6 }, { y: 88, k: 0.86, cap: 7 }, { y: 81, k: 0.74, cap: 8 }, { y: 75, k: 0.64, cap: 9 }],
+    assentos: ['neon'], cores: ['#1c1450', '#2a1a6e', '#141a4a', '#2a0f5c', '#101c3a'],
+    svg(rnd) {
+      let grade = '';
+      for (let i = -6; i <= 16; i++) grade += `<line x1="${500 + (i - 5) * 60}" y1="640" x2="${500 + (i - 5) * 14}" y2="470" stroke="#22d3ee" stroke-width="1.2" opacity=".35"/>`;
+      for (let i = 0; i < 8; i++) { const y = 470 + Math.pow(i / 7, 1.8) * 170; grade += `<line x1="0" y1="${y.toFixed(0)}" x2="1000" y2="${y.toFixed(0)}" stroke="#8b5cf6" stroke-width="1.2" opacity="${(0.25 + i * 0.06).toFixed(2)}"/>`; }
+      let particulas = '';
+      for (let i = 0; i < 60; i++) { const x = rnd() * 1000, y = rnd() * 460, r = 0.8 + rnd() * 2; particulas += `<circle cx="${x.toFixed(0)}" cy="${y.toFixed(0)}" r="${r.toFixed(1)}" fill="${['#22d3ee', '#8b5cf6', '#f472b6', '#fff'][Math.floor(rnd() * 4)]}" opacity="${(0.3 + rnd() * 0.6).toFixed(2)}"/>`; }
+      const pilar = (x) => `<rect x="${x - 10}" y="60" width="20" height="410" rx="10" fill="#1c1450" opacity=".8"/><rect x="${x - 10}" y="60" width="20" height="410" rx="10" fill="none" stroke="url(#k-neon)" stroke-width="2"/><rect x="${x - 3}" y="80" width="6" height="370" rx="3" fill="url(#k-neon)" filter="url(#k-blur)"/>`;
+      return `<defs>
+      <linearGradient id="k-fundo" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#070416"/><stop offset="1" stop-color="#140c3a"/></linearGradient>
+      <linearGradient id="k-neon" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset=".55" stop-color="#8b5cf6"/><stop offset="1" stop-color="#f472b6"/></linearGradient>
+      <linearGradient id="k-piso" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0b0726"/><stop offset="1" stop-color="#1a1050"/></linearGradient>
+      <radialGradient id="k-glow1" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#22d3ee" stop-opacity=".35"/><stop offset="1" stop-color="#22d3ee" stop-opacity="0"/></radialGradient>
+      <radialGradient id="k-glow2" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#f472b6" stop-opacity=".3"/><stop offset="1" stop-color="#f472b6" stop-opacity="0"/></radialGradient>
+      <filter id="k-blur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="6"/></filter>
+    </defs>
+    <rect width="1000" height="640" fill="url(#k-fundo)"/>
+    <ellipse cx="80" cy="60" rx="320" ry="240" fill="url(#k-glow1)"/><ellipse cx="960" cy="600" rx="340" ry="260" fill="url(#k-glow2)"/>
+    ${particulas}
+    <!-- piso de vidro com grade neon -->
+    <path d="M0 470 L1000 470 L1000 640 L0 640Z" fill="url(#k-piso)"/>
+    ${grade}
+    <line x1="0" y1="470" x2="1000" y2="470" stroke="url(#k-neon)" stroke-width="3"/><line x1="0" y1="470" x2="1000" y2="470" stroke="url(#k-neon)" stroke-width="10" opacity=".5" filter="url(#k-blur)"/>
+    ${pilar(60)}${pilar(940)}
+    <!-- coroa neon em cima da telona -->
+    <g transform="translate(470 6) scale(2.6)"><path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 10H5L3 8z" fill="none" stroke="url(#k-neon)" stroke-width="2.2" stroke-linejoin="round" filter="url(#k-blur)" opacity=".9"/><path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 10H5L3 8z" fill="#1c1450" stroke="url(#k-neon)" stroke-width="2" stroke-linejoin="round"/></g>
+    <!-- telona de vidro com moldura neon -->
+    <rect x="136" y="32" width="728" height="418" rx="18" fill="url(#k-neon)" opacity=".55" filter="url(#k-blur)"/>
+    <rect x="140" y="36" width="720" height="410" rx="14" fill="#0b0726" stroke="url(#k-neon)" stroke-width="3"/>
+    <rect x="152" y="48" width="696" height="386" rx="8" fill="#06040f"/>
+    <rect x="140" y="446" width="720" height="4" fill="url(#k-neon)" opacity=".8"/>`;
+    },
+  },
+  sala: {
+    nome: 'Sala de estar (fumantes)', emoji: '🚬', desc: 'Sala vidro e neon, TV na parede; cada um entra pela porta e senta',
+    tela: { x: 280, y: 44, w: 440, h: 248 },
+    porta: { x: 6, y: 66 }, // de onde o avatar entra (em % da cena)
+    palcoPos: [{ left: '24%', top: '60%' }, { left: '72%', top: '60%' }], // quem está no palco fica do lado do rack
+    fumar: true,
+    cinzeiro: { x: 50, y: 73 }, // onde o baseado é jogado no fim (em % da cena)
+    filas: [{ y: 97, k: 1, cap: 5 }, { y: 86, k: 0.86, cap: 6 }, { y: 77, k: 0.74, cap: 7 }, { y: 70, k: 0.64, cap: 8 }],
+    assentos: ['sofa', 'sofa', 'puff'], cores: ['#5b4bd6', '#2a9ec9', '#c2429a', '#3b3f8f', '#7c5cff'],
+    svg(rnd) {
+      let livros = '';
+      for (let i = 0; i < 9; i++) { const x = 134 + (i % 3) * 18, y = 150 + Math.floor(i / 3) * 76; livros += `<rect x="${x}" y="${y}" width="13" height="${34 + rnd() * 16}" rx="2" fill="${['#22d3ee', '#8b5cf6', '#f472b6', '#a5f3fc'][Math.floor(rnd() * 4)]}" opacity=".9"/>`; }
+      let estrelas = '';
+      for (let i = 0; i < 16; i++) estrelas += `<circle cx="${(828 + rnd() * 154).toFixed(0)}" cy="${(64 + rnd() * 160).toFixed(0)}" r="${(1 + rnd() * 1.4).toFixed(1)}" fill="#fff" opacity=".8"/>`;
+      let grade = '';
+      for (let i = 0; i < 9; i++) grade += `<line x1="${110 + i * 97}" y1="520" x2="${60 + i * 110}" y2="640" stroke="#22d3ee" stroke-width="1" opacity=".18"/>`;
+      for (let i = 0; i < 4; i++) grade += `<line x1="0" y1="${520 + i * 40}" x2="1000" y2="${520 + i * 40}" stroke="#8b5cf6" stroke-width="1" opacity=".18"/>`;
+      return `<defs>
+      <linearGradient id="s-parede" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0820"/><stop offset="1" stop-color="#1a1448"/></linearGradient>
+      <linearGradient id="s-piso" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#17123f"/><stop offset="1" stop-color="#0b0826"/></linearGradient>
+      <linearGradient id="s-neon" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#22d3ee"/><stop offset=".55" stop-color="#8b5cf6"/><stop offset="1" stop-color="#f472b6"/></linearGradient>
+      <radialGradient id="s-tvluz" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#8b5cf6" stop-opacity=".45"/><stop offset="1" stop-color="#22d3ee" stop-opacity="0"/></radialGradient>
+      <radialGradient id="s-luz" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#22d3ee" stop-opacity=".35"/><stop offset="1" stop-color="#22d3ee" stop-opacity="0"/></radialGradient>
+      <filter id="s-blur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="6"/></filter>
+    </defs>
+    <rect width="1000" height="640" fill="url(#s-parede)"/>
+    <!-- fita de LED no teto -->
+    <rect x="0" y="0" width="1000" height="4" fill="url(#s-neon)"/><rect x="0" y="0" width="1000" height="10" fill="url(#s-neon)" opacity=".5" filter="url(#s-blur)"/>
+    <!-- piso de vidro -->
+    <path d="M0 440 L1000 440 L1000 640 L0 640Z" fill="url(#s-piso)"/>
+    <rect x="0" y="438" width="1000" height="3" fill="url(#s-neon)"/><rect x="0" y="434" width="1000" height="10" fill="url(#s-neon)" opacity=".45" filter="url(#s-blur)"/>
+    ${grade}
+    <ellipse cx="500" cy="600" rx="400" ry="80" fill="#2a1f6e" opacity=".55"/><ellipse cx="500" cy="600" rx="400" ry="80" fill="none" stroke="url(#s-neon)" stroke-width="2" opacity=".7"/>
+    <!-- porta de vidro (por onde todo mundo entra), encostada na parede da esquerda -->
+    <rect x="14" y="222" width="92" height="220" rx="6" fill="#1c1450"/><rect x="14" y="222" width="92" height="220" rx="6" fill="none" stroke="url(#s-neon)" stroke-width="3"/>
+    <rect x="24" y="232" width="72" height="200" rx="4" fill="#22d3ee" opacity=".12"/><line x1="60" y1="232" x2="60" y2="432" stroke="#22d3ee" stroke-width="1" opacity=".4"/>
+    <rect x="84" y="320" width="5" height="26" rx="2" fill="#f472b6"/>
+    <!-- estante de vidro ao lado da porta, em pé no chão -->
+    <rect x="124" y="136" width="64" height="304" rx="4" fill="#120e36"/><rect x="124" y="136" width="64" height="304" rx="4" fill="none" stroke="url(#s-neon)" stroke-width="2"/>
+    <rect x="124" y="208" width="64" height="3" fill="#22d3ee" opacity=".8"/><rect x="124" y="284" width="64" height="3" fill="#8b5cf6" opacity=".8"/><rect x="124" y="360" width="64" height="3" fill="#f472b6" opacity=".8"/>
+    ${livros}
+    <rect x="134" y="378" width="44" height="50" rx="4" fill="#2a1f6e"/><circle cx="156" cy="403" r="10" fill="#22d3ee" opacity=".8"/>
+    <!-- abajur de pé neon -->
+    <rect x="222" y="150" width="5" height="286" fill="#9aa5c9"/><path d="M198 150 L254 150 L244 96 L208 96Z" fill="#1c1450" stroke="#22d3ee" stroke-width="2"/><ellipse cx="226" cy="150" rx="28" ry="5" fill="#22d3ee" opacity=".8"/>
+    <ellipse cx="226" cy="230" rx="90" ry="130" fill="url(#s-luz)"/><path d="M204 436 L248 436 L240 426 L212 426Z" fill="#9aa5c9"/>
+    <!-- relógio -->
+    <circle cx="226" cy="56" r="22" fill="#120e36" stroke="#8b5cf6" stroke-width="3"/><line x1="226" y1="56" x2="226" y2="42" stroke="#a5f3fc" stroke-width="3"/><line x1="226" y1="56" x2="237" y2="61" stroke="#a5f3fc" stroke-width="3"/>
+    <!-- TV na parede com LED atrás + rack de vidro -->
+    <ellipse cx="500" cy="170" rx="330" ry="200" fill="url(#s-tvluz)"/>
+    <rect x="260" y="24" width="480" height="288" rx="12" fill="url(#s-neon)" opacity=".7" filter="url(#s-blur)"/>
+    <rect x="266" y="30" width="468" height="276" rx="8" fill="#0b0826" stroke="url(#s-neon)" stroke-width="2"/>
+    <rect x="280" y="44" width="440" height="248" rx="3" fill="#06040f"/>
+    <rect x="330" y="334" width="340" height="56" rx="6" fill="#1c1450"/><rect x="330" y="334" width="340" height="56" rx="6" fill="none" stroke="url(#s-neon)" stroke-width="2"/>
+    <rect x="470" y="346" width="60" height="30" rx="3" fill="#0b0826"/><circle cx="486" cy="361" r="3" fill="#22d3ee"/><circle cx="498" cy="361" r="3" fill="#f472b6"/>
+    <rect x="356" y="350" width="34" height="22" rx="3" fill="#2a1f6e"/><rect x="610" y="350" width="34" height="22" rx="3" fill="#2a1f6e"/>
+    <!-- caixa de som -->
+    <rect x="380" y="298" width="16" height="36" rx="3" fill="#0b0826" stroke="#22d3ee" stroke-width="1"/><circle cx="388" cy="306" r="3" fill="#22d3ee"/>
+    <!-- planta neon -->
+    <rect x="600" y="302" width="30" height="32" rx="4" fill="#1c1450" stroke="#8b5cf6" stroke-width="1.5"/><path d="M615 302 Q590 272 605 250 Q615 276 615 302 Q625 268 645 258 Q630 286 615 302Z" fill="#34d399"/>
+    <!-- letreiro neon TalKing (coroa) + prateleiras à direita -->
+    <g transform="translate(760 54) scale(2)"><path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 10H5L3 8z" fill="none" stroke="url(#s-neon)" stroke-width="2" stroke-linejoin="round" filter="url(#s-blur)"/><path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 10H5L3 8z" fill="#1c1450" stroke="url(#s-neon)" stroke-width="1.8" stroke-linejoin="round"/></g>
+    <rect x="700" y="130" width="100" height="6" rx="3" fill="url(#s-neon)" opacity=".9"/><rect x="730" y="190" width="100" height="6" rx="3" fill="url(#s-neon)" opacity=".9"/>
+    <rect x="712" y="106" width="26" height="24" rx="3" fill="#22d3ee" opacity=".8"/><rect x="746" y="110" width="12" height="20" fill="#f472b6"/><rect x="760" y="112" width="12" height="18" fill="#8b5cf6"/>
+    <path d="M770 190 Q755 160 770 146 Q780 168 790 150 Q792 172 780 190Z" fill="#34d399"/><rect x="760" y="184" width="30" height="8" rx="2" fill="#2a1f6e"/>
+    <!-- janela com moldura neon -->
+    <rect x="824" y="60" width="160" height="196" rx="6" fill="#06040f"/>${estrelas}<circle cx="930" cy="112" r="20" fill="#fff3c4"/>
+    <rect x="824" y="60" width="160" height="196" rx="6" fill="none" stroke="url(#s-neon)" stroke-width="4"/><line x1="904" y1="60" x2="904" y2="256" stroke="#8b5cf6" stroke-width="3" opacity=".8"/>
+    <!-- gato dormindo na almofada -->
+    <ellipse cx="150" cy="472" rx="44" ry="13" fill="#5b4bd6"/><ellipse cx="150" cy="464" rx="30" ry="14" fill="#e8873c"/><circle cx="172" cy="458" r="10" fill="#e8873c"/><path d="M165 450 L169 442 L174 450Z M174 450 L178 442 L182 450Z" fill="#e8873c"/><path d="M122 468 Q110 458 120 450" stroke="#e8873c" stroke-width="5" fill="none" stroke-linecap="round"/>
+    <!-- mesinha de vidro com cinzeiro -->
+    <ellipse cx="500" cy="470" rx="40" ry="13" fill="#2a1f6e" opacity=".8"/><ellipse cx="500" cy="470" rx="40" ry="13" fill="none" stroke="url(#s-neon)" stroke-width="2"/><rect x="494" y="472" width="12" height="28" fill="#1c1450"/><ellipse cx="500" cy="466" rx="12" ry="4" fill="#9ca3af"/>`;
+    },
+  },
+};
+const cenaDe = (ch) => CENAS[ch?.tema] || CENAS['ar-livre'];
+// quem já está sentado em cada sala (pra animar só quem acabou de chegar)
+const jaSentados = new Map();
+const chegadas = new Map(); // uid -> quando começou a andar (pra continuar a animação se a sala redesenhar no meio)
+function cenarioSVG(cena, rnd) {
+  return `<svg class="cena" viewBox="0 0 1000 640" preserveAspectRatio="xMidYMid slice" aria-hidden="true">${cena.svg(rnd)}</svg>`;
+}
+const PLATEIA_OPTS = {
+  mic: { titulo: '🎙️ Microfone da plateia', livre: 'Livre', mudo: 'Mutado' },
+  cam: { titulo: '📷 Câmera da plateia', livre: 'Livre', mudo: 'Fechada' },
+};
+// Caixinha do cenário + regras da plateia. Devolve { tema, mic, cam } ou null
+function escolheTema(atual, plateia = {}) {
+  return new Promise((res) => {
+    document.querySelectorAll('.tipo-pop').forEach((p) => p.remove());
+    const sel = { tema: CENAS[atual] ? atual : 'ar-livre', mic: plateia.mic === 'mudo' ? 'mudo' : 'livre', cam: plateia.cam === 'mudo' ? 'mudo' : 'livre' };
+    const pop = document.createElement('div');
+    pop.className = 'modal';
+    pop.innerHTML = `<div class="modal-card tipo-pop tema-pop"><h2>Qual o cenário do palco?</h2><div class="tema-lista">${Object.entries(CENAS).map(([k, t]) => `<button type="button" class="tipo-opt${k === sel.tema ? ' atual' : ''}" data-tema="${k}"><span class="tipo-emoji">${t.emoji}</span><span><strong>${t.nome}</strong><small>${t.desc}</small></span></button>`).join('')}</div>
+      <div class="plateia-regras">${Object.entries(PLATEIA_OPTS).map(([k, o]) => `<div class="regra"><span>${o.titulo}</span><div class="seg" data-regra="${k}"><button type="button" data-v="livre" class="${sel[k] === 'livre' ? 'on' : ''}">${o.livre} 100%</button><button type="button" data-v="mudo" class="${sel[k] === 'mudo' ? 'on' : ''}">${o.mudo} 100%</button></div></div>`).join('')}<small>Quem está no palco sempre pode falar e ligar a câmera. Dá pra mudar depois no botão 🎨.</small></div>
+      <div class="tema-acoes"><button type="button" class="btn tipo-cancel">Cancelar</button><button type="button" class="btn primary tema-ok">Confirmar</button></div></div>`;
+    document.body.appendChild(pop);
+    const fim = (v) => { pop.remove(); res(v); };
+    pop.querySelectorAll('.tipo-opt').forEach((b) => { b.onclick = () => { sel.tema = b.dataset.tema; pop.querySelectorAll('.tipo-opt').forEach((x) => x.classList.toggle('atual', x === b)); }; });
+    pop.querySelectorAll('.seg button').forEach((b) => { b.onclick = () => { const k = b.closest('.seg').dataset.regra; sel[k] = b.dataset.v; b.parentElement.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); }; });
+    pop.querySelector('.tema-ok').onclick = () => fim({ ...sel });
+    pop.querySelector('.tipo-cancel').onclick = () => fim(null);
+    pop.onclick = (e) => { if (e.target === pop) fim(null); };
+  });
+}
+let cinemaObs = null;
+function posicionaTelona() {
+  // o #screens (transmissões) fica exatamente em cima da telona desenhada
+  const cena = document.querySelector('.cinema'), sc = $('#screens'), st = $('#stage');
+  if (!cena || !sc || !st || !document.body.classList.contains('palco')) return;
+  const svg = cena.querySelector('.cena');
+  const t = cenaDe(currentCh()).tela;
+  const r = svg.getBoundingClientRect(), base = st.getBoundingClientRect();
+  // viewBox 1000x640 com "slice": calcula a escala e o deslocamento reais
+  const k = Math.max(r.width / 1000, r.height / 640);
+  const ox = r.left + (r.width - 1000 * k) / 2, oy = r.top + (r.height - 640 * k) / 2;
+  Object.assign(sc.style, { left: `${ox - base.left + st.scrollLeft + t.x * k}px`, top: `${oy - base.top + st.scrollTop + t.y * k}px`, width: `${t.w * k}px`, height: `${t.h * k}px` });
+  const txt = cena.querySelector('.telona-txt');
+  if (txt) Object.assign(txt.style, { left: `${ox - r.left + t.x * k}px`, top: `${oy - r.top + t.y * k}px`, width: `${t.w * k}px`, height: `${t.h * k}px` });
+}
+// O baseado da brincadeira "Hora de fumar", desenhado uma vez e usado como figurinha na sala dos fumantes
+const _spritesBaseado = new Map();
+let _jointSala = null;
+function spriteBaseado(len = 400) {
+  len = Math.max(110, Math.round(len / 20) * 20); // em degraus, pra reaproveitar o desenho
+  if (_spritesBaseado.has(len)) return _spritesBaseado.get(len);
+  let url = '';
+  try {
+    if (!_jointSala) _jointSala = jointData();
+    const c = document.createElement('canvas');
+    c.width = 500; c.height = 160;
+    const g = c.getContext('2d');
+    g.translate(30, 40);
+    drawJoint(g, _jointSala, len, true, 900);
+    url = c.toDataURL('image/png');
+  } catch { url = ''; }
+  _spritesBaseado.set(len, url);
+  return url;
+}
+const FUMAR_MS = 60_000;
+const baseadoLen = (inicio) => 400 - 290 * Math.min(1, (Date.now() - inicio) / FUMAR_MS);
+async function mandaFumar() {
+  const ch = currentCh();
+  if (!ch || ch.tipo !== 'palco' || !cenaDe(ch).fumar) return;
+  const r = await emitAck('palco-fumar', {});
+  if (r?.error) toast(r.error);
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'F1' || !document.body.classList.contains('palco')) return;
+  if (e.target.matches('input, textarea, [contenteditable]')) return;
+  e.preventDefault();
+  mandaFumar();
+});
+// a cada segundo o baseado de quem está fumando encurta; no fim ele voa pro cinzeiro
+setInterval(() => {
+  document.querySelectorAll('.cinema .cigarro[data-inicio]').forEach((el) => {
+    const inicio = +el.dataset.inicio, img = el.querySelector('img');
+    if (!img) return;
+    if (Date.now() - inicio >= FUMAR_MS) {
+      if (el.dataset.jogado) return;
+      el.dataset.jogado = '1';
+      jogaNoCinzeiro(el);
+      return;
+    }
+    const src = spriteBaseado(baseadoLen(inicio));
+    if (img.getAttribute('src') !== src) img.src = src;
+  });
+}, 1000);
+function jogaNoCinzeiro(el) {
+  const cena = document.querySelector('.cinema');
+  const ch = currentCh();
+  const cz = cena && cenaDe(ch).cinzeiro;
+  const fum = el.parentElement?.querySelector('.fumaca');
+  if (fum) fum.remove();
+  if (!cz) { el.remove(); return; }
+  const a = centroDe(el), r = cena.getBoundingClientRect(), st = $('#stage').getBoundingClientRect(), stEl = $('#stage');
+  const b = { x: r.left - st.left + stEl.scrollLeft + r.width * cz.x / 100, y: r.top - st.top + stEl.scrollTop + r.height * cz.y / 100 };
+  const voa = document.createElement('span');
+  voa.className = 'reacao voa baseado-voa';
+  voa.innerHTML = `<img src="${spriteBaseado(110)}" alt="">`;
+  camadaReacoes().appendChild(voa);
+  el.remove();
+  const alt = Math.max(50, Math.hypot(b.x - a.x, b.y - a.y) * 0.3), passos = [];
+  for (let i = 0; i <= 12; i++) {
+    const t = i / 12, mx = (a.x + b.x) / 2, my = Math.min(a.y, b.y) - alt;
+    const x = (1 - t) * (1 - t) * a.x + 2 * (1 - t) * t * mx + t * t * b.x;
+    const y = (1 - t) * (1 - t) * a.y + 2 * (1 - t) * t * my + t * t * b.y;
+    passos.push({ transform: `translate(${x}px, ${y}px) rotate(${-30 + t * 400}deg)`, opacity: t > 0.9 ? 0.6 : 1 });
+  }
+  someDepois(voa, 900);
+  voa.animate(passos, { duration: 900, easing: 'ease-in', fill: 'forwards' }).onfinish = () => {
+    voa.remove();
+    // última fumacinha no cinzeiro
+    for (let i = 0; i < 3; i++) {
+      const p = document.createElement('span');
+      p.className = 'reacao pedaco fumo';
+      camadaReacoes().appendChild(p);
+      someDepois(p, 1400);
+      p.animate([{ transform: `translate(${b.x}px, ${b.y}px) scale(.5)`, opacity: .7 }, { transform: `translate(${b.x + (i - 1) * 10}px, ${b.y - 40 - i * 8}px) scale(2.2)`, opacity: 0 }], { duration: 1400, delay: i * 200, easing: 'ease-out', fill: 'forwards' }).onfinish = () => p.remove();
+    }
+  };
+}
+
+// ---- 🍿 Reações da plateia: pipoca/tomate em alguém, aplausos e cia para a tela ----
+const REACAO_EMOJI = { aplauso: '👏', fogo: '🔥', risada: '😂', coracao: '❤️', uau: '😮', pipoca: '🍿', tomate: '🍅' };
+const REACAO_NOME = { aplauso: 'Aplaudir', fogo: 'Que fogo!', risada: 'Rindo', coracao: 'Amei', uau: 'Uau!', pipoca: 'Jogar pipoca', tomate: 'Jogar tomate' };
+const REACAO_ALVO = new Set(['pipoca', 'tomate']);
+let ultimaReacao = 0;
+async function mandaReacao(tipo, alvo) {
+  const agora = Date.now();
+  if (agora - ultimaReacao < 250) return;
+  ultimaReacao = agora;
+  const r = await emitAck('palco-reacao', { tipo, alvo: alvo || null });
+  if (r?.error) toast(r.error);
+}
+function camadaReacoes() {
+  const st = $('#stage');
+  let l = st.querySelector('#reacoes');
+  if (!l) { l = document.createElement('div'); l.id = 'reacoes'; st.appendChild(l); }
+  return l;
+}
+// centro de um elemento, relativo ao #stage
+function centroDe(el) {
+  const st = $('#stage'), r = el.getBoundingClientRect(), b = st.getBoundingClientRect();
+  return { x: r.left - b.left + st.scrollLeft + r.width / 2, y: r.top - b.top + st.scrollTop + r.height / 2, w: r.width };
+}
+function pessoaNaCena(uid) {
+  const d = document.querySelector(`.cinema [data-uid="${CSS.escape(uid)}"]`);
+  return d ? (d.querySelector('.cam-redonda') || d.querySelector('.avatar') || d) : null;
+}
+// garante que o emoji some mesmo se a aba estiver em segundo plano (animação pausada)
+function someDepois(el, ms) { setTimeout(() => el.remove(), ms + 400); }
+function animaReacao({ tipo, de, alvo }) {
+  const cena = document.querySelector('.cinema');
+  if (!cena || !REACAO_EMOJI[tipo]) return;
+  const origemEl = pessoaNaCena(de);
+  const camada = camadaReacoes();
+  const emoji = REACAO_EMOJI[tipo];
+  const quem = findUser(de);
+  if (REACAO_ALVO.has(tipo)) {
+    const alvoEl = alvo && pessoaNaCena(alvo);
+    if (!origemEl || !alvoEl) return;
+    const a = centroDe(origemEl), b = centroDe(alvoEl);
+    // quem joga dá uma "balançada" de arremesso antes da pipoca sair
+    const origemDiv = origemEl.closest('[data-uid]');
+    if (origemDiv) { origemDiv.classList.add('arremessa'); setTimeout(() => origemDiv.classList.remove('arremessa'), 450); }
+    const voa = document.createElement('span');
+    voa.className = 'reacao voa';
+    voa.textContent = emoji;
+    camada.appendChild(voa);
+    // trajetória com "gravidade": parábola de verdade (sobe rápido, cai acelerando), com cambalhotas e sombra
+    const dist = Math.hypot(b.x - a.x, b.y - a.y);
+    const alt = Math.max(70, dist * 0.42);
+    const dur = 700 + Math.min(700, dist * 0.9);
+    const N = 24, passos = [];
+    const giros = (2 + Math.random() * 2) * (b.x >= a.x ? 1 : -1);
+    for (let i = 0; i <= N; i++) {
+      const t = i / N;
+      const x = a.x + (b.x - a.x) * t;
+      const y = a.y + (b.y - a.y) * t - alt * 4 * t * (1 - t); // parábola
+      const esc = 1 + Math.sin(t * Math.PI) * 0.7; // "chega mais perto da câmera" no alto
+      const wobble = Math.sin(t * Math.PI * 6) * 6;
+      passos.push({ transform: `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) rotate(${(giros * 360 * t + wobble).toFixed(0)}deg) scale(${esc.toFixed(2)})` });
+    }
+    // sombra no chão acompanha
+    const sombra = document.createElement('span');
+    sombra.className = 'reacao sombra';
+    camada.appendChild(sombra);
+    const sPassos = [];
+    for (let i = 0; i <= N; i++) { const t = i / N; const x = a.x + (b.x - a.x) * t, y = a.y + (b.y - a.y) * t + 14; const h = 4 * t * (1 - t); sPassos.push({ transform: `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) scale(${(1 - h * 0.5).toFixed(2)})`, opacity: 0.35 - h * 0.2 }); }
+    someDepois(voa, 220 + dur); someDepois(sombra, 220 + dur);
+    const anim = voa.animate(passos, { duration: dur, delay: 220, easing: 'linear', fill: 'forwards' });
+    sombra.animate(sPassos, { duration: dur, delay: 220, easing: 'linear', fill: 'forwards' });
+    anim.onfinish = () => {
+      voa.remove(); sombra.remove();
+      const alvoDiv = alvoEl.closest('[data-uid]');
+      if (alvoDiv) { alvoDiv.classList.add('atingido'); setTimeout(() => alvoDiv.classList.remove('atingido'), 600); }
+      // estouro: cada pedaço sai com velocidade própria e cai com gravidade, quicando
+      const n = tipo === 'tomate' ? 9 : 10;
+      for (let i = 0; i < n; i++) {
+        const p = document.createElement('span');
+        p.className = 'reacao pedaco';
+        p.textContent = tipo === 'tomate' ? (i % 3 === 0 ? '🍅' : '🔴') : '🍿';
+        if (tipo === 'tomate' && i % 3 !== 0) p.classList.add('gota');
+        camada.appendChild(p);
+        const ang = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 1.3, vel = 60 + Math.random() * 90;
+        const vx = Math.cos(ang) * vel, vy = Math.sin(ang) * vel, g = 260, T = 0.9 + Math.random() * 0.4;
+        const kf = [];
+        for (let k = 0; k <= 12; k++) {
+          const t = (k / 12) * T;
+          const x = b.x + vx * t, y = b.y + vy * t + 0.5 * g * t * t;
+          kf.push({ transform: `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) rotate(${(t * 400 * (i % 2 ? 1 : -1)).toFixed(0)}deg) scale(${(1 - (k / 12) * 0.6).toFixed(2)})`, opacity: k < 9 ? 1 : 1 - (k - 9) / 3 });
+        }
+        someDepois(p, T * 1000);
+        p.animate(kf, { duration: T * 1000, easing: 'linear', fill: 'forwards' }).onfinish = () => p.remove();
+      }
+      if (tipo === 'tomate') {
+        // mancha vermelha que escorre e some
+        const m = document.createElement('span');
+        m.className = 'reacao mancha';
+        m.innerHTML = '<svg viewBox="0 0 60 60"><path d="M30 6 C40 4 52 10 54 22 C56 32 50 36 52 46 C53 54 44 58 38 52 C34 48 26 56 20 52 C12 48 14 40 10 34 C4 26 8 12 18 10 C22 9 26 7 30 6Z" fill="#dc2626" opacity=".9"/><circle cx="24" cy="24" r="4" fill="#f87171" opacity=".8"/></svg>';
+        camada.appendChild(m);
+        someDepois(m, 1500);
+        m.animate([
+          { transform: `translate(${b.x}px, ${b.y}px) scale(.3)`, opacity: 0 },
+          { transform: `translate(${b.x}px, ${b.y}px) scale(1.15)`, opacity: 1, offset: 0.12 },
+          { transform: `translate(${b.x}px, ${b.y + 6}px) scale(1)`, opacity: .9, offset: 0.5 },
+          { transform: `translate(${b.x}px, ${b.y + 18}px) scale(1.05, 1.25)`, opacity: 0 },
+        ], { duration: 1500, easing: 'ease-out', fill: 'forwards' }).onfinish = () => m.remove();
+      }
+      if (quem && alvo === selfId) toast(`${quem.name} jogou ${tipo} em você! ${emoji}`);
+    };
+    return;
+  }
+  // reação para a tela: sobe da pessoa em direção à telona e some
+  const sc = $('#screens');
+  const a = origemEl ? centroDe(origemEl) : centroDe(cena);
+  const tela = sc && !sc.hidden && sc.offsetWidth ? centroDe(sc) : { x: a.x, y: a.y - 200 };
+  for (let i = 0; i < 5; i++) {
+    const p = document.createElement('span');
+    p.className = 'reacao sobe';
+    p.textContent = emoji;
+    camada.appendChild(p);
+    const dx = (Math.random() - 0.5) * 70, fim = { x: a.x + (tela.x - a.x) * (0.25 + Math.random() * 0.35) + dx, y: a.y - 80 - Math.random() * 120 };
+    p.animate([
+      { transform: `translate(${a.x}px, ${a.y}px) scale(.6)`, opacity: 0 },
+      { transform: `translate(${a.x + dx / 2}px, ${a.y - 30}px) scale(1.2)`, opacity: 1, offset: 0.2 },
+      { transform: `translate(${fim.x}px, ${fim.y}px) scale(.9) rotate(${(Math.random() - 0.5) * 40}deg)`, opacity: 0 },
+    ], { duration: 1300 + Math.random() * 500, delay: i * 90, easing: 'ease-out', fill: 'forwards' }).onfinish = () => p.remove();
+    someDepois(p, 1800 + i * 90);
+  }
+}
+socket.on('palco-reacao', (r) => { try { animaReacao(r); } catch (e) { console.warn('reação', e); } });
+
+function renderCinema(ch, box) {
+  const gerente = podeGerirSrv(ch.srv);
+  const palco = ch.users.filter((u) => u.stage);
+  const plateia = ch.users.filter((u) => !u.stage);
+  const eu = ch.users.find((u) => u.id === selfId);
+  const euNoPalco = !!eu?.stage;
+  noPalco = euNoPalco;
+  document.body.classList.toggle('no-palco', euNoPalco);
+  // Plateia assiste automaticamente quem transmite no palco
+  palco.forEach((u) => { if (u.id !== selfId && isSharing(u.id) && !watching.has(u.id)) watch(u.id); });
+  const rnd = semente(ch.id);
+  const cena = cenaDe(ch);
+  const wrap = document.createElement('div');
+  wrap.className = `cinema tema-${ch.tema || 'ar-livre'}`;
+  wrap.innerHTML = cenarioSVG(cena, rnd);
+  const alguemTransmite = palco.some((u) => isSharing(u.id));
+  // texto na telona apagada
+  const tela = document.createElement('div');
+  tela.className = 'telona-txt';
+  tela.innerHTML = alguemTransmite ? '' : `<span>🎬</span><strong>${palco.length ? 'Esperando alguém do palco transmitir…' : 'O palco está vazio'}</strong><small>${gerente ? 'Passe o mouse em alguém da plateia e clique em "Subir ao palco".' : 'Quem está no palco pode transmitir a tela para todo mundo.'}</small>`;
+  tela.hidden = alguemTransmite;
+  wrap.appendChild(tela);
+  const botaoPalco = (u) => {
+    if (u.id === selfId) return u.stage ? '<button type="button" class="btn small stage-btn" data-off="1">⬇ Descer do palco</button>' : '';
+    if (!gerente) return '';
+    return u.stage ? '<button type="button" class="btn small stage-btn" data-off="1">⬇ Descer</button>' : `<button type="button" class="btn small stage-btn" ${palco.length >= 2 ? 'disabled title="O palco só cabe 2"' : ''}>⬆ Subir ao palco</button>`;
+  };
+  const botaoReacao = (u) => (u.id === selfId || !eu ? '' : `<span class="react-btns"><button type="button" class="react-btn" data-react="pipoca" title="Jogar pipoca">🍿</button><button type="button" class="react-btn" data-react="tomate" title="Jogar tomate">🍅</button></span>`);
+  const liga = (d, u) => {
+    const sb = d.querySelector('.stage-btn');
+    if (sb) sb.onclick = async (e) => { e.stopPropagation(); const r = await emitAck('stage-set', { id: u.id, on: !sb.dataset.off }); if (r?.error) toast(r.error); };
+    d.querySelectorAll('.react-btn').forEach((b) => { b.onclick = (e) => { e.stopPropagation(); mandaReacao(b.dataset.react, u.id); }; });
+    if (u.id !== selfId) d.onclick = () => (volTarget === u.id ? closeVolume() : openVolume(u.id, d));
+  };
+  // quem está no palco: de pé ao lado da telona, iluminado
+  palco.forEach((u, i) => {
+    const d = document.createElement('div');
+    d.className = `no-palco-pessoa lado-${i === 0 ? 'esq' : 'dir'}${speaking.has(u.id) ? ' speaking' : ''}${u.id === selfId ? ' eu' : ''}`;
+    d.dataset.uid = u.id;
+    d.title = u.name + ' · no palco';
+    if (cena.palcoPos?.[i]) Object.assign(d.style, { left: cena.palcoPos[i].left, right: 'auto', top: cena.palcoPos[i].top });
+    d.innerHTML = `${avatarHTML(u)}<span class="pname">🎤 ${esc(u.name)}${u.id === selfId ? ' (você)' : ''}</span>${isSharing(u.id) ? '<span class="live">AO VIVO</span>' : ''}${botaoPalco(u)}${botaoReacao(u)}`;
+    const cam = camOf(u.id);
+    if (cam) { const v = camVideoFor(u.id, cam); d.querySelector('.avatar').replaceWith(v); v.className = 'cam-redonda'; v.play().catch(() => {}); }
+    liga(d, u);
+    wrap.appendChild(d);
+  });
+  // plateia: fileiras na grama, com perspectiva (fundo menor)
+  const filas = cena.filas;
+  const chave = ch.id;
+  if (!jaSentados.has(chave)) jaSentados.set(chave, new Set());
+  const vistos = jaSentados.get(chave);
+  const presentes = new Set(ch.users.map((u) => u.id));
+  const chegando = [];
+  const fumaca = (u) => (cena.fumar && u.fumando && u.fumando < FUMAR_MS) ? `<span class="cigarro" data-inicio="${Date.now() - u.fumando}"><img src="${spriteBaseado(baseadoLen(Date.now() - u.fumando))}" alt=""></span><span class="fumaca"><i></i><i></i><i></i><i></i></span>` : '';
+  let idx = 0;
+  for (let f = 0; f < filas.length && idx < plateia.length; f++) {
+    const fila = filas[f];
+    const n = Math.min(fila.cap, plateia.length - idx);
+    const passo = 84 / (n + 1);
+    for (let c = 0; c < n; c++, idx++) {
+      const u = plateia[idx];
+      const r2 = semente(ch.id + ':' + (u.uid || u.name));
+      const tipo = cena.assentos[Math.floor(r2() * cena.assentos.length)], cor = cena.cores[Math.floor(r2() * cena.cores.length)];
+      const x = 8 + passo * (c + 1) + (r2() - 0.5) * (passo * 0.35) + (f % 2 ? passo / 3 : 0);
+      const d = document.createElement('div');
+      d.className = `sentado ${tipo}${speaking.has(u.id) ? ' speaking' : ''}${u.id === selfId ? ' eu' : ''}${u.hand ? ' hand' : ''}`;
+      d.dataset.uid = u.id;
+      d.title = u.name + (u.hand ? ' · quer subir ao palco' : '');
+      d.style.cssText = `left:${Math.min(92, x).toFixed(1)}%;top:${fila.y}%;--k:${fila.k};z-index:${10 + Math.round(fila.y)};`;
+      if (cena.porta && (!vistos.has(u.id) || chegadas.has(u.id))) chegando.push(d);
+      d.innerHTML = `<span class="assento">${assentoSVG(tipo, cor)}</span>${avatarHTML(u)}${fumaca(u)}<span class="pname">${esc(u.name)}${u.id === selfId ? ' (você)' : ''}</span>${u.hand ? '<span class="hand-badge" title="Quer subir ao palco">✋</span>' : ''}${botaoPalco(u)}${botaoReacao(u)}`;
+      const camP = camOf(u.id);
+      if (camP) { const v = camVideoFor(u.id, camP); d.querySelector('.avatar').replaceWith(v); v.className = 'cam-redonda'; v.play().catch(() => {}); }
+      liga(d, u);
+      wrap.appendChild(d);
+    }
+  }
+  // placar + minha ação
+  const info = document.createElement('div');
+  info.className = 'cinema-info';
+  const regras = (ch.plateia?.mic === 'mudo' ? '<span title="A plateia não fala; só o palco">🔇 plateia sem mic</span>' : '') + (ch.plateia?.cam === 'mudo' ? '<span title="A plateia não liga câmera; só o palco">🚫 plateia sem câmera</span>' : '');
+  info.innerHTML = `<span>🎭 Palco ${palco.length}/2</span><span>🍿 Plateia ${plateia.length}</span>${gerente ? `<button type="button" class="tema-btn" title="Cenário e regras da plateia">${cena.emoji} ${cena.nome} · 🎨</button>` : `<span>${cena.emoji} ${cena.nome}</span>`}${regras}`;
+  const tb = info.querySelector('.tema-btn');
+  if (tb) tb.onclick = async () => {
+    const e = await escolheTema(ch.tema, ch.plateia);
+    if (!e) return;
+    const r = await emitAck('channel-theme', { id: ch.id, tema: e.tema, plateia: { mic: e.mic, cam: e.cam } });
+    if (r?.error) toast(r.error); else toast(`${CENAS[e.tema].emoji} ${CENAS[e.tema].nome} · mic ${e.mic === 'mudo' ? 'mutado' : 'livre'} · câmera ${e.cam === 'mudo' ? 'fechada' : 'livre'}`);
+  };
+  wrap.appendChild(info);
+  if (eu) {
+    const bar = document.createElement('div');
+    bar.className = 'reacao-bar';
+    bar.innerHTML = Object.entries(REACAO_EMOJI).filter(([k]) => !REACAO_ALVO.has(k)).map(([k, e]) => `<button type="button" data-react="${k}" title="${REACAO_NOME[k]}">${e}</button>`).join('')
+      + (cena.fumar ? `<button type="button" class="fumar-btn${eu.fumando && eu.fumando < FUMAR_MS ? ' on' : ''}" title="Acender um (F1)">🌿<small>F1</small></button>` : '');
+    bar.querySelectorAll('button[data-react]').forEach((b) => { b.onclick = () => mandaReacao(b.dataset.react); });
+    const fb = bar.querySelector('.fumar-btn');
+    if (fb) fb.onclick = mandaFumar;
+    wrap.appendChild(bar);
+  }
+  if (eu && !eu.stage) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn hand-btn' + (eu.hand ? ' on' : '');
+    b.textContent = eu.hand ? '✋ Pedido enviado · cancelar' : '✋ Pedir para subir ao palco';
+    b.onclick = async () => { const r = await emitAck('stage-hand', { on: !eu.hand }); if (r?.error) toast(r.error); };
+    wrap.appendChild(b);
+  }
+  // fumaça também em quem está no palco
+  if (cena.fumar) wrap.querySelectorAll('.no-palco-pessoa').forEach((d) => { const u = ch.users.find((x) => x.id === d.dataset.uid); if (u) d.insertAdjacentHTML('beforeend', fumaca(u)); });
+  box.appendChild(wrap);
+  // quem acabou de entrar na plateia: o avatar entra pela porta e anda até o lugar
+  [...vistos].forEach((id) => { if (!presentes.has(id)) vistos.delete(id); });
+  if (chegando.length) {
+    const r = wrap.getBoundingClientRect();
+    const agora = Date.now();
+    let novos = 0;
+    chegando.forEach((d) => {
+      const av = d.querySelector('.avatar'), uid = d.dataset.uid;
+      if (!av) return;
+      let inicio = chegadas.get(uid);
+      if (!inicio) { inicio = agora + novos * 250; chegadas.set(uid, inicio); novos++; }
+      if (agora - inicio > 1800) { chegadas.delete(uid); return; }
+      const a = av.getBoundingClientRect();
+      const px = r.left + r.width * cena.porta.x / 100, py = r.top + r.height * cena.porta.y / 100;
+      d.style.setProperty('--ax', `${(px - (a.left + a.width / 2)).toFixed(0)}px`);
+      d.style.setProperty('--ay', `${(py - (a.top + a.height / 2)).toFixed(0)}px`);
+      d.style.setProperty('--atraso', `${inicio - agora}ms`);
+      d.classList.add('chegando');
+      const termina = () => { d.classList.remove('chegando'); chegadas.delete(uid); };
+      d.addEventListener('animationend', (e) => { if (e.animationName === 'anda') termina(); });
+      setTimeout(termina, inicio - agora + 2000); // garantia (aba em segundo plano pausa animações)
+    });
+  }
+  ch.users.forEach((u) => { if (!u.stage) vistos.add(u.id); else vistos.delete(u.id); });
+  requestAnimationFrame(posicionaTelona);
+  if (!cinemaObs) { cinemaObs = new ResizeObserver(() => posicionaTelona()); window.addEventListener('resize', posicionaTelona); }
+  cinemaObs.disconnect();
+  cinemaObs.observe(wrap);
 }
 
 function renderControls() {

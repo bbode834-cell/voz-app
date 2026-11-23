@@ -93,9 +93,40 @@ class Memoria {
   async removeMusic(id) { this.musicas = (this.musicas || []).filter((m) => m.id !== Number(id)); }
   musicImgIds() { return new Set((this.musicas || []).map((m) => m.img)); }
 
-  // Canais (salas): [{ id, nome }]
+  // Canais (salas): [{ id, nome, servidor, tipo }]
   async listChannels() { return (this.canais || []).map((c) => ({ ...c })); }
-  async saveChannels(list) { this.canais = list.map((c) => ({ id: c.id, nome: c.nome })); }
+  async saveChannels(list) { this.canais = list.map((c) => ({ id: c.id, nome: c.nome, servidor: c.servidor || 'talking', tipo: c.tipo || 'voz', tema: c.tema || '', opcoes: c.opcoes || '' })); }
+
+  // Servidores (comunidades): { id, nome, icone, dono, criado }
+  async listServers() { return (this.servidores || []).map((s) => ({ ...s })); }
+  async createServer(s) { (this.servidores ||= []).push({ ...s, criado: new Date() }); return { ...s }; }
+  async updateServer(id, f) { const s = (this.servidores || []).find((x) => x.id === id); if (s) Object.assign(s, f); return s ? { ...s } : null; }
+  async deleteServer(id) {
+    this.servidores = (this.servidores || []).filter((s) => s.id !== id);
+    this.membros = (this.membros || []).filter((m) => m.servidor !== id);
+    this.convites = (this.convites || []).filter((c) => c.servidor !== id);
+    this.banidos = (this.banidos || []).filter((b) => b.servidor !== id);
+  }
+  // Membros: { servidor, uid, cargo: 'dono' | 'mod' | 'membro' }
+  async listMembers() { return (this.membros || []).map((m) => ({ ...m })); }
+  async setMember(servidor, uid, cargo) {
+    this.membros ||= [];
+    const m = this.membros.find((x) => x.servidor === servidor && x.uid === uid);
+    if (m) m.cargo = cargo; else this.membros.push({ servidor, uid, cargo, entrou: new Date() });
+  }
+  async removeMember(servidor, uid) { this.membros = (this.membros || []).filter((x) => !(x.servidor === servidor && x.uid === uid)); }
+  async removeMemberEverywhere(uid) { this.membros = (this.membros || []).filter((x) => x.uid !== uid); }
+  // Convites: { codigo, servidor, criado_por, usos }
+  async listInvites() { return (this.convites || []).map((c) => ({ ...c })); }
+  async createInvite(c) { (this.convites ||= []).push({ ...c, usos: 0, criado: new Date() }); }
+  async useInvite(codigo) { const c = (this.convites || []).find((x) => x.codigo === codigo); if (c) c.usos += 1; }
+  async deleteInvite(codigo) { this.convites = (this.convites || []).filter((x) => x.codigo !== codigo); }
+  // Banidos de um servidor
+  async listBans() { return (this.banidos || []).map((b) => ({ ...b })); }
+  async setBan(servidor, uid, on) {
+    this.banidos = (this.banidos || []).filter((b) => !(b.servidor === servidor && b.uid === uid));
+    if (on) this.banidos.push({ servidor, uid });
+  }
 
   // Amizades: { a, b (a < b), de (quem pediu), status: 'pending' | 'accepted' }
   async friendsOf(uid) { return this.amigos.filter((f) => f.a === uid || f.b === uid).map((f) => ({ ...f })); }
@@ -174,6 +205,41 @@ class Postgres {
         id TEXT PRIMARY KEY,
         nome TEXT NOT NULL,
         ordem INTEGER NOT NULL DEFAULT 0
+      )`);
+    // Servidores (comunidades): cada um com suas salas e membros
+    await this.pool.query(`ALTER TABLE canais ADD COLUMN IF NOT EXISTS servidor TEXT NOT NULL DEFAULT 'talking'`);
+    await this.pool.query(`ALTER TABLE canais ADD COLUMN IF NOT EXISTS tipo TEXT NOT NULL DEFAULT 'voz'`);
+    await this.pool.query(`ALTER TABLE canais ADD COLUMN IF NOT EXISTS tema TEXT NOT NULL DEFAULT ''`);
+    await this.pool.query(`ALTER TABLE canais ADD COLUMN IF NOT EXISTS opcoes TEXT NOT NULL DEFAULT ''`);
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS servidores (
+        id TEXT PRIMARY KEY,
+        nome TEXT NOT NULL,
+        icone TEXT NOT NULL DEFAULT '',
+        dono INTEGER NOT NULL,
+        criado TIMESTAMPTZ NOT NULL DEFAULT now()
+      )`);
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS membros (
+        servidor TEXT NOT NULL,
+        uid INTEGER NOT NULL,
+        cargo TEXT NOT NULL DEFAULT 'membro',
+        entrou TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (servidor, uid)
+      )`);
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS convites (
+        codigo TEXT PRIMARY KEY,
+        servidor TEXT NOT NULL,
+        criado_por INTEGER NOT NULL,
+        usos INTEGER NOT NULL DEFAULT 0,
+        criado TIMESTAMPTZ NOT NULL DEFAULT now()
+      )`);
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS banidos (
+        servidor TEXT NOT NULL,
+        uid INTEGER NOT NULL,
+        PRIMARY KEY (servidor, uid)
       )`);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS imagens (
@@ -289,7 +355,7 @@ class Postgres {
 
   // Canais (salas)
   async listChannels() {
-    const r = await this.pool.query('SELECT id, nome FROM canais ORDER BY ordem, id');
+    const r = await this.pool.query('SELECT id, nome, servidor, tipo, tema, opcoes FROM canais ORDER BY ordem, id');
     return r.rows;
   }
   async saveChannels(list) {
@@ -298,7 +364,7 @@ class Postgres {
       await c.query('BEGIN');
       await c.query('DELETE FROM canais');
       for (let i = 0; i < list.length; i++) {
-        await c.query('INSERT INTO canais (id, nome, ordem) VALUES ($1, $2, $3)', [list[i].id, list[i].nome, i]);
+        await c.query('INSERT INTO canais (id, nome, ordem, servidor, tipo, tema, opcoes) VALUES ($1, $2, $3, $4, $5, $6, $7)', [list[i].id, list[i].nome, i, list[i].servidor || 'talking', list[i].tipo || 'voz', list[i].tema || '', list[i].opcoes || '']);
       }
       await c.query('COMMIT');
     } catch (e) {
@@ -307,6 +373,42 @@ class Postgres {
     } finally {
       c.release();
     }
+  }
+
+  // Servidores
+  async listServers() { return (await this.pool.query('SELECT id, nome, icone, dono, criado FROM servidores ORDER BY criado')).rows; }
+  async createServer({ id, nome, icone, dono }) {
+    await this.pool.query('INSERT INTO servidores (id, nome, icone, dono) VALUES ($1, $2, $3, $4)', [id, nome, icone || '', Number(dono)]);
+    return { id, nome, icone: icone || '', dono: Number(dono) };
+  }
+  async updateServer(id, f) {
+    const sets = [], vals = [];
+    for (const k of ['nome', 'icone', 'dono']) if (f[k] !== undefined) { vals.push(f[k]); sets.push(`${k} = $${vals.length}`); }
+    if (!sets.length) return null;
+    vals.push(id);
+    const r = await this.pool.query(`UPDATE servidores SET ${sets.join(', ')} WHERE id = $${vals.length} RETURNING id, nome, icone, dono`, vals);
+    return r.rows[0] || null;
+  }
+  async deleteServer(id) {
+    await this.pool.query('DELETE FROM membros WHERE servidor = $1', [id]);
+    await this.pool.query('DELETE FROM convites WHERE servidor = $1', [id]);
+    await this.pool.query('DELETE FROM banidos WHERE servidor = $1', [id]);
+    await this.pool.query('DELETE FROM servidores WHERE id = $1', [id]);
+  }
+  async listMembers() { return (await this.pool.query('SELECT servidor, uid, cargo FROM membros')).rows; }
+  async setMember(servidor, uid, cargo) {
+    await this.pool.query('INSERT INTO membros (servidor, uid, cargo) VALUES ($1, $2, $3) ON CONFLICT (servidor, uid) DO UPDATE SET cargo = EXCLUDED.cargo', [servidor, Number(uid), cargo]);
+  }
+  async removeMember(servidor, uid) { await this.pool.query('DELETE FROM membros WHERE servidor = $1 AND uid = $2', [servidor, Number(uid)]); }
+  async removeMemberEverywhere(uid) { await this.pool.query('DELETE FROM membros WHERE uid = $1', [Number(uid)]); }
+  async listInvites() { return (await this.pool.query('SELECT codigo, servidor, criado_por, usos FROM convites')).rows; }
+  async createInvite({ codigo, servidor, criado_por }) { await this.pool.query('INSERT INTO convites (codigo, servidor, criado_por) VALUES ($1, $2, $3)', [codigo, servidor, Number(criado_por)]); }
+  async useInvite(codigo) { await this.pool.query('UPDATE convites SET usos = usos + 1 WHERE codigo = $1', [codigo]); }
+  async deleteInvite(codigo) { await this.pool.query('DELETE FROM convites WHERE codigo = $1', [codigo]); }
+  async listBans() { return (await this.pool.query('SELECT servidor, uid FROM banidos')).rows; }
+  async setBan(servidor, uid, on) {
+    await this.pool.query('DELETE FROM banidos WHERE servidor = $1 AND uid = $2', [servidor, Number(uid)]);
+    if (on) await this.pool.query('INSERT INTO banidos (servidor, uid) VALUES ($1, $2)', [servidor, Number(uid)]);
   }
 
   // Amizades

@@ -359,6 +359,14 @@ async function pegaMedia(id) {
   if (im) mediaCacheGuarda(id, { mime: im.mime, dados: im.dados });
   return im;
 }
+// Link de convite: /entrar/<código> abre o site; o site lê o código e entra no servidor
+app.get('/entrar/:codigo', (req, res) => res.redirect(`/?convite=${encodeURIComponent(String(req.params.codigo).slice(0, 16))}`));
+app.get('/api/convite/:codigo', (req, res) => {
+  const c = String(req.params.codigo || '');
+  const sv = [...servers.values()].find((x) => x.convite === c);
+  if (!sv) return res.status(404).json({ error: 'Convite inválido ou vencido.' });
+  res.json({ ok: true, nome: sv.nome, icone: sv.icone, membros: sv.membros.size });
+});
 app.get('/img/:id', async (req, res) => {
   try {
     const id = String(req.params.id || '');
@@ -495,26 +503,84 @@ const io = new Server(server, { maxHttpBufferSize: 200_000, cors: { origin: '*' 
 // Canais (salas) ficam guardados no banco: o dono e os moderadores criam, renomeiam e apagam.
 // Cada um tem um id fixo (c1, c2, ...) e um nome.
 const channels = [];
-const MAX_CHANNELS = 30;
-function makeChannel(id, name) {
+const MAX_CHANNELS = 30; // por servidor
+const TIPOS_SALA = ['voz', 'texto', 'palco'];
+const PALCO_MAX = 2; // quantos cabem no palco ao mesmo tempo
+const TEMAS_PALCO = ['ar-livre', 'teatro', 'estadio', 'cinema', 'talking', 'sala'];
+// Regras da plateia numa sala de palco: microfone e câmera 'livre' ou 'mudo'
+function plateiaOpcoes(o) {
+  let x = o;
+  if (typeof x === 'string') { try { x = JSON.parse(x || '{}'); } catch { x = {}; } }
+  x = x && typeof x === 'object' ? x : {};
+  return { mic: x.mic === 'mudo' ? 'mudo' : 'livre', cam: x.cam === 'mudo' ? 'mudo' : 'livre' };
+}
+function makeChannel(id, name, srv = 'talking', tipo = 'voz', tema = '', opcoes = '') {
   return {
     id,
     name,
-    users: new Map(), // socketId -> { uid, name, muted, modMuted, avatar, proto, cam, role }
+    srv, // servidor (comunidade) dono da sala
+    tipo: TIPOS_SALA.includes(tipo) ? tipo : 'voz', // voz | texto | palco
+    tema: TEMAS_PALCO.includes(tema) ? tema : 'ar-livre', // cenário do palco
+    plateia: plateiaOpcoes(opcoes), // { mic, cam } da plateia
+    users: new Map(), // socketId -> { uid, name, muted, modMuted, avatar, proto, cam, role, stage, hand }
     sharers: new Set(), // quem está transmitindo agora (várias pessoas ao mesmo tempo)
     chat: [], // últimas mensagens do chat deste canal
   };
 }
+
+// ---------- 🏰 Servidores (comunidades): cada um com suas salas e membros ----------
+// servers: id -> { id, nome, icone, dono (uid), membros: Map uid -> cargo ('dono'|'mod'|'membro'), bans: Set uid, convite }
+const servers = new Map();
+const SRV_MAIN = 'talking'; // o servidor original, onde todo mundo já estava
+const CARGO = { membro: 1, mod: 2, dono: 3 };
+const novoCodigo = (n = 8) => crypto.randomBytes(12).toString('base64url').replace(/[-_]/g, 'x').slice(0, n);
+async function loadServers() {
+  servers.clear();
+  for (const s of await banco.listServers()) servers.set(s.id, { id: s.id, nome: s.nome, icone: s.icone || '', dono: Number(s.dono), membros: new Map(), bans: new Set(), convite: null });
+  for (const m of await banco.listMembers()) servers.get(m.servidor)?.membros.set(Number(m.uid), m.cargo);
+  for (const b of await banco.listBans()) servers.get(b.servidor)?.bans.add(Number(b.uid));
+  for (const c of await banco.listInvites()) { const sv = servers.get(c.servidor); if (sv && !sv.convite) sv.convite = c.codigo; }
+  // Primeira vez: o servidor "TalKing" nasce com todo mundo que já tinha conta aprovada
+  if (!servers.has(SRV_MAIN)) {
+    const todos = await banco.list();
+    const dono = todos.find((u) => u.role === 'owner') || todos[0];
+    const sv = { id: SRV_MAIN, nome: 'TalKing', icone: '', dono: dono ? Number(dono.id) : 0, membros: new Map(), bans: new Set(), convite: null };
+    await banco.createServer({ id: SRV_MAIN, nome: sv.nome, icone: '', dono: sv.dono });
+    for (const u of todos) {
+      if (u.status !== 'approved') continue;
+      const cargo = u.role === 'owner' ? 'dono' : u.role === 'mod' ? 'mod' : 'membro';
+      await banco.setMember(SRV_MAIN, u.id, cargo);
+      sv.membros.set(Number(u.id), cargo);
+    }
+    servers.set(SRV_MAIN, sv);
+    console.log(`Servidor "${sv.nome}" criado com ${sv.membros.size} membro(s).`);
+  }
+}
+// Cargo de uma pessoa num servidor (dono da plataforma manda em todos)
+function cargoEm(srvId, user) {
+  if (!user) return null;
+  if (user.role === 'owner') return 'dono';
+  const sv = servers.get(srvId);
+  if (!sv) return null;
+  if (sv.dono === Number(user.id)) return 'dono';
+  return sv.membros.get(Number(user.id)) || null;
+}
+const ehMembro = (srvId, user) => !!cargoEm(srvId, user);
+const podeGerir = (srvId, user) => CARGO[cargoEm(srvId, user)] >= CARGO.mod;
+function serverPublic(sv, user) {
+  return { id: sv.id, nome: sv.nome, icone: sv.icone, dono: sv.dono, membros: sv.membros.size, cargo: cargoEm(sv.id, user) };
+}
 async function loadChannels() {
   let list = await banco.listChannels();
   if (!list.length) {
-    list = DEFAULT_NAMES.map((name, i) => ({ id: `c${i + 1}`, nome: name }));
+    list = DEFAULT_NAMES.map((name, i) => ({ id: `c${i + 1}`, nome: name, servidor: SRV_MAIN, tipo: 'voz' }));
     await banco.saveChannels(list);
   }
   channels.length = 0;
-  list.forEach((c) => channels.push(makeChannel(c.id, c.nome)));
+  list.forEach((c) => channels.push(makeChannel(c.id, c.nome, c.servidor || SRV_MAIN, c.tipo || 'voz', c.tema || '', c.opcoes || '')));
 }
-const persistChannels = () => banco.saveChannels(channels.map((c) => ({ id: c.id, nome: c.name }))).catch((e) => console.error('salvar canais:', e.message));
+const persistChannels = () => banco.saveChannels(channels.map((c) => ({ id: c.id, nome: c.name, servidor: c.srv, tipo: c.tipo, tema: c.tema, opcoes: JSON.stringify(c.plateia || {}) }))).catch((e) => console.error('salvar canais:', e.message));
+const novoIdSala = () => `c${channels.reduce((m, c) => Math.max(m, Number(String(c.id).slice(1)) || 0), 0) + 1}`;
 const CHAT_KEEP = 100;
 let chatSeq = 0;
 // Quando o nome foi trocado pela última vez (0 = nomes padrão)
@@ -910,23 +976,46 @@ function broadcastTv() { io.emit('tv', tvState()); }
 
 let arcadeBot = { pub: () => null, onLeave() {}, onChannelDeleted() {} };
 
-function snapshot() {
+// Cada pessoa só recebe os servidores em que está e as salas deles
+function snapshotFor(user) {
+  const meus = [...servers.values()].filter((sv) => ehMembro(sv.id, user));
+  const ids = new Set(meus.map((sv) => sv.id));
   return {
     namesVersion,
     bot: djPublic(),
     bots: [djPublic(), tvPublic(), arcadeBot.pub()].filter(Boolean),
-    channels: channels.map((c) => ({
+    servers: meus.map((sv) => serverPublic(sv, user)),
+    channels: channels.filter((c) => ids.has(c.srv)).map((c) => ({
       id: c.id,
       name: c.name,
+      srv: c.srv,
+      tipo: c.tipo,
+      tema: c.tema,
+      plateia: c.plateia,
       sharers: [...c.sharers],
       sharer: c.sharers.values().next().value || null,
-      users: [...c.users.entries()].map(([id, u]) => ({ id, ...u })),
+      users: [...c.users.entries()].map(([id, u]) => {
+        const silencio = plateiaSemMic(c, u);
+        return { id, ...u, muted: u.muted || silencio, modMuted: u.modMuted || silencio, plateiaMudo: silencio, fumando: u.fumando ? Date.now() - u.fumando : 0 };
+      }),
     })),
   };
 }
+// Plateia sem microfone nesta sala de palco?
+const plateiaSemMic = (c, u) => !!c && c.tipo === 'palco' && !u.stage && c.plateia?.mic === 'mudo';
+const plateiaSemCam = (c, u) => !!c && c.tipo === 'palco' && !u.stage && c.plateia?.cam === 'mudo';
+const snapshot = () => snapshotFor({ role: 'owner', id: 0 }); // visão completa (uso interno)
 
 function broadcastChannels() {
-  io.emit('channels', snapshot());
+  for (const s of io.sockets.sockets.values()) if (s.data.user) s.emit('channels', snapshotFor(s.data.user));
+}
+// Mensagem de uma sala de texto vai para todo membro do servidor conectado (para o aviso de não lida)
+function emitTexto(ch, msg) {
+  for (const s of io.sockets.sockets.values()) if (s.data.user && ehMembro(ch.srv, s.data.user)) s.emit('chat', msg);
+}
+// Avisa só quem está num servidor
+function broadcastServer(srvId) {
+  for (const s of io.sockets.sockets.values()) if (s.data.user && ehMembro(srvId, s.data.user)) s.emit('channels', snapshotFor(s.data.user));
 }
 
 function leave(socket) {
@@ -1043,7 +1132,17 @@ io.on('connection', (socket) => {
     avisaPendentes();
   }
   socket.emit('me', { ...me(), status: 'approved' });
-  socket.emit('channels', snapshot());
+  // Conta aprovada que ainda não está em nenhum servidor entra no TalKing (como sempre foi)
+  const principal = servers.get(SRV_MAIN);
+  if (principal && !principal.membros.has(Number(me().id))) {
+    const cargo = me().role === 'owner' ? 'dono' : me().role === 'mod' ? 'mod' : 'membro';
+    if (cargo !== 'membro' || ![...servers.values()].some((sv) => sv.membros.has(Number(me().id)))) {
+      principal.membros.set(Number(me().id), cargo);
+      banco.setMember(SRV_MAIN, me().id, cargo).catch(() => {});
+      if (me().role === 'owner' && !principal.dono) { principal.dono = Number(me().id); banco.updateServer(SRV_MAIN, { dono: me().id }).catch(() => {}); }
+    }
+  }
+  socket.emit('channels', snapshotFor(me()));
   if (socketsOf(me().id).length === 1) avisaPresenca(me().id);
   banco.unread(me().id).then((u) => socket.emit('dm-unread', u)).catch(() => {});
   friendMap(me().id).then((m) => socket.emit('friends', m)).catch(() => {});
@@ -1201,6 +1300,7 @@ io.on('connection', (socket) => {
   socket.on('sync-names', () => {});
 
   socket.on('rename-channel', ({ id, name } = {}, ack = () => {}) => {
+    if (byId(id) && !podeGerir(byId(id).srv, me())) return ack({ error: 'Só o dono e os moderadores do servidor podem trocar o nome.' });
     if (!isMod()) return ack({ error: 'Só o dono e os moderadores podem renomear canais.' });
     const ch = byId(id);
     if (!ch) return ack({ error: 'Canal não encontrado.' });
@@ -1452,14 +1552,209 @@ io.on('connection', (socket) => {
   });
 
   // Criar uma sala nova
-  socket.on('create-channel', ({ name } = {}, ack = () => {}) => {
-    if (!isMod()) return ack({ error: 'Só o dono e os moderadores podem criar salas.' });
+  // ---------- 🏰 Servidores ----------
+  const MAX_SRV_POR_PESSOA = 10;
+  // Tira a pessoa das salas de um servidor (quando sai, é expulsa ou o servidor é apagado)
+  const tiraDoServidor = (srvId, uid, motivo) => {
+    for (const sk of socketsOf(uid)) {
+      const ch = byId(sk.data.channel);
+      if (ch && ch.srv === srvId) { sk.emit('kicked', { by: me().name, motivo }); leave(sk); }
+      for (const c of channels) if (c.srv === srvId && c.tipo === 'texto') sk.leave(`txt:${c.id}`);
+    }
+  };
+  socket.on('srv-create', async ({ nome, icone } = {}, ack = () => {}) => {
+    try {
+      const n = cleanName(nome, '');
+      if (!n) return ack({ error: 'Dê um nome para o servidor.' });
+      const meus = [...servers.values()].filter((sv) => sv.dono === Number(me().id)).length;
+      if (meus >= MAX_SRV_POR_PESSOA) return ack({ error: `Você já tem ${MAX_SRV_POR_PESSOA} servidores.` });
+      let id = 's' + novoCodigo(6);
+      while (servers.has(id)) id = 's' + novoCodigo(6);
+      const sv = { id, nome: n, icone: cleanAvatar(icone), dono: Number(me().id), membros: new Map([[Number(me().id), 'dono']]), bans: new Set(), convite: null };
+      await banco.createServer({ id, nome: n, icone: sv.icone, dono: me().id });
+      await banco.setMember(id, me().id, 'dono');
+      servers.set(id, sv);
+      // Todo servidor nasce com uma sala de voz e uma de mensagens
+      const voz = makeChannel(novoIdSala(), 'Geral', id, 'voz');
+      channels.push(voz);
+      const txt = makeChannel(novoIdSala(), 'bate-papo', id, 'texto');
+      channels.push(txt);
+      namesVersion = Date.now();
+      persistChannels();
+      ack({ ok: true, id, canal: voz.id });
+      broadcastChannels();
+    } catch (e) {
+      console.error('srv-create:', e.message);
+      ack({ error: 'Não consegui criar o servidor.' });
+    }
+  });
+  // Link de convite do servidor (um código permanente por servidor; "novo" gera outro e cancela o antigo)
+  socket.on('srv-invite', async ({ id, novo } = {}, ack = () => {}) => {
+    try {
+      const sv = servers.get(String(id));
+      if (!sv || !ehMembro(sv.id, me())) return ack({ error: 'Servidor não encontrado.' });
+      if (novo && !podeGerir(sv.id, me())) return ack({ error: 'Só o dono e os moderadores trocam o link.' });
+      if (!sv.convite || novo) {
+        if (sv.convite) await banco.deleteInvite(sv.convite);
+        let codigo = novoCodigo(8);
+        while ([...servers.values()].some((x) => x.convite === codigo)) codigo = novoCodigo(8);
+        await banco.createInvite({ codigo, servidor: sv.id, criado_por: me().id });
+        sv.convite = codigo;
+      }
+      ack({ ok: true, codigo: sv.convite });
+    } catch (e) {
+      console.error('srv-invite:', e.message);
+      ack({ error: 'Não consegui gerar o convite.' });
+    }
+  });
+  // Entrar num servidor pelo código do convite
+  socket.on('srv-join', async ({ codigo } = {}, ack = () => {}) => {
+    try {
+      const c = String(codigo || '').trim().split('/').pop();
+      const sv = [...servers.values()].find((x) => x.convite === c);
+      if (!sv) return ack({ error: 'Convite inválido ou vencido.' });
+      if (sv.bans.has(Number(me().id))) return ack({ error: 'Você foi banido desse servidor.' });
+      if (ehMembro(sv.id, me())) return ack({ ok: true, id: sv.id, ja: true });
+      sv.membros.set(Number(me().id), 'membro');
+      await banco.setMember(sv.id, me().id, 'membro');
+      await banco.useInvite(c);
+      ack({ ok: true, id: sv.id });
+      broadcastChannels();
+      for (const c2 of channels) if (c2.srv === sv.id && c2.tipo === 'texto') { const m = { id: ++chatSeq, from: 'sys', name: 'TalKing', avatar: '', text: `👋 ${me().name} entrou no servidor.`, ts: Date.now(), sys: true, channel: c2.id }; c2.chat.push(m); if (c2.chat.length > CHAT_KEEP) c2.chat.shift(); emitTexto(c2, m); }
+    } catch (e) {
+      console.error('srv-join:', e.message);
+      ack({ error: 'Não consegui entrar no servidor.' });
+    }
+  });
+  // Sair de um servidor (o dono não sai: apaga ou passa a coroa)
+  socket.on('srv-leave', async ({ id } = {}, ack = () => {}) => {
+    const sv = servers.get(String(id));
+    if (!sv || !sv.membros.has(Number(me().id))) return ack({ error: 'Você não está nesse servidor.' });
+    if (sv.dono === Number(me().id)) return ack({ error: 'O dono não pode sair. Apague o servidor ou passe a coroa para outra pessoa.' });
+    sv.membros.delete(Number(me().id));
+    await banco.removeMember(sv.id, me().id).catch(() => {});
+    tiraDoServidor(sv.id, me().id, 'saiu-servidor');
+    ack({ ok: true });
+    socket.emit('channels', snapshotFor(me()));
+    broadcastServer(sv.id);
+  });
+  // Membros do servidor (com quem está online)
+  socket.on('srv-members', async ({ id } = {}, ack = () => {}) => {
+    const sv = servers.get(String(id));
+    if (!sv || !ehMembro(sv.id, me())) return ack({ error: 'Servidor não encontrado.' });
+    const todos = await banco.list();
+    const lista = [...sv.membros.entries()].map(([uid, cargo]) => {
+      const u = todos.find((x) => Number(x.id) === uid);
+      return u ? { id: uid, name: u.name, avatar: u.avatar, cargo: sv.dono === uid ? 'dono' : cargo, online: socketsOf(uid).length > 0 } : null;
+    }).filter(Boolean).sort((a, b) => CARGO[b.cargo] - CARGO[a.cargo] || a.name.localeCompare(b.name));
+    ack({ ok: true, membros: lista, convite: sv.convite });
+  });
+  // Dono/moderador: expulsar, banir, desbanir, dar/tirar cargo de moderador, passar a coroa
+  socket.on('srv-member', async ({ id, uid, action } = {}, ack = () => {}) => {
+    try {
+      const sv = servers.get(String(id));
+      const alvo = Number(uid);
+      if (!sv || !podeGerir(sv.id, me())) return ack({ error: 'Só o dono e os moderadores fazem isso.' });
+      if (alvo === Number(me().id)) return ack({ error: 'Isso não dá para fazer com você mesmo.' });
+      const meuCargo = cargoEm(sv.id, me());
+      const cargoAlvo = sv.dono === alvo ? 'dono' : sv.membros.get(alvo) || 'membro';
+      if (CARGO[cargoAlvo] >= CARGO[meuCargo]) return ack({ error: 'Você não pode mexer nessa pessoa.' });
+      if (action === 'kick' || action === 'ban') {
+        sv.membros.delete(alvo);
+        await banco.removeMember(sv.id, alvo);
+        if (action === 'ban') { sv.bans.add(alvo); await banco.setBan(sv.id, alvo, true); }
+        tiraDoServidor(sv.id, alvo, action === 'ban' ? 'banido-servidor' : 'expulso-servidor');
+        for (const sk of socketsOf(alvo)) sk.emit('channels', snapshotFor(sk.data.user));
+      } else if (action === 'unban') {
+        sv.bans.delete(alvo);
+        await banco.setBan(sv.id, alvo, false);
+      } else if (action === 'mod' || action === 'membro') {
+        if (meuCargo !== 'dono') return ack({ error: 'Só o dono dá e tira cargo de moderador.' });
+        if (!sv.membros.has(alvo)) return ack({ error: 'Essa pessoa não está no servidor.' });
+        sv.membros.set(alvo, action);
+        await banco.setMember(sv.id, alvo, action);
+      } else if (action === 'coroa') {
+        if (meuCargo !== 'dono') return ack({ error: 'Só o dono passa a coroa.' });
+        if (!sv.membros.has(alvo)) return ack({ error: 'Essa pessoa não está no servidor.' });
+        sv.dono = alvo;
+        sv.membros.set(alvo, 'dono');
+        sv.membros.set(Number(me().id), 'mod');
+        await banco.updateServer(sv.id, { dono: alvo });
+        await banco.setMember(sv.id, alvo, 'dono');
+        await banco.setMember(sv.id, me().id, 'mod');
+      } else return ack({ error: 'Ação desconhecida.' });
+      ack({ ok: true });
+      broadcastServer(sv.id);
+    } catch (e) {
+      console.error('srv-member:', e.message);
+      ack({ error: 'Não deu certo.' });
+    }
+  });
+  // Banidos (para o dono desbanir)
+  socket.on('srv-bans', async ({ id } = {}, ack = () => {}) => {
+    const sv = servers.get(String(id));
+    if (!sv || !podeGerir(sv.id, me())) return ack({ error: 'Sem permissão.' });
+    const todos = await banco.list();
+    ack({ ok: true, banidos: [...sv.bans].map((uid) => { const u = todos.find((x) => Number(x.id) === uid); return u ? { id: uid, name: u.name, avatar: u.avatar } : null; }).filter(Boolean) });
+  });
+  // Nome e ícone do servidor
+  socket.on('srv-edit', async ({ id, nome, icone } = {}, ack = () => {}) => {
+    const sv = servers.get(String(id));
+    if (!sv || !podeGerir(sv.id, me())) return ack({ error: 'Só o dono e os moderadores editam o servidor.' });
+    const f = {};
+    if (nome !== undefined) { const n = cleanName(nome, ''); if (!n) return ack({ error: 'Nome inválido.' }); f.nome = n; }
+    if (icone !== undefined) f.icone = cleanAvatar(icone);
+    Object.assign(sv, f);
+    await banco.updateServer(sv.id, f).catch(() => {});
+    ack({ ok: true });
+    broadcastServer(sv.id);
+  });
+  // Apagar o servidor (só o dono; o TalKing original não pode ser apagado)
+  socket.on('srv-delete', async ({ id } = {}, ack = () => {}) => {
+    const sv = servers.get(String(id));
+    if (!sv || cargoEm(sv.id, me()) !== 'dono') return ack({ error: 'Só o dono apaga o servidor.' });
+    if (sv.id === SRV_MAIN) return ack({ error: 'O servidor principal não pode ser apagado.' });
+    const membros = [...sv.membros.keys()];
+    for (const uid of membros) tiraDoServidor(sv.id, uid, 'servidor-apagado');
+    for (const c of channels.filter((x) => x.srv === sv.id)) {
+      if (dj.room === c.id) { dj.room = null; djPause(); broadcastDj(); }
+      if (tv.room === c.id) { tv.room = null; broadcastTv(); }
+      arcadeBot.onChannelDeleted(c.id);
+      channels.splice(channels.indexOf(c), 1);
+    }
+    servers.delete(sv.id);
+    await banco.deleteServer(sv.id).catch(() => {});
+    persistChannels();
+    ack({ ok: true });
+    broadcastChannels();
+  });
+
+  // Trocar o cenário de uma sala de palco (dono/moderador do servidor)
+  socket.on('channel-theme', ({ id, tema, plateia } = {}, ack = () => {}) => {
+    const ch = byId(id);
+    if (!ch || ch.tipo !== 'palco') return ack({ error: 'Só salas de palco têm cenário.' });
+    if (!podeGerir(ch.srv, me())) return ack({ error: 'Só o dono e os moderadores trocam o cenário.' });
+    if (!TEMAS_PALCO.includes(tema)) return ack({ error: 'Cenário desconhecido.' });
+    ch.tema = tema;
+    if (plateia) {
+      ch.plateia = plateiaOpcoes(plateia);
+      // câmera da plateia fechada: desliga quem já estava com ela aberta
+      if (ch.plateia.cam === 'mudo') ch.users.forEach((u, sid) => { if (!u.stage && u.cam) { u.cam = false; io.sockets.sockets.get(sid)?.emit('cam-denied', { motivo: 'plateia' }); } });
+    }
+    ack({ ok: true });
+    broadcastChannels();
+    persistChannels();
+  });
+  socket.on('create-channel', ({ name, srv, tipo, tema, plateia } = {}, ack = () => {}) => {
+    const srvId = String(srv || SRV_MAIN);
+    if (!servers.has(srvId)) return ack({ error: 'Servidor não encontrado.' });
+    if (!podeGerir(srvId, me())) return ack({ error: 'Só o dono e os moderadores do servidor podem criar salas.' });
     const novo = cleanName(name, '');
     if (!novo) return ack({ error: 'Digite um nome para a sala.' });
-    if (channels.length >= MAX_CHANNELS) return ack({ error: `Limite de ${MAX_CHANNELS} salas.` });
-    if (channels.some((c) => c.name.toLowerCase() === novo.toLowerCase())) return ack({ error: 'Já existe uma sala com esse nome.' });
-    const n = channels.reduce((m, c) => Math.max(m, Number(String(c.id).slice(1)) || 0), 0) + 1;
-    const ch = makeChannel(`c${n}`, novo);
+    const doSrv = channels.filter((c) => c.srv === srvId);
+    if (doSrv.length >= MAX_CHANNELS) return ack({ error: `Limite de ${MAX_CHANNELS} salas por servidor.` });
+    if (doSrv.some((c) => c.name.toLowerCase() === novo.toLowerCase())) return ack({ error: 'Já existe uma sala com esse nome neste servidor.' });
+    const ch = makeChannel(novoIdSala(), novo, srvId, TIPOS_SALA.includes(tipo) ? tipo : 'voz', tema, plateia);
     channels.push(ch);
     namesVersion = Date.now();
     ack({ ok: true, id: ch.id });
@@ -1469,10 +1764,10 @@ io.on('connection', (socket) => {
 
   // Apagar uma sala (quem estiver nela sai da chamada)
   socket.on('delete-channel', ({ id } = {}, ack = () => {}) => {
-    if (!isMod()) return ack({ error: 'Só o dono e os moderadores podem apagar salas.' });
     const ch = byId(id);
     if (!ch) return ack({ error: 'Sala não encontrada.' });
-    if (channels.length <= 1) return ack({ error: 'Tem que sobrar pelo menos uma sala.' });
+    if (!podeGerir(ch.srv, me())) return ack({ error: 'Só o dono e os moderadores do servidor podem apagar salas.' });
+    if (channels.filter((c) => c.srv === ch.srv).length <= 1) return ack({ error: 'Tem que sobrar pelo menos uma sala no servidor.' });
     for (const sid of [...ch.users.keys()]) {
       const s = io.sockets.sockets.get(sid);
       if (!s) continue;
@@ -1492,9 +1787,12 @@ io.on('connection', (socket) => {
   socket.on('join', ({ channel, proto } = {}, ack = () => {}) => {
     const ch = byId(channel);
     if (!ch) return ack({ error: 'Esse canal não existe.' });
+    if (!ehMembro(ch.srv, me())) return ack({ error: 'Você não está nesse servidor.' });
+    if (ch.tipo === 'texto') return ack({ error: 'Essa é uma sala de mensagens, não de voz.' });
     if (socket.data.channel === ch.id) return ack({ error: 'Você já está nesse canal.' });
-    if (ch.users.size >= MAX_PER_CHANNEL) {
-      return ack({ error: `Canal cheio (máximo ${MAX_PER_CHANNEL} pessoas).` });
+    const lotacao = ch.tipo === 'palco' ? MAX_PER_CHANNEL * 2 : MAX_PER_CHANNEL;
+    if (ch.users.size >= lotacao) {
+      return ack({ error: `Canal cheio (máximo ${lotacao} pessoas).` });
     }
 
     leave(socket);
@@ -1503,9 +1801,12 @@ io.on('connection', (socket) => {
     const u = me();
     // Quem foi mutado por um moderador continua mutado se trocar de canal
     const modMuted = !!socket.data.modMuted;
+    // Palco: quem entra vai para a plateia (fala à vontade); só quem sobe ao palco transmite tela/câmera
+    const palco = ch.tipo === 'palco';
     ch.users.set(socket.id, {
       uid: u.id, name: u.name, avatar: u.avatar, role: u.role,
       muted: modMuted, modMuted, proto: Number(proto) || 1, cam: false, music: false,
+      ...(palco ? { stage: false, hand: false } : {}),
     });
     socket.data.channel = ch.id;
     socket.join(ch.id);
@@ -1519,9 +1820,94 @@ io.on('connection', (socket) => {
       sharer: ch.sharers.values().next().value || null,
       chat: ch.chat,
       modMuted,
+      tipo: ch.tipo,
     });
     broadcastChannels();
   });
+
+  // Está no palco (pode transmitir tela/câmera)? Fora de sala tipo palco, todo mundo pode. Falar, todo mundo fala.
+  const noPalco = () => {
+    const ch = byId(socket.data.channel);
+    const u = ch?.users.get(socket.id);
+    return !!u && (ch.tipo !== 'palco' || !!u.stage);
+  };
+  // 🎭 Palco: dono/moderador sobe ou desce alguém (no máximo 2 no palco)
+  socket.on('stage-set', ({ id, on } = {}, ack = () => {}) => {
+    const ch = byId(socket.data.channel);
+    if (!ch || ch.tipo !== 'palco') return ack({ error: 'Isso só funciona numa sala de palco.' });
+    const alvo = io.sockets.sockets.get(String(id));
+    const u = ch.users.get(String(id));
+    if (!alvo || !u) return ack({ error: 'Essa pessoa não está nesta sala.' });
+    const eu = ch.users.get(socket.id);
+    const posso = podeGerir(ch.srv, me()) || (!!eu?.stage && !on && String(id) === socket.id) || (String(id) === socket.id && !on);
+    if (!posso) return ack({ error: 'Só o dono e os moderadores do servidor controlam o palco.' });
+    if (on) {
+      const noPalcoAgora = [...ch.users.values()].filter((x) => x.stage).length;
+      if (!u.stage && noPalcoAgora >= PALCO_MAX) return ack({ error: `O palco só cabe ${PALCO_MAX} pessoas.` });
+      u.stage = true; u.hand = false;
+      alvo.emit('stage', { on: true, by: me().name });
+      io.to(ch.id).emit('chat', { id: ++chatSeq, from: 'sys', name: 'Palco', avatar: '', text: `🎭 ${u.name} subiu ao palco.`, ts: Date.now(), sys: true });
+    } else {
+      u.stage = false;
+      if (ch.plateia?.cam === 'mudo' && u.cam) { u.cam = false; alvo.emit('cam-denied', { motivo: 'plateia' }); }
+      if (ch.sharers.delete(alvo.id)) io.to(ch.id).emit('share-stopped', { id: alvo.id });
+      alvo.emit('stage', { on: false, by: me().name });
+      io.to(ch.id).emit('chat', { id: ++chatSeq, from: 'sys', name: 'Palco', avatar: '', text: `🎭 ${u.name} desceu do palco.`, ts: Date.now(), sys: true });
+    }
+    ack({ ok: true });
+    broadcastChannels();
+  });
+  // Plateia: pedir (ou desistir de) subir ao palco
+  socket.on('stage-hand', ({ on } = {}, ack = () => {}) => {
+    const ch = byId(socket.data.channel);
+    const u = ch?.users.get(socket.id);
+    if (!ch || ch.tipo !== 'palco' || !u) return ack({ error: 'Isso só funciona numa sala de palco.' });
+    u.hand = !!on && !u.stage;
+    ack({ ok: true });
+    broadcastChannels();
+  });
+
+  // 🌿 Sala dos fumantes: acender um baseado (queima 1 minuto, depois vai pro cinzeiro)
+  const FUMAR_MS = 60_000;
+  socket.on('palco-fumar', (_ = {}, ack = () => {}) => {
+    const ch = byId(socket.data.channel);
+    const u = ch?.users.get(socket.id);
+    if (!ch || ch.tipo !== 'palco' || !u) return ack({ error: 'Isso só funciona numa sala de palco.' });
+    if (u.fumando && Date.now() - u.fumando < FUMAR_MS) return ack({ error: 'Você já está fumando.' });
+    u.fumando = Date.now();
+    ack({ ok: true });
+    broadcastChannels();
+    setTimeout(() => {
+      const c2 = byId(socket.data.channel), u2 = c2?.users.get(socket.id);
+      if (u2 && u2.fumando && Date.now() - u2.fumando >= FUMAR_MS) { u2.fumando = null; broadcastChannels(); }
+    }, FUMAR_MS + 3000);
+  });
+
+  // 🍿 Reações no palco: jogar pipoca em alguém ou aplaudir/reagir para a tela (todo mundo da sala vê)
+  const REACOES = ['pipoca', 'aplauso', 'fogo', 'risada', 'coracao', 'uau', 'tomate'];
+  socket.on('palco-reacao', ({ tipo, alvo } = {}, ack = () => {}) => {
+    const ch = byId(socket.data.channel);
+    const u = ch?.users.get(socket.id);
+    if (!ch || ch.tipo !== 'palco' || !u) return ack({ error: 'Isso só funciona numa sala de palco.' });
+    if (!REACOES.includes(tipo)) return ack({ error: 'Reação desconhecida.' });
+    const agora = Date.now();
+    socket.data.reacoes = (socket.data.reacoes || []).filter((t) => agora - t < 3000);
+    if (socket.data.reacoes.length >= 8) return ack({ error: 'Calma! Muita reação de uma vez.' });
+    socket.data.reacoes.push(agora);
+    if (alvo && !ch.users.has(alvo)) return ack({ error: 'Essa pessoa não está mais na sala.' });
+    io.to(ch.id).emit('palco-reacao', { tipo, de: socket.id, alvo: alvo || null });
+    ack({ ok: true });
+  });
+
+  // 💬 Sala de texto: abrir (recebe as últimas mensagens e passa a receber as novas) e fechar
+  socket.on('text-open', ({ id } = {}, ack = () => {}) => {
+    const ch = byId(id);
+    if (!ch || ch.tipo !== 'texto') return ack({ error: 'Sala de mensagens não encontrada.' });
+    if (!ehMembro(ch.srv, me())) return ack({ error: 'Você não está nesse servidor.' });
+    socket.join(`txt:${ch.id}`);
+    ack({ ok: true, chat: ch.chat, name: ch.name });
+  });
+  socket.on('text-close', ({ id } = {}) => { socket.leave(`txt:${String(id)}`); });
 
   // Trocar nome/foto (fica salvo na conta)
   socket.on('profile', async ({ name, avatar } = {}, ack = () => {}) => {
@@ -1537,9 +1923,12 @@ io.on('connection', (socket) => {
   socket.on('leave', () => leave(socket));
 
   // Chat de texto do canal
-  socket.on('chat-send', ({ text } = {}, ack = () => {}) => {
-    const ch = byId(socket.data.channel);
-    const u = ch?.users.get(socket.id);
+  socket.on('chat-send', ({ text, channel } = {}, ack = () => {}) => {
+    // Sala de texto (mensagens do servidor) ou chat da chamada em que a pessoa está
+    const txt = channel ? byId(channel) : null;
+    const ch = txt && txt.tipo === 'texto' ? txt : byId(socket.data.channel);
+    if (txt && txt.tipo === 'texto' && !ehMembro(txt.srv, me())) return ack({ error: 'Você não está nesse servidor.' });
+    const u = ch?.users.get(socket.id) || (txt && txt.tipo === 'texto' ? { name: me().name, avatar: me().avatar } : null);
     if (!u) return ack({ error: 'Entre em um canal para conversar.' });
     const t = String(text || '').replace(/\r/g, '').trim().slice(0, 500);
     if (!t) return ack({ error: 'Mensagem vazia.' });
@@ -1557,7 +1946,8 @@ io.on('connection', (socket) => {
     };
     ch.chat.push(msg);
     if (ch.chat.length > CHAT_KEEP) ch.chat.splice(0, ch.chat.length - CHAT_KEEP);
-    io.to(ch.id).emit('chat', msg);
+    if (ch.tipo === 'texto') { msg.channel = ch.id; msg.uid = me().id; emitTexto(ch, msg); }
+    else io.to(ch.id).emit('chat', msg);
     ack({ ok: true });
   });
 
@@ -1582,6 +1972,7 @@ io.on('connection', (socket) => {
   socket.on('share-start', (_ = {}, ack = () => {}) => {
     const ch = byId(socket.data.channel);
     if (!ch) return ack({ error: 'Entre em um canal primeiro.' });
+    if (!noPalco()) return ack({ error: 'Só quem está no palco transmite a tela. Peça para subir ao palco.' });
     if (!ch.sharers.has(socket.id)) {
       ch.sharers.add(socket.id);
       io.to(ch.id).emit('share-started', { id: socket.id });
@@ -1600,7 +1991,8 @@ io.on('connection', (socket) => {
 
   // Câmera ligada/desligada (o vídeo vai direto entre os participantes)
   socket.on('cam', ({ on } = {}) => {
-    const u = byId(socket.data.channel)?.users.get(socket.id);
+    const ch = byId(socket.data.channel), u = ch?.users.get(socket.id);
+    if (u && on && plateiaSemCam(ch, u)) { socket.emit('cam-denied', { motivo: 'plateia' }); return; }
     if (u && u.cam !== !!on) {
       u.cam = !!on;
       broadcastChannels();
@@ -1628,15 +2020,19 @@ io.on('connection', (socket) => {
   // Só age em quem tem cargo menor (moderador não mexe no dono nem em outro moderador)
   socket.on('mod-action', async ({ action, id } = {}, ack = () => {}) => {
     try {
-      if (!isMod()) return ack({ error: 'Só o dono e os moderadores podem fazer isso.' });
       const target = io.sockets.sockets.get(id);
       const tu = target?.data.user;
       if (!target || !tu) return ack({ error: 'Essa pessoa não está mais aqui.' });
       if (tu.id === me().id) return ack({ error: 'Você não pode fazer isso com você mesmo.' });
-      if (RANK[me().role] <= RANK[tu.role]) {
-        return ack({ error: `Você não pode moderar um ${ROLE_NAME[tu.role].toLowerCase()}.` });
-      }
       const ch = byId(target.data.channel);
+      // Moderação dentro de uma sala: dono/mod do servidor da sala (ou da plataforma)
+      const gerente = ch ? podeGerir(ch.srv, me()) : isMod();
+      if (!gerente) return ack({ error: 'Só o dono e os moderadores podem fazer isso.' });
+      const meuCargo = ch ? CARGO[cargoEm(ch.srv, me())] : RANK[me().role];
+      const cargoAlvo = ch ? CARGO[cargoEm(ch.srv, tu) || 'membro'] : RANK[tu.role];
+      if (meuCargo <= cargoAlvo) {
+        return ack({ error: 'Você não pode moderar essa pessoa.' });
+      }
       const entry = ch?.users.get(target.id);
       const by = me().name;
 
@@ -1697,6 +2093,8 @@ io.on('connection', (socket) => {
 
       if (action === 'approve') {
         await banco.update(u.id, { status: 'approved' });
+        // Conta aprovada entra no servidor principal (TalKing)
+        if (servers.has(SRV_MAIN)) { servers.get(SRV_MAIN).membros.set(Number(u.id), 'membro'); await banco.setMember(SRV_MAIN, u.id, 'membro'); }
       } else if (action === 'reject') {
         if (u.status !== 'pending') return ack({ error: 'Só dá para recusar contas esperando aprovação.' });
         await banco.remove(u.id);
@@ -1720,6 +2118,8 @@ io.on('connection', (socket) => {
         const nu = await banco.update(u.id, { role: action === 'make-mod' ? 'mod' : 'member' });
         refreshLive(nu);
       } else if (action === 'delete') {
+        for (const sv of servers.values()) sv.membros.delete(Number(u.id));
+        await banco.removeMemberEverywhere(u.id);
         if (!souDono) return ack({ error: 'Só o dono pode apagar contas.' });
         await banco.remove(u.id);
         await banco.removeMsgsOf(u.id);
@@ -1743,6 +2143,7 @@ io.on('connection', (socket) => {
 
 if (process.env.KL_TEST) module.exports._dj = { dj, djNext, djVoltar, djAvanca, djDeNovo };
 banco.init()
+  .then(loadServers)
   .then(loadChannels)
   .then(() => {
     server.listen(PORT, () => {

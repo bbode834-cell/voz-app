@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>TalKing</title>
   <link rel="icon" href="logo-coroa.svg" />
-  <link rel="stylesheet" href="style.css?v=190" />
+  <link rel="stylesheet" href="style.css?v=205" />
 </head>
 <body>
   <!-- Abertura: a logo parada e o fone caindo em cima da coroa (clique para pular) -->
@@ -119,6 +119,28 @@
     </div>
   </div>
 
+  <!-- 🏰 Menu do servidor: convite, membros, editar, sair/apagar -->
+  <div id="srv-modal" class="modal" hidden>
+    <div class="modal-card srv-card">
+      <div class="modal-head"><h2 id="srv-m-title">Servidor</h2><button type="button" id="srv-m-close" class="icon-btn" title="Fechar">✕</button></div>
+      <div id="srv-m-body"></div>
+    </div>
+  </div>
+  <!-- 🏰 Criar servidor / entrar com convite -->
+  <div id="srv-new" class="modal" hidden>
+    <form id="srv-new-form" class="modal-card srv-card">
+      <div class="modal-head"><h2 id="srv-new-title">Criar servidor</h2><button type="button" id="srv-new-close" class="icon-btn" title="Fechar">✕</button></div>
+      <p class="sec-hint">Um servidor é o seu lugar: salas de voz, mensagens e palco só para quem você convidar.</p>
+      <label class="field">Nome do servidor<input id="srv-new-name" maxlength="24" placeholder="ex.: Sala do Alex" /></label>
+      <p class="sec-hint">Escolha um ícone (ou deixe a inicial):</p>
+      <div id="srv-new-icons" class="avatar-grid"></div>
+      <button type="submit" class="btn primary">Criar</button>
+      <hr class="sep" />
+      <label class="field">Tem um convite? Cole o link ou o código<input id="srv-join-code" placeholder="https://…/entrar/abc12345" /></label>
+      <button type="button" id="srv-join-btn" class="btn">Entrar com o convite</button>
+    </form>
+  </div>
+
   <div class="app">
     <aside class="sidebar">
       <header class="sidebar-header">
@@ -128,6 +150,13 @@
       <button id="btn-dm" class="dm-open-btn" title="Mensagens diretas">
         <span class="ico"></span><span>Mensagens</span><span id="dm-badge" class="dm-count" hidden></span>
       </button>
+      <!-- 🏰 Servidor atual (comunidade) + troca de servidor -->
+      <div id="srv-bar" class="srv-bar">
+        <button id="srv-pill" class="srv-pill" type="button" title="Trocar de servidor">
+          <span id="srv-icon" class="avatar srv-icon"></span><span id="srv-name">TalKing</span><span class="srv-caret">▾</span>
+        </button>
+        <div id="srv-pop" class="srv-pop" hidden></div>
+      </div>
       <div id="channels" class="channels"></div>
 
       <div class="userbar">
@@ -152,6 +181,12 @@
         <small id="main-hint" class="main-hint" hidden>Clique em um amigo para ajustar o volume dele</small>
       </header>
 
+      <!-- 💬 Sala de mensagens do servidor (não precisa estar em chamada) -->
+      <section id="text-room" class="text-room" hidden>
+        <header class="text-head"><span class="text-ico">💬</span><strong id="text-name"></strong><small id="text-sub">sala de mensagens</small><button type="button" id="text-close" class="icon-btn" title="Fechar">✕</button></header>
+        <div id="text-list" class="chat-list text-list"></div>
+        <form id="text-form" class="chat-form text-form"><input id="text-input" maxlength="500" placeholder="Escreva uma mensagem…" autocomplete="off" /><button type="submit" class="btn primary">Enviar</button></form>
+      </section>
       <section id="stage" class="stage">
         <!-- 🤖 DJ King: aparece quando o bot está nesta chamada -->
         <div id="dj-panel" class="dj-panel" hidden>
@@ -428,6 +463,6 @@
   </div>
   <div id="photo-view" class="photo-view" hidden><img alt="Foto" /></div>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=190"></script>
+  <script src="app.js?v=205"></script>
 </body>
 </html>

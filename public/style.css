@@ -1323,3 +1323,202 @@ body.chat-open .main, body.dm-open .main { margin-right: 354px; }
 
 /* 🔁 repetir ligado */
 .dj-btn#dj-repeat.on { background: var(--accent-soft, var(--panel-3)); color: var(--accent); box-shadow: 0 0 14px -4px var(--accent-glow, transparent); }
+
+/* ---------- 🏰 Servidores ---------- */
+.srv-bar { position: relative; flex-shrink: 0; padding: 8px 8px 0; }
+.srv-pill {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 10px 6px 6px; border-radius: 999px;
+  background: var(--glass-2, var(--panel-3)); border: 1px solid var(--glass-line, var(--line)); color: var(--text-strong); font-weight: 700; cursor: pointer;
+}
+.srv-pill:hover { border-color: var(--accent); }
+.srv-pill #srv-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.srv-caret { color: var(--muted); font-size: 12px; }
+.srv-icon { width: 30px; height: 30px; flex-shrink: 0; }
+.srv-icon.small { width: 24px; height: 24px; font-size: 11px; }
+.srv-pop {
+  position: absolute; top: calc(100% + 6px); left: 8px; z-index: 60; min-width: 260px; max-width: 320px; max-height: 70vh; overflow-y: auto;
+  background: var(--pop, var(--panel)); border: 1px solid var(--glass-line, var(--line)); border-radius: 16px; padding: 8px; box-shadow: 0 18px 44px rgba(0,0,0,.5);
+}
+.srv-pop-head { display: flex; align-items: center; gap: 10px; padding: 8px 8px 10px; }
+.srv-pop-head strong { display: block; color: var(--text-strong); }
+.srv-pop-head small { color: var(--muted); font-size: 12px; }
+.srv-pop-title { padding: 8px 10px 4px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.srv-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; border: 0; border-radius: 10px; background: none; color: var(--text); text-align: left; cursor: pointer; font-size: 14px; }
+.srv-item:hover { background: var(--hover); color: var(--text-strong); }
+.srv-item.danger { color: var(--live, #f55); }
+.srv-item.on { background: var(--accent-soft, var(--panel-3)); color: var(--accent); }
+.srv-item span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srv-item small { color: var(--muted); }
+hr.sep { border: 0; border-top: 1px solid var(--glass-line, var(--line)); margin: 8px 0; }
+.srv-card { gap: 12px; }
+.srv-card .modal-head { display: flex; align-items: center; justify-content: space-between; }
+.srv-card h2 { margin: 0; font-size: 18px; color: var(--text-strong); }
+.srv-card .field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+.srv-card .field input { width: 100%; }
+.srv-ico-letra { font-weight: 800; color: var(--text-strong); }
+.invite-row { display: flex; gap: 8px; }
+.invite-row input { flex: 1; min-width: 0; font-size: 13px; }
+.member-row { display: flex; align-items: center; gap: 10px; padding: 8px 4px; border-bottom: 1px solid var(--glass-line, var(--line)); }
+.member-row .acc-info { flex: 1; min-width: 0; }
+.member-row .acc-info strong { display: block; color: var(--text-strong); }
+.member-row .acc-info small { color: var(--muted); font-size: 12px; }
+.member-row .acc-actions { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.tipo-pop { gap: 8px; }
+.tipo-pop h2 { margin: 0 0 4px; font-size: 18px; color: var(--text-strong); text-align: center; }
+.tipo-opt { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--glass-line, var(--line)); background: var(--glass-2, var(--panel-3)); color: var(--text); cursor: pointer; text-align: left; }
+.tipo-opt:hover { border-color: var(--accent); }
+.tipo-opt .tipo-emoji { font-size: 24px; }
+.tipo-opt strong { display: block; color: var(--text-strong); }
+.tipo-opt small { color: var(--muted); font-size: 12px; }
+.channel.tipo-texto .channel-btn, .channel.tipo-palco .channel-btn { font-size: 14px; }
+.chat-sys { text-align: center; color: var(--muted); font-size: 12px; padding: 4px 0; }
+/* 💬 sala de mensagens do servidor */
+.text-room { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--glass, var(--panel)); border: 1px solid var(--glass-line, var(--line)); border-radius: var(--r-lg, 16px); margin: 10px; overflow: hidden; }
+.text-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--glass-line, var(--line)); }
+.text-head strong { color: var(--text-strong); font-size: 16px; }
+.text-head small { color: var(--muted); flex: 1; }
+.text-list { flex: 1; overflow-y: auto; padding: 12px; }
+.text-form { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--glass-line, var(--line)); }
+.text-form input { flex: 1; min-width: 0; }
+body.text-open #empty { display: none; }
+body.text-open:not(.in-call) #stage { display: none; }
+body.text-open.in-call #stage { max-height: 42%; }
+@media (min-width: 900px) {
+  .srv-bar { padding: 0; margin-right: 6px; }
+  .srv-pill { width: auto; max-width: 220px; height: 44px; }
+  .srv-pop { left: 0; }
+}
+
+/* ---------- 🎭 Palco: cinema ao ar livre ---------- */
+body.palco .tiles { display: block !important; flex: none; }
+body.palco .stage { overflow-y: auto; position: relative; isolation: isolate; }
+.cinema {
+  position: relative; width: 100%; aspect-ratio: 1000 / 640; max-height: calc(100% - 8px); margin: 0 auto;
+  border-radius: 18px; overflow: hidden; border: 1px solid var(--glass-line, var(--line));
+  box-shadow: 0 30px 60px -30px var(--accent-glow, rgba(34,211,238,.5)); user-select: none;
+}
+.cinema .cena { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+/* telona: a área de transmissões vai para cima da tela desenhada */
+body.palco #screens { position: absolute; z-index: 5; display: grid; margin: 0; border-radius: 4px; overflow: hidden; background: #000; pointer-events: auto; }
+body.palco #screens:empty { display: none; }
+body.palco #screens .screen-card { height: 100%; border-radius: 0; }
+.telona-txt { position: absolute; left: 15.2%; top: 6.6%; width: 69.6%; height: 60.3%; box-sizing: border-box; padding: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; text-align: center; color: var(--muted); z-index: 4; }
+.telona-txt span { font-size: 40px; filter: drop-shadow(0 0 16px var(--accent-glow, #22d3ee)); }
+.telona-txt strong { color: #fff; font-size: 16px; text-shadow: 0 1px 6px #000; }
+.telona-txt small { font-size: 11px; max-width: 80%; color: #cfc8ff; }
+.telona-txt[hidden] { display: none; }
+/* quem está no palco: ao lado da tela */
+.no-palco-pessoa { position: absolute; top: 50%; width: 10%; display: flex; flex-direction: column; align-items: center; gap: 4px; z-index: 6; cursor: pointer; }
+.no-palco-pessoa.lado-esq { left: 2.5%; } .no-palco-pessoa.lado-dir { right: 2.5%; }
+.no-palco-pessoa .avatar, .no-palco-pessoa .cam-redonda { position: relative; width: 100%; max-width: 86px; aspect-ratio: 1; height: auto; font-size: 28px; border: 3px solid rgba(255,255,255,.85); box-shadow: 0 4px 12px rgba(0,0,0,.6); object-fit: cover; border-radius: 50%; }
+.no-palco-pessoa.speaking .avatar, .no-palco-pessoa.speaking .cam-redonda { border-color: var(--green); box-shadow: 0 0 24px var(--green); }
+.no-palco-pessoa .pname { position: relative; font-size: 12px; font-weight: 700; color: #fff; text-shadow: 0 1px 4px #000; white-space: nowrap; max-width: 140%; overflow: hidden; text-overflow: ellipsis; }
+.no-palco-pessoa .live { position: absolute; top: -6px; right: -8px; }
+.no-palco-pessoa .stage-btn { display: none; white-space: nowrap; padding: 3px 8px; font-size: 11px; }
+.no-palco-pessoa:hover .stage-btn { display: inline-flex; }
+/* plateia sentada na grama */
+.sentado { position: absolute; width: calc(8.5% * var(--k)); transform: translate(-50%, -100%); display: flex; flex-direction: column; align-items: center; cursor: pointer; }
+.sentado .assento { width: 100%; aspect-ratio: 80 / 60; display: block; filter: drop-shadow(0 6px 6px rgba(0,0,0,.45)); }
+.sentado .assento svg { width: 100%; height: 100%; display: block; }
+.sentado .avatar, .sentado .cam-redonda { position: absolute; left: 50%; top: 8%; transform: translate(-50%, -55%); width: 54%; aspect-ratio: 1; height: auto; font-size: calc(16px * var(--k)); border: 2px solid rgba(255,255,255,.85); box-shadow: 0 3px 8px #000; }
+.sentado.tapete .avatar, .sentado.tapete .cam-redonda { top: 30%; }
+.sentado .cam-redonda { border-radius: 50%; object-fit: cover; background: #000; z-index: 1; }
+.sentado.speaking .avatar, .sentado.speaking .cam-redonda { outline: 3px solid var(--green); }
+.sentado.eu .avatar, .sentado.eu .cam-redonda { outline: 3px solid var(--accent); }
+.sentado .pname { position: absolute; left: 50%; top: 100%; transform: translateX(-50%); font-size: calc(11px * var(--k)); color: #fff; text-shadow: 0 1px 4px #000; white-space: nowrap; max-width: 160%; overflow: hidden; text-overflow: ellipsis; }
+.sentado .hand-badge { position: absolute; right: -6px; top: -34%; font-size: calc(22px * var(--k)); filter: drop-shadow(0 0 6px #ff0); animation: acena 1.2s ease-in-out infinite; z-index: 2; }
+@keyframes acena { 0%, 100% { transform: rotate(-12deg); } 50% { transform: rotate(14deg); } }
+.sentado .stage-btn { position: absolute; left: 50%; top: -70%; transform: translateX(-50%); white-space: nowrap; display: none; padding: 3px 8px; font-size: 11px; z-index: 3; }
+.sentado:hover .stage-btn { display: inline-flex; }
+.sentado:hover { z-index: 50 !important; }
+.cinema-info { position: absolute; left: 12px; top: 10px; display: flex; gap: 10px; font-size: 12px; color: #fff; text-shadow: 0 1px 4px #000; z-index: 7; }
+.cinema-info span { background: rgba(0,0,0,.35); padding: 4px 10px; border-radius: 999px; }
+.cinema .hand-btn { position: absolute; right: 12px; bottom: 12px; z-index: 8; }
+.hand-btn.on { background: var(--accent-soft, var(--panel-3)); color: var(--accent); }
+body.palco:not(.no-palco) #btn-share { opacity: .45; }
+@media (max-width: 720px) { .sentado { width: calc(13% * var(--k)); } .no-palco-pessoa { width: 15%; } .telona-txt strong { font-size: 13px; } .telona-txt small { display: none; } }
+.text-room[hidden] { display: none !important; }
+body.palco #screens[hidden] { display: none; }
+
+/* cenários do palco */
+.cinema-info .tema-btn { background: rgba(0,0,0,.35); color: #fff; border: 1px solid rgba(255,255,255,.25); padding: 3px 10px; border-radius: 999px; font-size: 12px; cursor: pointer; }
+.cinema-info .tema-btn:hover { border-color: var(--accent); }
+.tipo-opt.atual { border-color: var(--accent); background: var(--accent-soft, var(--panel-3)); }
+.cinema.tema-estadio .sentado .avatar, .cinema.tema-estadio .sentado .cam-redonda { border-color: rgba(255,255,255,.95); }
+.cinema.tema-talking .sentado .avatar { border-color: #a5f3fc; box-shadow: 0 0 10px rgba(34,211,238,.7); }
+
+/* 🍿 reações no palco */
+#reacoes { position: absolute; inset: 0; pointer-events: none; z-index: 60; overflow: hidden; }
+#reacoes .reacao { position: absolute; left: 0; top: 0; font-size: 26px; line-height: 1; margin: -13px 0 0 -13px; will-change: transform, opacity; filter: drop-shadow(0 2px 4px rgba(0,0,0,.6)); }
+#reacoes .pedaco { font-size: 16px; margin: -8px 0 0 -8px; }
+.react-btns { position: absolute; left: 50%; transform: translateX(-50%); display: none; gap: 4px; z-index: 4; }
+.sentado .react-btns { top: -115%; }
+.no-palco-pessoa .react-btns { top: -34px; }
+.sentado:hover .react-btns, .no-palco-pessoa:hover .react-btns { display: flex; }
+.sentado:hover .stage-btn { top: -62%; }
+.react-btn { background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.3); border-radius: 999px; width: 30px; height: 30px; font-size: 16px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+.react-btn:hover { transform: scale(1.2); border-color: var(--accent); }
+.atingido { animation: treme .5s ease-in-out; }
+@keyframes treme { 0%,100% { translate: 0 0; } 20% { translate: -5px 2px; } 40% { translate: 5px -2px; } 60% { translate: -4px 0; } 80% { translate: 4px 1px; } }
+.sentado.atingido { animation: tremeSentado .5s ease-in-out; }
+@keyframes tremeSentado { 0%,100% { transform: translate(-50%, -100%); } 20% { transform: translate(calc(-50% - 5px), -100%); } 40% { transform: translate(calc(-50% + 5px), -100%); } 60% { transform: translate(calc(-50% - 4px), -100%); } 80% { transform: translate(calc(-50% + 4px), -100%); } }
+.reacao-bar { position: absolute; right: 12px; top: 8px; display: flex; gap: 6px; z-index: 8; background: rgba(0,0,0,.4); padding: 5px 8px; border-radius: 999px; backdrop-filter: blur(6px); }
+.reacao-bar button { background: transparent; border: 0; font-size: 22px; line-height: 1; cursor: pointer; padding: 2px 3px; transition: transform .12s; }
+.reacao-bar button:hover { transform: scale(1.35); }
+.reacao-bar button:active { transform: scale(.9); }
+@media (max-width: 720px) { .reacao-bar { gap: 2px; padding: 4px 6px; } .reacao-bar button { font-size: 18px; } }
+
+/* 🛋️ sala de estar: avatar entra pela porta e vai sentar; fumacinha */
+.sentado.chegando .assento { animation: aparece .3s both; animation-delay: var(--atraso, 0ms); }
+.sentado.chegando .avatar, .sentado.chegando .cam-redonda { animation: anda 1.7s cubic-bezier(.4,0,.6,1) both; animation-delay: var(--atraso, 0ms); z-index: 5; }
+@keyframes aparece { from { opacity: 0; } to { opacity: 1; } }
+@keyframes anda {
+  0%   { transform: translate(calc(-50% + var(--ax)), calc(-55% + var(--ay))) scale(1.15); opacity: 0; }
+  6%   { opacity: 1; }
+  15%  { transform: translate(calc(-50% + var(--ax) * .85), calc(-55% + var(--ay) * .85 - 9px)) scale(1.15); }
+  30%  { transform: translate(calc(-50% + var(--ax) * .7), calc(-55% + var(--ay) * .7)) scale(1.12); }
+  45%  { transform: translate(calc(-50% + var(--ax) * .55), calc(-55% + var(--ay) * .55 - 9px)) scale(1.1); }
+  60%  { transform: translate(calc(-50% + var(--ax) * .4), calc(-55% + var(--ay) * .4)) scale(1.07); }
+  75%  { transform: translate(calc(-50% + var(--ax) * .22), calc(-55% + var(--ay) * .22 - 8px)) scale(1.04); }
+  88%  { transform: translate(calc(-50% + var(--ax) * .06), calc(-55% + var(--ay) * .06 - 14px)) scale(1.02); }
+  100% { transform: translate(-50%, -55%) scale(1); }
+}
+/* cigarro desenhado, com brasa que pulsa (tragada) e fumaça que se espalha */
+.cigarro { position: absolute; left: 58%; top: -2%; width: calc(46px * var(--k, 1)); height: calc(15px * var(--k, 1)); transform: rotate(-30deg); transform-origin: 0 50%; z-index: 3; pointer-events: none; filter: drop-shadow(0 1px 2px rgba(0,0,0,.6)); animation: tragada 3.6s ease-in-out infinite; }
+.cigarro img { width: 100%; height: 100%; display: block; object-fit: fill; }
+@keyframes tragada { 0%, 55%, 100% { filter: drop-shadow(0 1px 2px rgba(0,0,0,.6)) brightness(1); } 68% { filter: drop-shadow(0 0 6px rgba(255,120,40,.9)) brightness(1.25); } }
+.no-palco-pessoa .cigarro { left: 64%; top: 36%; width: 56px; height: 18px; }
+.fumaca { position: absolute; left: calc(58% + 40px * var(--k, 1)); top: calc(-2% - 20px * var(--k, 1)); width: 8px; height: 8px; pointer-events: none; z-index: 3; }
+.no-palco-pessoa .fumaca { left: calc(64% + 48px); top: calc(36% - 26px); }
+.fumaca i { position: absolute; left: 0; top: 0; width: 9px; height: 9px; border-radius: 50%; background: radial-gradient(circle, rgba(255,255,255,.7), rgba(255,255,255,.25) 60%, transparent 70%); animation: sobeFumaca 3.6s ease-out infinite; opacity: 0; }
+.fumaca i:nth-child(2) { animation-delay: .9s; } .fumaca i:nth-child(3) { animation-delay: 1.8s; } .fumaca i:nth-child(4) { animation-delay: 2.5s; width: 14px; height: 14px; }
+@keyframes sobeFumaca { 0% { transform: translate(0,0) scale(.4); opacity: 0; } 10% { opacity: .75; } 40% { transform: translate(6px,-18px) scale(1.3); opacity: .5; } 70% { transform: translate(-3px,-36px) scale(2); opacity: .25; } 100% { transform: translate(5px,-54px) scale(2.8); opacity: 0; } }
+.reacao-bar .fumar-btn { display: inline-flex; align-items: center; gap: 2px; border-left: 1px solid rgba(255,255,255,.25); padding-left: 8px; margin-left: 2px; }
+.reacao-bar .fumar-btn small { font-size: 10px; color: #cfc8ff; font-weight: 700; }
+.reacao-bar .fumar-btn.on { opacity: .45; cursor: default; }
+#reacoes .baseado-voa { width: 50px; height: 16px; margin: -8px 0 0 -25px; }
+#reacoes .baseado-voa img { width: 100%; height: 100%; display: block; }
+#reacoes .fumo { width: 10px; height: 10px; border-radius: 50%; background: radial-gradient(circle, rgba(255,255,255,.7), transparent 70%); }
+
+/* caixinha do cenário + regras da plateia */
+.tema-pop { max-height: 90vh; overflow: auto; }
+.tema-pop .tema-lista { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.tema-pop .tipo-opt small { display: block; line-height: 1.2; }
+.plateia-regras { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--glass-line, var(--line)); }
+.plateia-regras .regra { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 14px; color: var(--text-strong); }
+.plateia-regras small { color: var(--muted); font-size: 12px; }
+.seg { display: inline-flex; border: 1px solid var(--glass-line, var(--line)); border-radius: 999px; overflow: hidden; }
+.seg button { background: transparent; border: 0; color: var(--muted); padding: 6px 12px; font-size: 13px; cursor: pointer; }
+.seg button.on { background: var(--accent); color: #fff; }
+.tema-acoes { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+@media (max-width: 720px) { .tema-pop .tema-lista { grid-template-columns: 1fr; } .plateia-regras .regra { flex-direction: column; align-items: flex-start; } }
+
+/* pipoca mais orgânica: sombra, gotas, mancha e o arremesso de quem joga */
+#reacoes .sombra { width: 22px; height: 8px; margin: -4px 0 0 -11px; border-radius: 50%; background: #000; filter: blur(2px); }
+#reacoes .gota { font-size: 9px; margin: -5px 0 0 -5px; }
+#reacoes .mancha { width: 54px; height: 54px; margin: -27px 0 0 -27px; }
+#reacoes .mancha svg { width: 100%; height: 100%; display: block; filter: drop-shadow(0 2px 3px rgba(0,0,0,.5)); }
+.sentado.arremessa .avatar, .sentado.arremessa .cam-redonda { animation: arremesso .45s ease-in-out; }
+.no-palco-pessoa.arremessa .avatar, .no-palco-pessoa.arremessa .cam-redonda { animation: arremessoPalco .45s ease-in-out; }
+@keyframes arremesso { 0% { transform: translate(-50%, -55%) rotate(0); } 40% { transform: translate(-56%, -62%) rotate(-14deg); } 70% { transform: translate(-44%, -52%) rotate(12deg); } 100% { transform: translate(-50%, -55%) rotate(0); } }
+@keyframes arremessoPalco { 0% { transform: rotate(0); } 40% { transform: translate(-6px, -6px) rotate(-14deg); } 70% { transform: translate(6px, 2px) rotate(12deg); } 100% { transform: rotate(0); } }
