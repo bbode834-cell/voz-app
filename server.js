@@ -1032,7 +1032,7 @@ io.use(async (socket, next) => {
   }
 });
 
-arcadeBot = require('./arcade')(io, { byId, socketsOf, BOTS_ROOM, broadcastChannels, RANK });
+arcadeBot = require('./arcade-servidor')(io, { byId, socketsOf, BOTS_ROOM, broadcastChannels, RANK });
 
 io.on('connection', (socket) => {
   socket.data.channel = null;
