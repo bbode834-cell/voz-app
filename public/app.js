@@ -9,7 +9,7 @@ const $ = (s) => document.querySelector(s);
   const el = document.getElementById('intro');
   if (!el) return;
   const end = () => { el.classList.add('out'); setTimeout(() => el.remove(), 450); };
-  const t = setTimeout(end, 2100);
+  const t = setTimeout(end, 3100);
   el.addEventListener('click', () => { clearTimeout(t); end(); });
 })();
 // Só conecta depois do login (o servidor confere o "crachá" de acesso)
@@ -185,6 +185,7 @@ const roleBadge = (role) =>
 // ---------- Cores do layout ----------
 // Cada pessoa escolhe a sua; fica salvo neste navegador
 const THEMES = [
+  { id: 'neon', nome: 'Neon', cor: '#22d3ee', amostra: 'linear-gradient(135deg, #7c3aed, #22d3ee)' },
   { id: 'cinza', nome: 'Cinza', cor: '#5865f2', amostra: '#313338' },
   { id: 'preto', nome: 'Preto', cor: '#5865f2', amostra: '#000000' },
   { id: 'branco', nome: 'Branco', cor: '#5865f2', amostra: '#ffffff' },
@@ -217,6 +218,13 @@ function hexToHsl(hex) {
   return [Math.round(h), Math.round(s * 100), Math.round(l * 100)];
 }
 function paletteFor(theme) {
+  if (theme.id === 'neon') {
+    return { bg: '#0a0718', panel: '#17132b', 'panel-2': '#1c1733', 'panel-3': '#2a2447', hover: '#241e3f',
+      'hover-strong': '#322a55', 'btn-hover': '#3a3162', text: '#e4e1f7', 'text-strong': '#f6f4ff', muted: '#aaa4cf',
+      line: '#2b2548', 'line-strong': '#06040f', userbar: '#120f24', pop: '#151129', stage: '#06040f', link: '#7dd3fc',
+      accent: '#22d3ee', 'accent-hover': '#67e8f9', 'on-accent': '#04202a', live: '#f472b6', 'on-live': '#2a0618',
+      'glow-1': 'rgba(124, 58, 237, .8)', 'glow-2': 'rgba(8, 145, 178, .7)', 'glow-3': 'rgba(219, 39, 119, .3)' };
+  }
   if (theme.id === 'cinza') return { ...BASE_DARK };
   if (theme.id === 'preto') {
     return { ...BASE_DARK, bg: '#000000', panel: '#0c0c0e', 'panel-2': '#111113', 'panel-3': '#1c1c20', hover: '#18181b',
@@ -241,11 +249,13 @@ function paletteFor(theme) {
     accent: `hsl(${h} ${Math.min(s, 85)}% ${accentL}%)`, 'accent-hover': `hsl(${h} ${Math.min(s, 85)}% ${accentL - 9}%)`,
   };
 }
-let themeChoice = store.get('voz-tema', { id: 'cinza' });
+let themeChoice = store.get('voz-tema', { id: 'neon' });
 function applyTheme(choice) {
   themeChoice = choice;
   const base = THEMES.find((t) => t.id === choice.id) || { id: 'custom', cor: choice.cor };
   const pal = paletteFor(base.id === 'custom' ? { id: 'custom', cor: choice.cor } : base);
+  // limpa as cores extras do tema Neon antes de aplicar outro tema
+  for (const k of ['on-accent', 'live', 'on-live', 'glow-1', 'glow-2', 'glow-3']) document.documentElement.style.removeProperty(`--${k}`);
   for (const [k, v] of Object.entries(pal)) document.documentElement.style.setProperty(`--${k}`, v);
   document.documentElement.dataset.theme = base.id === 'branco' ? 'light' : 'dark';
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', pal.panel);
@@ -709,11 +719,21 @@ async function checkSiteVersion() {
 $('#update-bar').onclick = () => location.reload();
 
 socket.on('connect', () => {
+  // A conexão voltou: entra de novo na sala em que a pessoa estava
+  if (rejoinId && !currentChannel && loggedIn) {
+    const id = rejoinId, tinhaTela = rejoinShare;
+    rejoinId = null; rejoinShare = false;
+    joinChannel(id).then(() => {
+      if (currentChannel === id) toast(tinhaTela ? 'Reconectado à sala. Sua transmissão parou: é só compartilhar a tela de novo.' : 'Reconectado à sala.');
+    }).catch(() => {});
+  }
   checkSiteVersion();
   if (isMod()) socket.emit('admin-users', {}, (r) => { if (r?.users) { accounts = r.users; pendingCount = accounts.filter((u) => u.status === 'pending').length; updatePendingBadges(); } });
   const saved = store.get('voz-canais', null);
   if (saved?.version) socket.emit('sync-names', saved);
 });
+
+setInterval(() => { if (currentChannel && socket.connected) fetch('/config', { cache: 'no-store' }).catch(() => {}); }, 4 * 60 * 1000);
 
 async function createChannel() {
   const nome = prompt('Nome da nova sala:', '');
@@ -737,6 +757,18 @@ async function renameChannel(ch) {
 }
 
 // ---------- Entrar / sair do canal ----------
+// ---------- Lateral direita (pessoas na chamada + chat) e modo teatro ----------
+const telaLarga = () => matchMedia('(min-width: 900px)').matches;
+let sideMin = store.get('voz-side-min', false);   // true = lateral recolhida (só os rostinhos) = modo teatro
+let botsOpen = false;                              // gavetinha dos bots aberta?
+function applySide(foco = false) {
+  document.body.classList.toggle('side-min', sideMin);
+  const b = $('#side-toggle');
+  if (b) { b.querySelector('.txt').textContent = sideMin ? '' : 'Modo teatro'; b.querySelector('.ico').textContent = sideMin ? '⟨' : '⟩'; b.title = sideMin ? 'Abrir pessoas e chat' : 'Modo teatro: recolher a lateral e aumentar a transmissão'; }
+  if (telaLarga() && currentChannel) setChatOpen(!sideMin && !dmOpen, !foco);
+}
+function toggleSide() { sideMin = !sideMin; store.set('voz-side-min', sideMin); applySide(true); }
+
 async function joinChannel(id) {
   if (joining || id === currentChannel || !loggedIn) return;
   joining = true;
@@ -779,6 +811,7 @@ async function joinChannel(id) {
     res.peers.forEach((p) => createPeer(p.id, true));
     soundJoin();
     renderAll();
+    applySide();
     // Quem já está transmitindo aparece com o botão "Assistir" (não abre sozinho)
   } finally {
     joining = false;
@@ -786,6 +819,7 @@ async function joinChannel(id) {
 }
 
 function leaveChannel(switching = false) {
+  rejoinId = null;
   if (!currentChannel) return;
   stopShare();
   stopCam();
@@ -1171,7 +1205,7 @@ async function openFloatingCam() {
     if ('documentPictureInPicture' in window) {
       const win = await documentPictureInPicture.requestWindow({ width: 260, height: 195 });
       const d = win.document;
-      d.title = 'Câmera — King Launcher';
+      d.title = 'Câmera — TalKing';
       d.body.style.cssText = 'margin:0;background:#000;overflow:hidden;height:100vh';
       const v = d.createElement('video');
       v.autoplay = true; v.muted = true; v.playsInline = true;
@@ -1601,9 +1635,14 @@ socket.on('mod-stop-music', ({ by }) => {
   if (musicStream) { stopMusic(); toast(`🎵 ${by} parou a sua música.`); }
 });
 
-socket.on('disconnect', () => {
+// Sala para onde voltar sozinho quando a conexão cai e volta (em vez de derrubar a chamada)
+let rejoinId = null, rejoinShare = false;
+socket.on('disconnect', (reason) => {
   if (currentChannel) {
-    toast('Conexão com o servidor perdida.');
+    const caiu = reason !== 'io client disconnect' && reason !== 'io server disconnect';
+    rejoinId = caiu ? currentChannel : null;
+    rejoinShare = caiu && !!screenStream;
+    toast(caiu ? 'Conexão caiu — voltando para a sala sozinho…' : 'Conexão com o servidor perdida.');
     stopShare();
     stopCam();
     [...peers.keys()].forEach(closePeer);
@@ -1757,14 +1796,25 @@ function renderScreens() {
       el.querySelector('.fs-deaf').onclick = toggleDeafen;
       el.querySelector('.fs-exit').onclick = () => document.exitFullscreen?.();
       // Controles aparecem ao mexer o mouse/tocar e somem sozinhos
-      const wake = () => {
+      let lx = -1, ly = -1;
+      const wake = (e) => {
+        // ignora "movimento" falso: o navegador avisa movimento quando a imagem muda embaixo do mouse parado
+        if (e && e.type === 'pointermove') {
+          if (Math.abs(e.clientX - lx) < 4 && Math.abs(e.clientY - ly) < 4) return;
+          lx = e.clientX; ly = e.clientY;
+        }
         el.classList.remove('idle');
         clearTimeout(el._idle);
-        el._idle = setTimeout(() => { if (document.fullscreenElement === el) el.classList.add('idle'); }, 3000);
+        el._idle = setTimeout(() => {
+          // com o mouse em cima de um botão, espera mais um pouco
+          if (matchMedia('(hover: hover)').matches && el.querySelector('.screen-tools:hover, .fs-bar:hover')) return wake();
+          el.classList.add('idle');
+        }, 3000);
       };
+      wake();
       el.addEventListener('pointermove', wake);
       el.addEventListener('pointerdown', wake);
-      el.addEventListener('fullscreenchange', () => { el.classList.remove('idle'); if (document.fullscreenElement === el) wake(); });
+      el.addEventListener('fullscreenchange', () => wake());
       el.querySelector('.fs').onclick = () => {
         if (document.fullscreenElement) document.exitFullscreen();
         else el.requestFullscreen?.();
@@ -3055,10 +3105,10 @@ let chatOpen = false;
 let chatUnread = 0;
 $('#btn-chat .ico').innerHTML = ICON.chat;
 $('#chat-close').innerHTML = ICON.close;
-$('#btn-chat').onclick = () => setChatOpen(!chatOpen);
+$('#btn-chat').onclick = () => (telaLarga() ? toggleSide() : setChatOpen(!chatOpen));
 $('#chat-close').onclick = () => setChatOpen(false);
 
-function setChatOpen(v) {
+function setChatOpen(v, semFoco = false) {
   chatOpen = v && !!currentChannel;
   if (chatOpen && dmOpen) setDmOpen(false);
   $('#chat').hidden = !chatOpen;
@@ -3066,7 +3116,7 @@ function setChatOpen(v) {
   if (chatOpen) {
     chatUnread = 0;
     renderChat(true);
-    setTimeout(() => $('#chat-input').focus(), 30);
+    if (!semFoco) setTimeout(() => $('#chat-input').focus(), 30);
   }
   updateChatBadge();
 }
@@ -3401,6 +3451,7 @@ function setDmOpen(v, withId = null) {
   if (!loggedIn) return;
   if (v) askNotifyPermission();
   dmOpen = v;
+  if (!v) setTimeout(() => applySide(), 0); // fechou as mensagens: o chat da sala volta para a lateral
   $('#dm').hidden = !v;
   document.body.classList.toggle('dm-open', v);
   if (v && chatOpen) setChatOpen(false); // os dois ficam no mesmo lugar
@@ -3829,10 +3880,10 @@ function flashTitle(text) {
   if (!document.hidden) return;
   clearInterval(titleFlash);
   let on = false;
-  titleFlash = setInterval(() => { document.title = (on = !on) ? text : 'King Launcher'; }, 900);
+  titleFlash = setInterval(() => { document.title = (on = !on) ? text : 'TalKing'; }, 900);
 }
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) { clearInterval(titleFlash); document.title = 'King Launcher'; }
+  if (!document.hidden) { clearInterval(titleFlash); document.title = 'TalKing'; }
 });
 
 // ---------- 🍅 Tomate e 👊 Chamar atenção ----------
@@ -4693,6 +4744,35 @@ setInterval(() => {
   if (changed) updateSpeakingClasses();
 }, 80);
 
+// Lista "Na chamada" da lateral: rostinho, nome, volume e botão de assistir
+function renderPeople(ch) {
+  const box = $('#people');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!ch) return;
+  ch.users.forEach((u) => {
+    const isMe = u.id === selfId, vol = volumeOf(u.name), live = isSharing(u.id);
+    const p = document.createElement('div');
+    p.className = 'member pessoa' + (speaking.has(u.id) ? ' speaking' : '') + (live ? ' live-on' : '') + (isMe ? '' : ' clickable');
+    p.dataset.uid = u.id;
+    p.innerHTML = `
+      ${avatarHTML(u)}
+      <div class="pinfo">
+        <div class="pl1"><span class="mname">${esc(u.name)}${isMe ? ' (você)' : ''}</span>${roleBadge(u.role)}${u.muted ? `<span class="muted-ico">${ICON.micOff}</span>` : ''}${live ? '<span class="live">AO VIVO</span>' : ''}</div>
+        ${isMe ? '' : `<div class="pvol"><i style="width:${Math.max(0, Math.min(100, Math.round(vol * 100)))}%"></i></div>`}
+      </div>
+      ${isMe ? '' : `<small class="pperc">${vol === 0 ? 'mudo' : Math.round(vol * 100) + '%'}</small>`}
+      ${!isMe && live ? `<button class="watch-btn ${watching.has(u.id) ? 'on' : ''}">${watching.has(u.id) ? 'Assistindo' : 'Assistir'}</button>` : ''}`;
+    if (!isMe) {
+      p.title = `${u.name} — clique para ajustar o volume`;
+      p.onclick = () => (volTarget === u.id ? closeVolume() : openVolume(u.id, p));
+      const wb = p.querySelector('.watch-btn');
+      if (wb) wb.onclick = (e) => { e.stopPropagation(); watching.has(u.id) ? unwatch(u.id) : watch(u.id); };
+    } else p.title = u.name;
+    box.appendChild(p);
+  });
+}
+
 function updateSpeakingClasses() {
   document.querySelectorAll('[data-uid]').forEach((el) => {
     el.classList.toggle('speaking', speaking.has(el.dataset.uid));
@@ -4771,11 +4851,12 @@ function renderChannels() {
   // Sala dos bots: o DJ e a TV ficam aqui esperando alguém chamar
   if (dj || tv || arcade) {
     const bots = document.createElement('div');
-    bots.className = 'channel bots-room';
+    bots.className = 'channel bots-room' + (botsOpen ? ' open' : '');
     const lista = [dj && { ...dj, move: () => djMove(currentChannel), hint: 'DJ de música' }, tv && { ...tv, move: () => tvMove(currentChannel), hint: 'TV ao vivo' }, arcade && { ...arcade, move: () => arcadeMove(currentChannel), hint: 'Mini-jogos' }].filter(Boolean);
     const emCasa = lista.filter((b) => !b.room);
     bots.innerHTML = `<div class="channel-row"><div class="channel-btn static">🤖<span>Bots</span><small>${emCasa.length}/${lista.length}</small></div></div><ul></ul>`;
     const ul = bots.querySelector('ul');
+    bots.querySelector('.channel-btn').onclick = (e) => { e.stopPropagation(); botsOpen = !botsOpen; bots.classList.toggle('open', botsOpen); };
     lista.forEach((b) => {
       const li = document.createElement('li');
       if (!b.room) {
@@ -4799,6 +4880,9 @@ function renderMain() {
   $('#empty').hidden = !!ch;
   $('#callbar').hidden = !ch;
   $('#main-hint').hidden = !ch || ch.users.length < 2;
+
+  document.body.classList.toggle('in-call', !!ch);
+  renderPeople(ch);
 
   const tiles = $('#tiles');
   tiles.innerHTML = '';
@@ -4860,6 +4944,10 @@ function renderControls() {
   bd.innerHTML = deafened ? ICON.headOff : ICON.head;
   bd.classList.toggle('off', deafened);
   bd.title = deafened ? 'Voltar a ouvir' : 'Ensurdecer';
+  // cópias na barra de baixo da chamada
+  const cm = $('#cb-mic'), cf = $('#cb-fone');
+  if (cm) { cm.innerHTML = bm.innerHTML; cm.classList.toggle('off', bm.classList.contains('off')); cm.title = bm.title; }
+  if (cf) { cf.innerHTML = bd.innerHTML; cf.classList.toggle('off', bd.classList.contains('off')); cf.title = bd.title; }
 
   const st = $('#me-status');
   st.textContent = currentChannel ? `Em ${channelName(currentChannel)}` : 'Desconectado';
@@ -4890,3 +4978,37 @@ function renderControls() {
   bc.querySelector('.ico').innerHTML = camStream ? ICON.cam : ICON.camOff;
   bc.querySelector('.label').textContent = camStream ? (camFloating ? 'Fechar câmera flutuante' : 'Desligar câmera') : 'Câmera';
 }
+
+// ---------- Gavetinha "Mais" da barra da chamada + botões de microfone e fone ----------
+(function gaveta() {
+  const b = $('#btn-more'), pop = $('#more-pop');
+  if (!b || !pop) return;
+  $('#cb-mic').onclick = toggleMute;
+  $('#cb-fone').onclick = toggleDeafen;
+  const set = (aberta) => { pop.hidden = !aberta; b.classList.toggle('open', aberta); b.setAttribute('aria-expanded', String(aberta)); };
+  b.onclick = (e) => { e.stopPropagation(); set(pop.hidden); };
+  pop.addEventListener('click', (e) => { if (e.target.closest('button')) set(false); });
+  document.addEventListener('click', (e) => { if (!pop.hidden && !e.target.closest('.more-wrap')) set(false); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') set(false); });
+  // aviso de mensagem nova do chat aparece também no botão da gaveta
+  const cb = $('#chat-badge'), mb = $('#more-badge');
+  const sb = $('#side-badge');
+  const sync = () => { mb.hidden = cb.hidden; mb.textContent = cb.textContent; if (sb) { sb.hidden = cb.hidden; sb.textContent = cb.textContent; } };
+  const st = $('#side-toggle');
+  if (st) { st.onclick = toggleSide; applySide(); }
+  document.addEventListener('click', (e) => {
+    if (botsOpen && !e.target.closest('.bots-room')) { botsOpen = false; document.querySelector('.bots-room')?.classList.remove('open'); }
+  });
+  new MutationObserver(sync).observe(cb, { attributes: true, childList: true, characterData: true, subtree: true });
+  sync();
+  // tela cheia da TV: o botão some sozinho e volta ao mexer
+  const tvw = $('#tv-video-wrap');
+  if (tvw) {
+    let t, lx = -1, ly = -1;
+    const wake = (e) => {
+      if (e && e.type === 'pointermove') { if (Math.abs(e.clientX - lx) < 4 && Math.abs(e.clientY - ly) < 4) return; lx = e.clientX; ly = e.clientY; }
+      tvw.classList.remove('idle'); clearTimeout(t); t = setTimeout(() => tvw.classList.add('idle'), 3000);
+    };
+    tvw.addEventListener('pointermove', wake); tvw.addEventListener('pointerdown', wake); tvw.addEventListener('fullscreenchange', () => wake());
+  }
+})();

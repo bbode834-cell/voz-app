@@ -3,17 +3,15 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>King Launcher</title>
-  <link rel="icon" href="logo-fone.svg" />
-  <link rel="stylesheet" href="style.css?v=182" />
+  <title>TalKing</title>
+  <link rel="icon" href="logo-coroa.svg" />
+  <link rel="stylesheet" href="style.css?v=189" />
 </head>
 <body>
   <!-- Abertura: a logo parada e o fone caindo em cima da coroa (clique para pular) -->
   <div id="intro" class="intro" aria-hidden="true">
     <div class="intro-art">
-      <div class="intro-glow"></div>
-      <img src="logo-base.svg" class="intro-logo" alt="" />
-      <img src="fone.svg" class="intro-fone" alt="" />
+      <img src="abertura.svg" class="intro-anim" alt="" />
     </div>
   </div>
   <!-- Marca d'água no fundo de toda a tela -->
@@ -22,7 +20,7 @@
   <!-- Entrar / criar conta -->
   <div id="auth" class="modal" hidden>
     <form id="auth-form" class="modal-card auth-card" autocomplete="on">
-      <img src="logo-fone.svg" alt="King Launcher" class="modal-logo" />
+      <img src="logo-fone.svg" alt="TalKing" class="modal-logo" />
       <div class="auth-tabs" role="tablist">
         <button type="button" data-tab="login" class="on">Entrar</button>
         <button type="button" data-tab="register">Criar conta</button>
@@ -62,7 +60,7 @@
       <div class="settings-body">
         <section data-sec="tema">
           <h2>Cor do layout</h2>
-          <p class="sec-hint">Escolha a cor do King Launcher. Fica salvo só neste aparelho.</p>
+          <p class="sec-hint">Escolha a cor do TalKing. Fica salvo só neste aparelho.</p>
           <div id="theme-grid" class="theme-grid"></div>
           <label class="custom-color">
             <input type="color" id="theme-custom" value="#5865f2" />
@@ -124,8 +122,8 @@
   <div class="app">
     <aside class="sidebar">
       <header class="sidebar-header">
-        <img src="logo-fone.svg" alt="" class="side-logo" />
-        <span>Canais de voz</span>
+        <img src="logo-coroa.svg" alt="" class="side-logo" />
+        <img src="logo-nome.svg" alt="TalKing" class="side-name" />
       </header>
       <button id="btn-dm" class="dm-open-btn" title="Mensagens diretas">
         <span class="ico"></span><span>Mensagens</span><span id="dm-badge" class="dm-count" hidden></span>
@@ -226,12 +224,35 @@
         <div id="empty" class="empty">
           <img src="logo-fone.svg" alt="" class="empty-logo" />
           <h2>Nenhum canal selecionado</h2>
-          <p>Clique em um canal de voz à esquerda para entrar.</p>
+          <p>Clique em uma sala para entrar.</p>
         </div>
       </section>
 
       <footer class="callbar" id="callbar" hidden>
-        <label class="quality" title="Qualidade da sua transmissão">
+        <button id="btn-share" class="btn">
+          <span class="ico"></span><span class="label">Compartilhar tela</span>
+        </button>
+        <button id="btn-cam" class="btn" title="Seus amigos veem sua câmera">
+          <span class="ico"></span><span class="label">Câmera</span>
+        </button>
+        <button id="cb-mic" class="btn cb-ico" type="button" title="Mutar microfone"></button>
+        <button id="cb-fone" class="btn cb-ico" type="button" title="Ensurdecer"></button>
+        <!-- Gavetinha: o resto fica guardado aqui -->
+        <div class="more-wrap">
+          <button id="btn-more" class="btn" type="button" title="Mais opções" aria-expanded="false">
+            <span class="ico">☰</span><span class="label">Mais</span><span id="more-badge" class="chat-badge" hidden></span>
+          </button>
+          <div id="more-pop" class="more-pop" hidden>
+            <button id="btn-chat" class="btn" title="Chat do canal">
+          <span class="ico"></span><span class="label">Chat</span><span id="chat-badge" class="chat-badge" hidden></span>
+        </button>
+            <button id="btn-dj" class="btn" title="Chamar o DJ King para esta chamada" hidden>🤖 DJ</button>
+            <button id="btn-tv" class="btn" title="Chamar a TV King para esta chamada" hidden>📺 TV</button>
+            <button id="btn-arcade" class="btn" title="Chamar o Arcade King para esta chamada" hidden>🕹️ Arcade</button>
+            <button id="btn-music" class="btn" title="Toca o som de uma aba do navegador (YouTube, Spotify…) para todo mundo na chamada">
+          <span class="ico">🎵</span><span class="label">Música</span>
+        </button>
+            <label class="quality" title="Qualidade da sua transmissão">
           <span>Qualidade</span>
           <select id="quality">
             <option value="leve">720p · 30 FPS (internet fraca)</option>
@@ -239,30 +260,22 @@
             <option value="max">1080p · 60 FPS (jogos)</option>
           </select>
         </label>
-        <button id="btn-share" class="btn">
-          <span class="ico"></span><span class="label">Compartilhar tela</span>
-        </button>
-        <button id="btn-cam" class="btn" title="Seus amigos veem sua câmera">
-          <span class="ico"></span><span class="label">Câmera</span>
-        </button>
-        <button id="btn-dj" class="btn" title="Chamar o DJ King para esta chamada" hidden>🤖 DJ</button>
-        <button id="btn-tv" class="btn" title="Chamar a TV King para esta chamada" hidden>📺 TV</button>
-        <button id="btn-arcade" class="btn" title="Chamar o Arcade King para esta chamada" hidden>🕹️ Arcade</button>
-        <button id="btn-music" class="btn" title="Toca o som de uma aba do navegador (YouTube, Spotify…) para todo mundo na chamada">
-          <span class="ico">🎵</span><span class="label">Música</span>
-        </button>
-        <button id="btn-chat" class="btn" title="Chat do canal">
-          <span class="ico"></span><span class="label">Chat</span><span id="chat-badge" class="chat-badge" hidden></span>
-        </button>
+          </div>
+        </div>
         <button id="btn-leave" class="btn danger">
           <span class="ico"></span><span class="label">Sair</span>
         </button>
       </footer>
     </main>
-  </div>
 
-  <!-- Chat do canal -->
-  <aside id="chat" class="chat" hidden>
+    <!-- Lateral direita: pessoas na chamada + chat (recolhe para o modo teatro) -->
+    <aside id="side" class="side">
+      <button id="side-toggle" class="side-toggle" type="button"><span class="txt">Modo teatro</span><span class="ico">⟩</span><span id="side-badge" class="chat-badge" hidden></span></button>
+      <section class="side-card people-card">
+        <header class="side-head"><strong>Na chamada</strong><small>clique para ajustar o volume</small></header>
+        <div id="people" class="people"></div>
+      </section>
+      <aside id="chat" class="chat" hidden>
     <header class="chat-head">
       <strong>Chat do canal</strong>
       <button id="chat-close" class="icon-btn" title="Fechar chat"></button>
@@ -278,6 +291,9 @@
       <button type="submit" class="btn primary small">Enviar</button>
     </form>
   </aside>
+    </aside>
+  </div>
+
 
   <!-- Mensagens diretas (funciona fora da chamada também) -->
   <aside id="dm" class="chat dm" hidden>
@@ -355,7 +371,7 @@
   <div id="audio-sink" hidden></div>
   <div id="toast" class="toast" role="status"></div>
 
-  <button id="update-bar" class="update-bar" hidden>🔄 Saiu uma atualização do King Launcher — clique aqui para atualizar (depois é só entrar no canal de novo)</button>
+  <button id="update-bar" class="update-bar" hidden>🔄 Saiu uma atualização do TalKing — clique aqui para atualizar (depois é só entrar no canal de novo)</button>
   <!-- Procurar música para o DJ -->
   <div id="dj-search" class="modal" hidden>
     <div class="modal-card dj-card">
@@ -409,6 +425,6 @@
   </div>
   <div id="photo-view" class="photo-view" hidden><img alt="Foto" /></div>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=182"></script>
+  <script src="app.js?v=189"></script>
 </body>
 </html>
