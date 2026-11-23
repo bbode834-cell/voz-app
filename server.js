@@ -656,7 +656,15 @@ const dj = {
   queue: [], // próximas: { key, kind, url, title, artist, art, duration }
   now: null, // tocando: { ...faixa, startedAt (ms, quando o "0:00" começou), pausedAt (ms | null) }
   timer: null,
+  history: [], // as últimas que tocaram (mais recente no fim), para o botão ⏮
+  repeat: 'off', // 'off' | 'all' (a fila gira) | 'one' (repete a música atual)
 };
+const DJ_HIST_MAX = 30;
+// Uma faixa para tocar de novo: ganha chave nova para todo aparelho recarregar do zero
+function djDeNovo(t) {
+  const { startedAt, pausedAt, nowTitle, nowVideo, ...resto } = t;
+  return { ...resto, key: `t${++djSeq}`, ...(t.list ? { index: 0 } : {}) };
+}
 let djSeq = 0;
 function djPublic() {
   return { id: dj.id, name: dj.name, avatar: dj.avatar, room: dj.room };
@@ -671,11 +679,54 @@ function djStop() {
   dj.timer = null;
 }
 // Toca a próxima da fila (ou para, se acabou)
-function djNext() {
+function djNext({ natural = false } = {}) {
   djStop();
+  const acabou = dj.now;
+  if (acabou) {
+    // Repetir uma: toca a mesma de novo (só quando acabou sozinha, não quando alguém pula)
+    if (natural && dj.repeat === 'one') {
+      dj.now = { ...djDeNovo(acabou), startedAt: Date.now(), pausedAt: null };
+      djArmTimer();
+      broadcastDj();
+      return;
+    }
+    dj.history.push(djDeNovo(acabou));
+    while (dj.history.length > DJ_HIST_MAX) dj.history.shift();
+    // Repetir todas: a música que acabou volta para o fim da fila
+    if (dj.repeat === 'all') dj.queue.push(djDeNovo(acabou));
+  }
   const t = dj.queue.shift();
   if (!t) { dj.now = null; broadcastDj(); return; }
   dj.now = { ...t, startedAt: Date.now(), pausedAt: null };
+  djArmTimer();
+  broadcastDj();
+}
+// Posição atual (segundos) da música que está tocando
+function djPos() {
+  const n = dj.now;
+  if (!n) return 0;
+  return ((n.pausedAt || Date.now()) - n.startedAt) / 1000;
+}
+// ⏮ Voltar: com mais de 4 s tocando, recomeça a atual; senão volta para a anterior
+function djVoltar() {
+  const n = dj.now;
+  if (n && n.kind === 'yt' && n.list && n.index > 0 && djPos() < 4) {
+    n.index -= 1; n.startedAt = Date.now(); n.pausedAt = null; n.nowTitle = ''; n.nowVideo = '';
+    broadcastDj();
+    return;
+  }
+  if (n && (djPos() >= 4 || !dj.history.length)) {
+    djStop();
+    dj.now = { ...djDeNovo(n), ...(n.list ? { index: n.index } : {}), startedAt: Date.now(), pausedAt: null };
+    djArmTimer();
+    broadcastDj();
+    return;
+  }
+  const ant = dj.history.pop();
+  if (!ant) return;
+  djStop();
+  if (n) dj.queue.unshift(djDeNovo(n)); // a atual volta para o começo da fila
+  dj.now = { ...ant, startedAt: Date.now(), pausedAt: null };
   djArmTimer();
   broadcastDj();
 }
@@ -685,10 +736,10 @@ function djArmTimer() {
   const n = dj.now;
   if (!n || n.pausedAt || !n.duration) return;
   const left = n.duration * 1000 - (Date.now() - n.startedAt);
-  dj.timer = setTimeout(djNext, Math.max(500, left + 1500));
+  dj.timer = setTimeout(() => djNext({ natural: true }), Math.max(500, left + 1500));
 }
 // Playlist do YouTube: passa para o próximo vídeo dela (ou para a próxima da fila, se acabou)
-function djAvanca() {
+function djAvanca({ natural = false } = {}) {
   const n = dj.now;
   if (n && n.kind === 'yt' && n.list && (n.count == null || n.index + 1 < n.count)) {
     n.index += 1;
@@ -699,7 +750,7 @@ function djAvanca() {
     broadcastDj();
     return;
   }
-  djNext();
+  djNext({ natural });
 }
 function djPause() {
   const n = dj.now;
@@ -1237,6 +1288,11 @@ io.on('connection', (socket) => {
     else if (action === 'play') { if (dj.now) djResume(); else djNext(); }
     else if (action === 'skip') { djAvanca(); ack({ ok: true }); return; } // numa playlist: próximo vídeo
     else if (action === 'skip-all') { djNext(); ack({ ok: true }); return; } // pula a playlist inteira
+    else if (action === 'prev') { djVoltar(); ack({ ok: true }); return; } // ⏮ recomeça ou volta a anterior
+    else if (action === 'repeat') { // 🔁 desligado → todas → uma → desligado
+      dj.repeat = dj.repeat === 'off' ? 'all' : dj.repeat === 'all' ? 'one' : 'off';
+      if (dj.room) io.to(dj.room).emit('dj-info', { text: dj.repeat === 'all' ? `🔁 ${me().name} ligou repetir a fila toda.` : dj.repeat === 'one' ? `🔂 ${me().name} ligou repetir esta música.` : `${me().name} desligou o repetir.` });
+    }
     else if (action === 'remove') dj.queue = dj.queue.filter((t) => t.key !== key);
     else if (action === 'clear') dj.queue = [];
     else if (action === 'stop') { djStop(); dj.now = null; dj.queue = []; }
@@ -1254,8 +1310,8 @@ io.on('connection', (socket) => {
       // Vários aparelhos avisam o mesmo fim: só vale o do vídeo atual
       if (Number.isInteger(index) && index !== n.index) return;
       if (err && dj.room) io.to(dj.room).emit('dj-info', { text: '⚠️ Um vídeo da playlist não pode tocar fora do YouTube. Pulando.' });
-      if (last) { djNext(); return; }
-      djAvanca();
+      if (last) { djNext({ natural: !err }); return; }
+      djAvanca({ natural: !err });
       return;
     }
     // Um aparelho só não decide: a música só é pulada quando a MAIORIA da sala avisa
@@ -1274,7 +1330,7 @@ io.on('connection', (socket) => {
       }
       if (dj.room) io.to(dj.room).emit('dj-info', { text: `⚠️ Não deu para tocar "${n.title}" na maioria dos aparelhos. Pulando.` });
     }
-    djNext();
+    djNext({ natural: fimNormal });
   });
 
   // O player do YouTube de um aparelho conta o que está tocando (título, posição na playlist, tamanho)
@@ -1685,6 +1741,7 @@ io.on('connection', (socket) => {
   });
 });
 
+if (process.env.KL_TEST) module.exports._dj = { dj, djNext, djVoltar, djAvanca, djDeNovo };
 banco.init()
   .then(loadChannels)
   .then(() => {

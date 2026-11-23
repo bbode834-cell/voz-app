@@ -2749,6 +2749,14 @@ function renderDj() {
   $('#dj-mini-now').textContent = n ? `· ${titulo}${n.pausedAt ? ' (pausado)' : ''}` : '· nada tocando';
   $('#dj-play').disabled = !n && !dj.queue.length;
   $('#dj-skip').disabled = !n && !dj.queue.length;
+  $('#dj-prev').disabled = !n && !(dj.history || []).length;
+  $('#dj-mini-prev').disabled = $('#dj-prev').disabled;
+  // 🔁 repetir: desligado / fila toda / só esta
+  const rep = dj.repeat || 'off';
+  const rb = $('#dj-repeat');
+  rb.textContent = rep === 'one' ? '🔂' : '🔁';
+  rb.classList.toggle('on', rep !== 'off');
+  rb.title = rep === 'off' ? 'Repetir: desligado (clique para repetir a fila toda)' : rep === 'all' ? 'Repetindo a fila toda (clique para repetir só esta música)' : 'Repetindo esta música (clique para desligar)';
   $('#dj-vol').value = Math.round(djVolume * 100);
   renderDjMute();
   const q = $('#dj-queue');
@@ -2767,12 +2775,16 @@ function applyDjMin() {
   $('#dj-min').title = min ? 'Abrir o painel do DJ' : 'Minimizar o painel do DJ';
   $('#dj-mini-play').hidden = !min;
   $('#dj-mini-skip').hidden = !min;
+  $('#dj-mini-prev').hidden = !min;
   $('.dj-head .dj-mute').hidden = !min;
 }
 $('#dj-min').onclick = () => { store.set(DJ_MIN, !store.get(DJ_MIN, false)); applyDjMin(); };
 $('#dj-mini-play').onclick = () => djCtrl(dj?.now && !dj.now.pausedAt ? 'pause' : 'play');
 $('#dj-mini-skip').onclick = () => djCtrl('skip');
+$('#dj-mini-prev').onclick = () => djCtrl('prev');
 applyDjMin();
+$('#dj-prev').onclick = () => djCtrl('prev');
+$('#dj-repeat').onclick = () => djCtrl('repeat');
 $('#dj-back').onclick = () => djMove('bots');
 $('#dj-play').onclick = () => djCtrl(dj?.now && !dj.now.pausedAt ? 'pause' : 'play');
 $('#dj-skip').onclick = () => djCtrl('skip');
