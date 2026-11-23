@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>TalKing</title>
   <link rel="icon" href="logo-coroa.svg" />
-  <link rel="stylesheet" href="style.css?v=208" />
+  <link rel="stylesheet" href="style.css?v=212" />
 </head>
 <body>
   <!-- Abertura: a logo parada e o fone caindo em cima da coroa (clique para pular) -->
@@ -35,6 +35,7 @@
       </div>
       <label class="field-label" for="auth-pass">Senha</label>
       <input id="auth-pass" type="password" minlength="6" autocomplete="current-password" placeholder="Mínimo 6 caracteres" required />
+      <label class="remember-row" id="auth-termos-row" hidden><input type="checkbox" id="auth-termos" /> <span>Tenho <b>14 anos ou mais</b> e aceito os <a href="/termos" target="_blank">Termos de uso</a> e a <a href="/privacidade" target="_blank">Política de privacidade</a>.</span></label>
       <label class="remember-row"><input type="checkbox" id="auth-remember" /> Lembrar usuário e senha</label>
       <p id="auth-msg" class="auth-msg" hidden></p>
       <button type="submit" id="auth-submit" class="btn primary">Entrar</button>
@@ -132,13 +133,28 @@
             <input type="checkbox" id="ns-toggle" class="switch" />
           </label>
           <p id="ns-status" class="sec-hint"></p>
+          <h2>📉 Economia de dados</h2>
+          <div class="seg" id="economia-seg"><button type="button" data-v="auto">Automático</button><button type="button" data-v="on">Sempre</button><button type="button" data-v="off">Nunca</button></div>
+          <p id="economia-dica" class="sec-hint"></p>
         </section>
 
         <section data-sec="mod">
-          <h2>Contas esperando aprovação</h2>
-          <div id="mod-pending" class="acc-list"></div>
-          <h2>Todas as contas</h2>
-          <div id="mod-users" class="acc-list"></div>
+          <div class="mod-tabs" id="mod-tabs"><button type="button" data-mt="contas" class="on">👥 Contas</button><button type="button" data-mt="servidores" id="mt-servidores" hidden>🏰 Servidores</button><button type="button" data-mt="atividade" id="mt-atividade" hidden>📋 Atividade</button><button type="button" data-mt="pedidos" id="mt-pedidos" hidden>📝 Pedidos <span id="mt-pedidos-n" class="chat-badge" hidden></span></button></div>
+          <div id="mod-contas">
+            <div id="mod-cadastro" class="mod-cadastro" hidden>
+              <span class="field-label">Cadastro de contas novas</span>
+              <div class="seg" id="cadastro-seg"><button type="button" data-v="email">Entra; servidor só com e-mail confirmado</button><button type="button" data-v="aprovacao">Eu aprovo cada uma</button><button type="button" data-v="livre">Entra na hora</button></div>
+              <small id="cadastro-dica" class="sec-hint"></small>
+            </div>
+            <h2>Contas esperando</h2>
+            <div id="mod-pending" class="acc-list"></div>
+            <h2>Todas as contas <small id="mod-total" class="sec-hint"></small></h2>
+            <input id="mod-busca" class="mod-busca" placeholder="Procurar por nome, usuário ou e-mail" />
+            <div id="mod-users" class="acc-list"></div>
+          </div>
+          <div id="mod-servidores" hidden></div>
+          <div id="mod-atividade" hidden></div>
+          <div id="mod-pedidos" hidden></div>
         </section>
 
         <section data-sec="conta">
@@ -160,6 +176,15 @@
             <button type="submit" class="btn small">Trocar senha</button>
           </form>
           <button type="button" id="btn-logout" class="btn danger">Sair da conta</button>
+          <p class="legal-links"><a href="/termos" target="_blank">Termos de uso</a> · <a href="/privacidade" target="_blank">Política de privacidade</a></p>
+          <details class="apagar-conta" id="apagar-conta">
+            <summary>Apagar minha conta</summary>
+            <p class="sec-hint">Apaga sua conta, suas mensagens, suas participações e os servidores que você criou. Não tem volta.</p>
+            <form id="apagar-form" class="pass-form">
+              <input id="apagar-senha" type="password" placeholder="Sua senha" autocomplete="current-password" required />
+              <button type="submit" class="btn small danger">Apagar minha conta de vez</button>
+            </form>
+          </details>
         </section>
       </div>
     </div>
@@ -339,6 +364,7 @@
             <label class="quality" title="Qualidade da sua transmissão">
           <span>Qualidade</span>
           <select id="quality">
+            <option value="economia">480p · 15 FPS (economia de dados)</option>
             <option value="leve">720p · 30 FPS (internet fraca)</option>
             <option value="padrao">1080p · 30 FPS</option>
             <option value="max">1080p · 60 FPS (jogos)</option>
@@ -509,6 +535,6 @@
   </div>
   <div id="photo-view" class="photo-view" hidden><img alt="Foto" /></div>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=208"></script>
+  <script src="app.js?v=212"></script>
 </body>
 </html>

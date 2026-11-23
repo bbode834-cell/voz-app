@@ -141,7 +141,7 @@ function toast(msg) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.remove('show'), 3500);
 }
-const emitAck = (ev, data) => new Promise((resolve) => socket.emit(ev, data, resolve));
+const emitAck = (ev, data) => new Promise((resolve) => socket.emit(ev, data, (r) => { if (r?.pedido) toast(`📝 ${r.msg || 'Pedido enviado ao dono para confirmar.'}`); resolve(r); }));
 const sendSignal = (to, data) => socket.emit('signal', { to, data });
 
 // ---------- Efeitos sonoros ----------
@@ -296,13 +296,16 @@ function setAuthMode(mode) {
   document.querySelectorAll('.auth-tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === mode));
   $('#auth-name-row').hidden = mode !== 'register';
   $('#auth-email').required = mode === 'register' && !!config?.email;
+  $('#auth-termos-row').hidden = mode !== 'register';
+  $('#auth-termos').required = mode === 'register';
   $('#auth-email-dica').textContent = config?.email ? '(para recuperar a senha)' : '(opcional)';
   $('#auth-forgot').hidden = mode !== 'login' || !config?.email;
   $('#auth-submit').textContent = mode === 'register' ? 'Criar conta' : 'Entrar';
   $('#auth-pass').autocomplete = mode === 'register' ? 'new-password' : 'current-password';
   $('#auth-hint').innerHTML = mode === 'register'
     ? 'Depois de criar, o dono precisa <b>aprovar</b> sua conta. Aí é só entrar.'
-    : 'Ainda não tem conta? Toque em <b>Criar conta</b>. O dono precisa aprovar antes do primeiro acesso.';
+    : (config?.cadastro === 'aprovacao' ? 'Ainda não tem conta? Toque em <b>Criar conta</b>. O dono precisa aprovar antes do primeiro acesso.' : 'Ainda não tem conta? Toque em <b>Criar conta</b>: é rápido e grátis.');
+  if (mode === 'register') $('#auth-hint').innerHTML = config?.cadastro === 'aprovacao' ? 'Depois de criar, o dono precisa <b>aprovar</b> sua conta. Aí é só entrar.' : config?.cadastro === 'livre' ? 'Sua conta entra na hora.' : 'Sua conta entra na hora. Para entrar ou criar servidores, confirme o <b>código</b> que vai para o seu e-mail.';
   authMsg('');
 }
 document.querySelectorAll('.auth-tabs button').forEach((b) => (b.onclick = () => setAuthMode(b.dataset.tab)));
@@ -351,15 +354,18 @@ $('#auth-form').addEventListener('submit', async (e) => {
   btn.disabled = true;
   try {
     if (authMode === 'register') {
-      const r = await api('/api/register', { username, password, name: $('#auth-name').value.trim(), email: $('#auth-email').value.trim() });
+      if (!$('#auth-termos').checked) return authMsg('Para criar a conta, marque que tem 14 anos ou mais e aceita os Termos e a Política.');
+      const r = await api('/api/register', { username, password, name: $('#auth-name').value.trim(), email: $('#auth-email').value.trim(), termos: true });
       if (r.error) return authMsg(r.error);
-      if (r.token) { await startSession(r.token, r.user, true); if (r.confirmar) pedeCodigoEmail(username); return; } // primeira conta = dono
+      if (r.token) { store.set('voz-lembrar', $('#auth-remember').checked ? { u: username, p: password } : null); await startSession(r.token, r.user, true); if (r.confirmar) pedeCodigoEmail(username, 'Mandamos um código de 6 números para o seu e-mail. Confirme para poder entrar e criar servidores. Olhe também o spam.'); return; }
       setAuthMode('login');
       authMsg('Conta criada! Agora é só esperar o dono aprovar. Depois entre com seu usuário e senha.', 'ok');
       if (r.confirmar) pedeCodigoEmail(username);
     } else {
       const r = await api('/api/login', { username, password });
-      if (r.error) return authMsg(r.error, r.httpStatus === 403 ? 'wait' : 'error');
+      if (r.error) {
+        return authMsg(r.error, r.httpStatus === 403 ? 'wait' : 'error');
+      }
       store.set('voz-lembrar', $('#auth-remember').checked ? { u: username, p: password } : null);
       startSession(r.token, r.user, false);
     }
@@ -369,6 +375,29 @@ $('#auth-form').addEventListener('submit', async (e) => {
     btn.disabled = false;
   }
 });
+
+// Precisa confirmar o e-mail (pra entrar/criar servidor): reenvia o código e abre a caixinha
+async function pedeConfirmarEmail() {
+  if (!me?.email) { toast('📧 Cadastre um e-mail em ⚙ Configurações → Conta para entrar ou criar servidores.'); openSettings('conta'); return; }
+  const r = await api('/api/email/reenviar', { username: me.username });
+  pedeCodigoEmail(me.username, r.error ? `${r.error} Se já tem um código válido, digite aqui.` : `Para entrar ou criar servidores, confirme seu e-mail: mandamos um código para ${me.email}. Olhe também o spam.`);
+}
+const emailPendente = () => !!(config?.email && config?.cadastro === 'email' && me && me.role !== 'owner' && !me.emailOk);
+// Sem servidor: a pessoa fica "solta" no TalKing até entrar com um convite ou criar o seu
+function renderSemServidor() {
+  const box = $('#empty');
+  if (!loggedIn || serversState.length) { box.classList.remove('sem-srv'); return false; }
+  box.classList.add('sem-srv');
+  box.innerHTML = `<img src="logo-fone.svg" alt="" class="empty-logo" />
+    <h2>Bem-vindo ao TalKing, ${esc(myName)}!</h2>
+    <p>Você ainda não está em nenhum servidor. Peça o <b>link de convite</b> de um amigo ou crie o seu.</p>
+    ${emailPendente() ? '<p class="aviso-email">⚠️ Antes, confirme seu e-mail: só quem confirmou entra ou cria servidores.</p><button type="button" class="btn primary" id="sem-srv-email">📧 Confirmar meu e-mail</button>' : '<div class="sem-srv-btns"><button type="button" class="btn primary" id="sem-srv-novo">🏰 Criar servidor</button><button type="button" class="btn" id="sem-srv-convite">🔗 Entrar com convite</button></div>'}`;
+  const b1 = box.querySelector('#sem-srv-novo'), b2 = box.querySelector('#sem-srv-convite'), b3 = box.querySelector('#sem-srv-email');
+  if (b1) b1.onclick = () => abreNovoServidor();
+  if (b2) b2.onclick = () => { abreNovoServidor(); setTimeout(() => $('#srv-join-code').focus(), 50); };
+  if (b3) b3.onclick = pedeConfirmarEmail;
+  return true;
+}
 
 // ---------- E-mail: código de confirmação e recuperação de senha ----------
 let codigoUser = '';
@@ -389,6 +418,7 @@ $('#codigo-form').addEventListener('submit', async (e) => {
   if (r.user && me && r.user.id === me.id) { me = r.user; renderSettings(); }
   toast('✅ E-mail confirmado!');
   if (!loggedIn) authMsg('E-mail confirmado! Quando o dono aprovar sua conta, é só entrar.', 'ok');
+  else { if (pendingInvite) { const c = pendingInvite; pendingInvite = null; entrarComConvite(c); } renderAll(); }
 });
 $('#codigo-reenviar').onclick = async () => {
   const r = await api('/api/email/reenviar', { username: codigoUser });
@@ -508,6 +538,7 @@ async function entrarComConvite(codigo) {
   const c = String(codigo || '').trim().split('/').pop();
   if (!c) return;
   const r = await emitAck('srv-join', { codigo: c });
+  if (r?.email) { pendingInvite = c; return pedeConfirmarEmail(); }
   if (r?.error) return toast(r.error);
   const nome = () => srvOf(r.id)?.nome || 'servidor';
   // o snapshot novo chega logo depois do ack
@@ -578,7 +609,7 @@ function showSettingsSec(sec) {
   document.querySelectorAll('.settings-tabs button').forEach((b) => b.classList.toggle('on', b.dataset.sec === sec));
   document.querySelectorAll('.settings-body section').forEach((el) => (el.hidden = el.dataset.sec !== sec));
   renderSettings();
-  if (sec === 'mod') loadAccounts();
+  if (sec === 'mod') { renderModOwner(); showModTab(modTab); loadAccounts(); }
 }
 document.querySelectorAll('.settings-tabs button').forEach((b) => (b.onclick = () => showSettingsSec(b.dataset.sec)));
 $('#settings-close').onclick = () => ($('#settings').hidden = true);
@@ -712,18 +743,49 @@ $('#pass-form').addEventListener('submit', async (e) => {
   toast('Senha trocada!');
 });
 $('#btn-logout').onclick = () => logout('Você saiu da conta.', 'ok');
+$('#apagar-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!confirm('Tem certeza? Sua conta, mensagens e servidores que você criou serão apagados para sempre.')) return;
+  const r = await api('/api/conta/apagar', { password: $('#apagar-senha').value });
+  if (r.error) return toast(r.error);
+  $('#apagar-senha').value = '';
+  store.set('voz-lembrar', null);
+  logout('Sua conta foi apagada. Até mais!', 'ok');
+});
 
 // ---------- Moderação: contas ----------
 let pendingCount = 0;
 let accounts = [];
 
+let pedidosCount = 0;
 function updatePendingBadges() {
-  const show = isMod() && pendingCount > 0;
+  const n = (isMod() ? pendingCount : 0) + (me?.role === 'owner' ? pedidosCount : 0);
   for (const id of ['#gear-badge', '#mod-badge']) {
     const b = $(id);
-    b.hidden = !show;
-    b.textContent = String(pendingCount);
+    b.hidden = !n;
+    b.textContent = String(n);
   }
+  const mt = $('#mt-pedidos-n'); if (mt) { mt.hidden = !pedidosCount; mt.textContent = String(pedidosCount); }
+}
+socket.on('pedidos', ({ count }) => {
+  if (count > pedidosCount && loggedIn) { toast(`📝 ${count === 1 ? 'Um moderador fez um pedido' : `${count} pedidos de moderadores`} esperando sua confirmação (menu ⚙ → Moderação → Pedidos).`); playSound('mensagem', true); }
+  pedidosCount = count;
+  updatePendingBadges();
+  if (!$('#settings').hidden && settingsSec === 'mod' && modTab === 'pedidos') loadPedidos();
+});
+socket.on('pedido-decidido', ({ aprovado, descricao }) => {
+  toast(aprovado ? `✅ O dono aprovou: ${descricao}` : `❌ O dono recusou: ${descricao}`);
+  if (!$('#settings').hidden && settingsSec === 'mod') { if (modTab === 'pedidos') loadPedidos(); else loadAccounts(); }
+});
+async function loadPedidos() {
+  const r = await emitAck('pedidos-list', {});
+  if (r?.error) return toast(r.error);
+  const box = $('#mod-pedidos');
+  const dono = me?.role === 'owner';
+  const pend = r.pedidos.filter((p) => p.status === 'pendente'), resto = r.pedidos.filter((p) => p.status !== 'pendente').slice(0, 30);
+  const linha = (p) => `<div class="pedido ${p.status}" data-id="${p.id}"><div><b>${esc(p.descricao)}</b><small>${dono ? `pedido de ${esc(p.de_nome)} · ` : ''}${fmtQuando(p.quando)}${p.status !== 'pendente' ? ` · <span class="st">${p.status === 'aprovado' ? '✅ aprovado' : '❌ recusado'}${p.decidido_por ? ` por ${esc(p.decidido_por)}` : ''}</span>` : ' · ⏳ esperando o dono'}</small></div>${dono && p.status === 'pendente' ? '<div class="acc-actions"><button class="btn small ok" data-pd="1">✔ Aprovar</button><button class="btn small danger" data-pd="0">✖ Recusar</button></div>' : ''}</div>`;
+  box.innerHTML = `<p class="sec-hint">${dono ? 'Alterações feitas por moderadores só valem depois que você confirmar aqui.' : 'Suas alterações no painel vão para o dono confirmar.'}</p><h2>Esperando${pend.length ? ` (${pend.length})` : ''}</h2>${pend.length ? pend.map(linha).join('') : '<p class="sec-hint">Nenhum pedido esperando.</p>'}${resto.length ? `<h2>Já decididos</h2>${resto.map(linha).join('')}` : ''}`;
+  box.querySelectorAll('[data-pd]').forEach((b) => { b.onclick = async () => { const id = Number(b.closest('.pedido').dataset.id); const r2 = await emitAck('pedido-decidir', { id, aprovar: b.dataset.pd === '1' }); if (r2?.error) toast(r2.error); else toast(b.dataset.pd === '1' ? 'Aprovado e executado.' : 'Recusado.'); loadPedidos(); loadAccounts(); }; });
 }
 
 socket.on('pending', ({ count }) => {
@@ -747,32 +809,112 @@ async function loadAccounts() {
 
 const fmtDate = (d) => { try { return new Date(d).toLocaleDateString('pt-BR'); } catch { return ''; } };
 
+const fmtQuando = (d) => { if (!d) return 'nunca'; try { const x = new Date(d); return x.toLocaleDateString('pt-BR') + ' ' + x.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }); } catch { return ''; } };
 function renderAccounts() {
-  const pend = accounts.filter((u) => u.status === 'pending');
-  const rest = accounts.filter((u) => u.status !== 'pending');
+  const busca = ($('#mod-busca').value || '').trim().toLowerCase();
+  const bate = (u) => !busca || [u.name, u.username, u.email].some((x) => (x || '').toLowerCase().includes(busca));
+  const pend = accounts.filter((u) => u.status === 'pending' && bate(u));
+  const rest = accounts.filter((u) => u.status !== 'pending' && bate(u));
+  const souDono = me?.role === 'owner';
+  const mail = (u) => (souDono ? (u.email ? `<span class="mail">${esc(u.email)}</span> ${u.emailOk ? '<span class="mail-ok">✅</span>' : '<span class="mail-no" title="E-mail não confirmado">⚠️ não confirmou</span>'} · ` : '<span class="mail-no">sem e-mail</span> · ') : '');
   const row = (u, buttons) => `
     <div class="acc" data-id="${u.id}">
       ${avatarHTML(u)}
       <div class="acc-info"><strong>${esc(u.name)} ${roleBadge(u.role)}</strong>
-        <small>@${esc(u.username)} · ${u.status === 'banned' ? '<b class="ban">banido</b>' : u.status === 'pending' ? 'esperando' : ROLE_LABEL[u.role]} · desde ${fmtDate(u.createdAt)}</small></div>
+        <small>@${esc(u.username)} · ${u.status === 'banned' ? '<b class="ban">banido</b>' : u.status === 'pending' ? 'esperando aprovação' : ROLE_LABEL[u.role]} · ${mail(u)}criada ${fmtDate(u.createdAt)}${souDono ? ` · último acesso ${fmtQuando(u.vistoEm)}` : ''}</small></div>
       <div class="acc-actions">${buttons}</div>
     </div>`;
+  $('#mod-total').textContent = `(${accounts.length})`;
   const btn = (act, label, cls = '') => `<button class="btn small ${cls}" data-act="${act}">${label}</button>`;
   $('#mod-pending').innerHTML = pend.length
     ? pend.map((u) => row(u, btn('approve', '✔ Aprovar', 'ok') + btn('reject', '✖ Recusar', 'danger'))).join('')
     : '<p class="sec-hint">Ninguém esperando agora.</p>';
-  const souDono = me?.role === 'owner';
   $('#mod-users').innerHTML = rest.map((u) => {
     if (u.id === me?.id || RANK[u.role] >= RANK[me?.role]) return row(u, '');
     let b = '';
     if (u.status === 'approved') b += btn('reset-pass', '🔑 Nova senha');
-    if (souDono && u.status === 'approved') b += u.role === 'mod' ? btn('make-member', 'Tirar moderador') : btn('make-mod', '🛡️ Tornar moderador');
+    if (u.status === 'approved') b += u.role === 'mod' ? btn('make-member', 'Tirar moderador') : btn('make-mod', '🛡️ Tornar moderador');
     b += u.status === 'banned' ? btn('unban', 'Desbanir', 'ok') : btn('ban', 'Banir', 'danger');
-    if (souDono) b += btn('delete', 'Apagar', 'danger');
+    b += btn('delete', 'Apagar', 'danger');
     return row(u, b);
   }).join('');
 }
 
+$('#mod-busca').addEventListener('input', renderAccounts);
+// Abas do painel (dono): contas / servidores / atividade
+let modTab = 'contas';
+function showModTab(t) {
+  modTab = t;
+  document.querySelectorAll('#mod-tabs button').forEach((b) => b.classList.toggle('on', b.dataset.mt === t));
+  $('#mod-contas').hidden = t !== 'contas'; $('#mod-servidores').hidden = t !== 'servidores'; $('#mod-atividade').hidden = t !== 'atividade'; $('#mod-pedidos').hidden = t !== 'pedidos';
+  if (t === 'servidores') loadAdminServers();
+  if (t === 'atividade') loadAdminEvents();
+  if (t === 'pedidos') loadPedidos();
+}
+document.querySelectorAll('#mod-tabs button').forEach((b) => (b.onclick = () => showModTab(b.dataset.mt)));
+function renderModOwner() {
+  const dono = me?.role === 'owner';
+  $('#mt-servidores').hidden = !isMod(); $('#mt-atividade').hidden = !isMod(); $('#mt-pedidos').hidden = !isMod(); $('#mod-cadastro').hidden = !dono;
+  if (dono) {
+    const modo = config?.cadastro || 'email';
+    document.querySelectorAll('#cadastro-seg button').forEach((b) => b.classList.toggle('on', b.dataset.v === modo));
+    $('#cadastro-dica').textContent = modo === 'email' ? 'A conta entra na hora, mas só entra ou cria servidor depois de confirmar o e-mail.' : modo === 'aprovacao' ? 'Cada conta nova espera você aprovar aqui.' : 'Qualquer um entra na hora e usa servidores sem confirmar e-mail.';
+    if (modo === 'email' && !config?.email) $('#cadastro-dica').textContent += ' ⚠️ O e-mail não está configurado no Render, então por enquanto vale a aprovação manual.';
+  }
+}
+document.querySelectorAll('#cadastro-seg button').forEach((b) => { b.onclick = async () => { const r = await api('/api/ajustes', { cadastro: b.dataset.v }); if (r.error) return toast(r.error); config.cadastro = r.cadastro; renderModOwner(); toast('Cadastro atualizado.'); }; });
+async function loadAdminServers() {
+  const r = await emitAck('admin-servers', {});
+  if (r?.error) return toast(r.error);
+  const box = $('#mod-servidores');
+  const cargoTxt = { dono: '👑 dono', mod: '🛡️ mod', membro: 'membro' };
+  box.innerHTML = `<p class="sec-hint">${r.servers.length} servidor(es). Você manda em todos, mesmo sem ser membro.</p>` + r.servers.map((sv) => `
+    <details class="srv-adm" data-srv="${sv.id}">
+      <summary><span class="srv-ico">${sv.icone ? `<img src="${esc(sv.icone)}" alt="">` : esc((sv.nome[0] || '?').toUpperCase())}</span><span>${esc(sv.nome)}${sv.principal ? ' <small>(principal)</small>' : ''}</span><small>· dono ${esc(sv.dono.name)} · ${sv.membros.length} membro(s) · ${sv.online} online</small></summary>
+      <div class="srv-salas">Salas: ${sv.salas.map((c) => `${c.tipo === 'texto' ? '💬' : c.tipo === 'palco' ? '🎭' : '🔊'} ${esc(c.name)}${c.pessoas ? ` (${c.pessoas})` : ''}`).join(' · ') || 'nenhuma'}</div>
+      <div class="srv-acoes">${sv.principal ? '' : `<button class="btn small" data-sact="abrir">Abrir servidor</button><button class="btn small danger" data-sact="apagar">Apagar servidor</button>`}<form class="srv-add"><input placeholder="@usuário para adicionar" maxlength="20" /><button class="btn small" type="submit">➕ Adicionar</button></form></div>
+      ${sv.membros.map((m) => `<div class="acc" data-uid="${m.id}">${avatarHTML(m)}<div class="acc-info"><strong>${esc(m.name)} ${m.online ? '🟢' : ''}</strong><small>@${esc(m.username)} · ${cargoTxt[m.cargo] || m.cargo}</small></div><div class="acc-actions">${m.cargo === 'dono' || m.id === me?.id ? '' : `${m.cargo === 'mod' ? '<button class="btn small" data-sact="membro">Tirar mod</button>' : '<button class="btn small" data-sact="mod">Dar mod</button>'}<button class="btn small" data-sact="coroa">Passar coroa</button><button class="btn small danger" data-sact="kick">Expulsar</button><button class="btn small danger" data-sact="ban">Banir</button>`}</div></div>`).join('')}
+      ${sv.banidos.length ? `<div class="srv-salas">Banidos: ${sv.banidos.map((b) => `${esc(b.name)} <button class="btn small" data-sact="unban" data-uid="${b.id}">desbanir</button>`).join(' · ')}</div>` : ''}
+    </details>`).join('');
+}
+$('#mod-servidores').addEventListener('submit', async (e) => {
+  const f = e.target.closest('.srv-add');
+  if (!f) return;
+  e.preventDefault();
+  const srv = f.closest('.srv-adm').dataset.srv, nome = f.querySelector('input').value.trim().replace(/^@/, '').toLowerCase();
+  const u = accounts.find((x) => x.username === nome);
+  if (!u) return toast('Não achei esse usuário. Digite o @usuário exato (veja na aba Contas).');
+  const r = await emitAck('admin-srv-add', { id: srv, uid: u.id });
+  if (r?.error) return toast(r.error);
+  toast(r.ja ? 'Essa pessoa já estava no servidor.' : `${u.name} entrou no servidor.`);
+  loadAdminServers();
+});
+$('#mod-servidores').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-sact]');
+  if (!b) return;
+  const srv = b.closest('.srv-adm').dataset.srv, act = b.dataset.sact;
+  const uid = Number(b.dataset.uid || b.closest('[data-uid]')?.dataset.uid);
+  if (act === 'abrir') { $('#settings').hidden = true; currentServer = srv; store.set('voz-servidor', srv); renderAll(); return; }
+  if (act === 'apagar') { if (!confirm('Apagar este servidor com todas as salas? Não tem volta.')) return; const r = await emitAck('srv-delete', { id: srv }); if (r?.error) toast(r.error); return loadAdminServers(); }
+  if ((act === 'kick' || act === 'ban') && !confirm(`${act === 'ban' ? 'Banir' : 'Expulsar'} essa pessoa do servidor?`)) return;
+  if (act === 'coroa' && !confirm('Passar a coroa (dono do servidor) para essa pessoa?')) return;
+  const r = await emitAck('srv-member', { id: srv, uid, action: act });
+  if (r?.error) toast(r.error);
+  loadAdminServers();
+});
+const EV_NOME = { 'conta-criada': 'criou conta', 'email-confirmado': 'confirmou e-mail', entrou: 'entrou', aprovada: 'aprovada', 'servidor-criado': 'criou servidor', 'entrou-servidor': 'entrou no servidor', 'saiu-servidor': 'saiu do servidor', 'sala-criada': 'criou sala', 'conta-apagada': 'conta apagada', banido: 'banido do TalKing', desbanido: 'desbanido', 'banido-servidor': 'banido de servidor', 'expulso-servidor': 'expulso de servidor', ajuste: 'ajuste', pedido: 'pediu ao dono', 'pedido-aprovado': 'aprovou pedido', 'pedido-recusado': 'recusou pedido' };
+const EV_RUIM = new Set(['conta-apagada', 'banido', 'banido-servidor', 'expulso-servidor']);
+let evFiltro = '';
+async function loadAdminEvents() {
+  const r = await emitAck('admin-events', { limite: 400 });
+  if (r?.error) return toast(r.error);
+  const box = $('#mod-atividade');
+  const tipos = [...new Set(r.eventos.map((e) => e.tipo))];
+  const lista = r.eventos.filter((e) => !evFiltro || e.tipo === evFiltro);
+  box.innerHTML = `<div class="ev-filtros"><button class="btn small${evFiltro ? '' : ' primary'}" data-ev="">Tudo</button>${tipos.map((t) => `<button class="btn small${evFiltro === t ? ' primary' : ''}" data-ev="${t}">${EV_NOME[t] || t}</button>`).join('')}</div>`
+    + (lista.length ? lista.map((e) => `<div class="ev${EV_RUIM.has(e.tipo) ? ' ruim' : ''}"><time>${fmtQuando(e.quando)}</time><div><span class="ev-tipo">${EV_NOME[e.tipo] || e.tipo}</span><b>${esc(e.nome || '?')}</b>${e.detalhe ? ` — ${esc(e.detalhe)}` : ''}</div></div>`).join('') : '<p class="sec-hint">Nada registrado ainda.</p>');
+  box.querySelectorAll('[data-ev]').forEach((b) => (b.onclick = () => { evFiltro = b.dataset.ev; loadAdminEvents(); }));
+}
 const ACT_CONFIRM = {
   reject: 'Recusar o pedido de {n}?',
   ban: 'Banir {n}? A pessoa sai na hora e não consegue mais entrar.',
@@ -788,6 +930,7 @@ $('.settings-body section[data-sec="mod"]').addEventListener('click', async (e) 
   if (b.dataset.act === 'reset-pass' && !confirm(`Criar uma senha nova para ${u?.name}? A senha antiga deixa de funcionar.`)) return;
   const r = await emitAck('admin-set', { userId: id, action: b.dataset.act });
   if (r?.error) toast(r.error);
+  if (r?.pedido) return;
   if (r?.password) {
     prompt(`Senha nova de ${u?.name} (@${u?.username}). Copie e mande pra ele — depois ele pode trocar em ⚙ > Conta:`, r.password);
   }
@@ -1161,7 +1304,7 @@ function addLocalTracks(peer) {
   if (peer.tracksAdded) return;
   peer.tracksAdded = true;
   const mic = micSendTrack();
-  if (mic) peer.micSender = peer.pc.addTrack(mic, localStream);
+  if (mic) { peer.micSender = peer.pc.addTrack(mic, localStream); tuneMicSender(peer); }
   if (screenStream && shouldSendTo(peer.id)) {
     peer.screenSenders = addScreenTracks(peer.pc, screenStream);
   }
@@ -1196,8 +1339,9 @@ async function tuneCamSenders(peer) {
     try {
       const p = sender.getParameters();
       if (!p.encodings || !p.encodings.length) continue;
-      p.encodings[0].maxBitrate = 600_000;
-      p.encodings[0].maxFramerate = 24;
+      const plateia = palcoMode && !noPalco;
+      p.encodings[0].maxBitrate = economiaAtiva() ? 120_000 : plateia ? 150_000 : 350_000;
+      p.encodings[0].maxFramerate = economiaAtiva() ? 12 : plateia ? 15 : 20;
       await sender.setParameters(p);
     } catch {}
   }
@@ -1213,7 +1357,9 @@ async function toggleCam() {
     camStream = await navigator.mediaDevices.getUserMedia({
       video: plateia
         ? { width: { ideal: 240 }, height: { ideal: 240 }, frameRate: { ideal: 15, max: 15 }, facingMode: 'user' }
-        : { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24, max: 30 }, facingMode: 'user' },
+        : economiaAtiva()
+          ? { width: { ideal: 320 }, height: { ideal: 180 }, frameRate: { ideal: 12, max: 15 }, facingMode: 'user' }
+          : { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 20, max: 24 }, facingMode: 'user' },
       audio: false,
     });
   } catch {
@@ -1551,7 +1697,7 @@ socket.on('signal', async ({ from, data }) => {
       if (peer.ignoreOffer) return;
       peer.settingRemoteAnswer = d.type === 'answer';
       try {
-        await pc.setRemoteDescription({ type: d.type, sdp: fastStart(d.sdp) });
+        await pc.setRemoteDescription({ type: d.type, sdp: opusSdp(fastStart(d.sdp)) });
       } finally {
         peer.settingRemoteAnswer = false;
       }
@@ -1615,7 +1761,73 @@ function closePeer(id) {
 
 // ---------- Qualidade da transmissão ----------
 // bitrate = quanto de internet (upload) vai para CADA amigo assistindo
+// ---------- 📉 Economia de dados ----------
+// 'auto': liga sozinho em dados móveis / internet lenta / "economia de dados" do celular
+let economiaModo = store.get('voz-economia', 'auto');
+if (!['auto', 'on', 'off'].includes(economiaModo)) economiaModo = 'auto';
+function redeFraca() {
+  const c = navigator.connection;
+  if (!c) return false;
+  return !!c.saveData || /(^|-)(2g|3g)$/.test(c.effectiveType || '') || c.type === 'cellular';
+}
+const economiaAtiva = () => economiaModo === 'on' || (economiaModo === 'auto' && redeFraca());
+let economiaUltima = null;
+function aplicaEconomia(avisa = true) {
+  const on = economiaAtiva();
+  document.body.classList.toggle('economia', on);
+  if (economiaUltima !== null && on !== economiaUltima && avisa) toast(on ? '📉 Economia de dados ligada (dados móveis ou internet lenta): voz, câmera e transmissões mais leves.' : '📈 Economia de dados desligada.');
+  economiaUltima = on;
+  // avisa quem transmite pra mim e reajusta o que eu envio
+  [...watching].forEach((id) => socket.emit('watch', { id, on: true, leve: on }));
+  peers.forEach((peer) => { tuneCamSenders(peer); tuneMicSender(peer); });
+  renderEconomia();
+}
+function renderEconomia() {
+  document.querySelectorAll('#economia-seg button').forEach((b) => b.classList.toggle('on', b.dataset.v === economiaModo));
+  const el = $('#economia-dica');
+  if (el) el.textContent = (economiaAtiva() ? '✅ Ligada agora. ' : '⏸ Desligada agora. ') + 'Com ela ligada: voz em 20 kbps, câmera em 180p, transmissões que você assiste chegam em 480p/15 FPS e o que você transmite sai em 480p. No "Automático", liga sozinha em dados móveis ou internet lenta.';
+}
+document.querySelectorAll('#economia-seg button').forEach((b) => { b.onclick = () => { economiaModo = b.dataset.v; store.set('voz-economia', economiaModo); aplicaEconomia(); }; });
+navigator.connection?.addEventListener?.('change', () => aplicaEconomia());
+setTimeout(() => aplicaEconomia(false), 0);
+// Microfone: Opus com DTX (não manda nada no silêncio) e bitrate baixo. Voz humana fica ótima em 20–32 kbps.
+const OPUS_KBPS = () => (economiaAtiva() ? 20 : 32);
+function opusSdp(sdp) {
+  if (!sdp) return sdp;
+  const kbps = OPUS_KBPS();
+  const lines = sdp.split('\r\n');
+  const opusPts = new Set();
+  lines.forEach((l) => { const m = l.match(/^a=rtpmap:(\d+) opus\/48000/i); if (m) opusPts.add(m[1]); });
+  if (!opusPts.size) return sdp;
+  const out = [];
+  const comFmtp = new Set();
+  for (const l of lines) {
+    const fm = l.match(/^a=fmtp:(\d+) (.*)$/);
+    if (fm && opusPts.has(fm[1])) {
+      comFmtp.add(fm[1]);
+      let params = fm[2].split(';').map((x) => x.trim()).filter((x) => x && !/^(usedtx|maxaveragebitrate|stereo|sprop-stereo)=/.test(x));
+      params.push('usedtx=1', `maxaveragebitrate=${kbps * 1000}`, 'stereo=0', 'sprop-stereo=0');
+      out.push(`a=fmtp:${fm[1]} ${params.join(';')}`);
+      continue;
+    }
+    out.push(l);
+  }
+  for (const pt of opusPts) if (!comFmtp.has(pt)) out.push(`a=fmtp:${pt} usedtx=1;maxaveragebitrate=${kbps * 1000};stereo=0;sprop-stereo=0`);
+  return out.join('\r\n');
+}
+async function tuneMicSender(peer) {
+  const sd = peer?.micSender;
+  if (!sd) return;
+  try {
+    const p = sd.getParameters();
+    if (!p.encodings?.length) p.encodings = [{}];
+    p.encodings[0].maxBitrate = OPUS_KBPS() * 1000;
+    await sd.setParameters(p);
+  } catch {}
+}
+
 const QUALITY = {
+  economia: { w: 854, h: 480, fps: 15, bitrate: 700_000, hint: 'motion' },
   // 'motion' = codificador otimizado para movimento (jogos)
   leve:   { w: 1280, h: 720,  fps: 30, bitrate: 2_000_000, hint: 'motion' },
   padrao: { w: 1920, h: 1080, fps: 30, bitrate: 4_000_000, hint: 'motion' },
@@ -1654,8 +1866,12 @@ async function tuneScreenSenders(peer) {
     try {
       const p = sender.getParameters();
       if (!p.encodings || !p.encodings.length) continue;
-      p.encodings[0].maxBitrate = q().bitrate;
-      p.encodings[0].maxFramerate = q().fps;
+      // quem está assistindo em economia de dados recebe uma versão leve (480p / 15 FPS / 700 kbps)
+      const leve = peer.leve || economiaAtiva();
+      p.encodings[0].maxBitrate = leve ? Math.min(q().bitrate, 700_000) : q().bitrate;
+      p.encodings[0].maxFramerate = leve ? Math.min(q().fps, 15) : q().fps;
+      const alt = sender.track.getSettings?.().height || q().h;
+      p.encodings[0].scaleResolutionDownBy = leve && alt > 480 ? Math.max(1, alt / 480) : 1;
       // Jogo: quando a internet/PC aperta, diminui a nitidez mas mantém a fluidez
       p.degradationPreference = 'maintain-framerate';
       await sender.setParameters(p);
@@ -1773,17 +1989,19 @@ socket.on('share-stopped', ({ id }) => {
 });
 
 // Alguém começou/parou de assistir a minha transmissão
-socket.on('watch-request', ({ from, on }) => {
+socket.on('watch-request', ({ from, on, leve }) => {
   const peer = peers.get(from);
   if (!peer) return;
   peer.watchingMe = !!on;
+  peer.leve = !!leve;
   syncScreenSenders();
+  tuneScreenSenders(peer);
 });
 
 function watch(id) {
   if (!currentChannel || id === selfId) return;
   watching.add(id);
-  socket.emit('watch', { id, on: true });
+  socket.emit('watch', { id, on: true, leve: economiaAtiva() });
   renderScreens();
   renderMain();
 }
@@ -4102,6 +4320,9 @@ function flashTitle(text) {
 }
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) { clearInterval(titleFlash); document.title = 'TalKing'; }
+  // Aba em segundo plano: pausa as transmissões que eu assisto (não gasta internet à toa); volta ao abrir
+  if (!currentChannel) return;
+  [...watching].forEach((id) => socket.emit('watch', { id, on: !document.hidden, leve: economiaAtiva() }));
 });
 
 // ---------- 🍅 Tomate e 👊 Chamar atenção ----------
@@ -5107,7 +5328,14 @@ function srvIconHTML(sv, cls = 'avatar srv-icon') {
 function renderServerBar() {
   const sv = srvOf(currentServer);
   const pill = $('#srv-pill');
-  if (!sv) { pill.hidden = true; return; }
+  if (!sv) {
+    if (!loggedIn) { pill.hidden = true; return; }
+    pill.hidden = false;
+    fillAvatar($('#srv-icon'), '+', '');
+    $('#srv-name').textContent = 'Servidores';
+    pill.title = 'Criar um servidor ou entrar com convite';
+    return;
+  }
   pill.hidden = false;
   const ic = $('#srv-icon');
   fillAvatar(ic, sv.nome, sv.icone || '');
@@ -5184,6 +5412,7 @@ function abreNovoServidor() {
   $('#srv-new-form').onsubmit = async (e) => {
     e.preventDefault();
     const r = await emitAck('srv-create', { nome: $('#srv-new-name').value, icone });
+    if (r?.email) { m.hidden = true; return pedeConfirmarEmail(); }
     if (r?.error) return toast(r.error);
     m.hidden = true;
     setTimeout(() => { escolheServidor(r.id, { silencioso: true }); toast('🏰 Servidor criado! Convide seus amigos pelo menu do servidor.'); abreConvite(srvOf(r.id)); }, 300);
@@ -5300,8 +5529,9 @@ $('#text-form').addEventListener('submit', async (e) => {
 
 function renderMain() {
   const ch = channelsState.find((c) => c.id === currentChannel);
-  $('#main-title').textContent = ch ? ch.name : 'Escolha um canal de voz';
+  $('#main-title').textContent = ch ? ch.name : (serversState.length ? 'Escolha um canal de voz' : 'TalKing');
   $('#empty').hidden = !!ch;
+  if (!ch && !renderSemServidor()) { const box = $('#empty'); if (box.classList.contains('sem-srv') || !box.querySelector('h2')) { box.classList.remove('sem-srv'); box.innerHTML = '<img src="logo-fone.svg" alt="" class="empty-logo" /><h2>Nenhum canal selecionado</h2><p>Clique em uma sala para entrar.</p>'; } }
   $('#callbar').hidden = !ch;
   $('#main-hint').hidden = !ch || ch.users.length < 2;
 

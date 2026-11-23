@@ -1,0 +1,21 @@
+/* Páginas de Termos e Privacidade do TalKing */
+* { box-sizing: border-box; }
+body { margin: 0; background: #0b0826; color: #dcd8ff; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; line-height: 1.6;
+  background-image: radial-gradient(46% 60% at 6% 0%, rgba(34,211,238,.18), transparent 72%), radial-gradient(48% 62% at 100% 100%, rgba(244,114,182,.14), transparent 72%); background-attachment: fixed; }
+.legal { max-width: 760px; margin: 0 auto; padding: 28px 18px 60px; }
+.volta { display: inline-block; color: #22d3ee; text-decoration: none; font-size: 14px; margin-bottom: 18px; }
+.volta:hover { text-decoration: underline; }
+.logo { height: 44px; display: block; margin-bottom: 8px; }
+h1 { margin: 0 0 4px; font-size: 30px; color: #fff; }
+.data { margin: 0 0 22px; color: #9a95c9; font-size: 13px; }
+h2 { font-size: 19px; color: #fff; margin: 28px 0 8px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,.08); }
+p { margin: 8px 0; }
+ul { padding-left: 22px; }
+li { margin: 4px 0; }
+a { color: #22d3ee; }
+b { color: #fff; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 10px 0; }
+th, td { text-align: left; padding: 8px 10px; border: 1px solid rgba(255,255,255,.12); vertical-align: top; }
+th { background: rgba(255,255,255,.06); color: #fff; }
+.rodape { margin-top: 34px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,.08); color: #9a95c9; font-size: 14px; }
+@media (max-width: 600px) { h1 { font-size: 24px; } table { font-size: 12px; } th, td { padding: 6px; } }

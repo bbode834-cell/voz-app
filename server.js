@@ -91,7 +91,7 @@ app.get('/config', async (req, res) => {
     const cf = await turnCloudflare();
     if (cf) iceServers.push(...cf);
   } catch {}
-  res.json({ iceServers, maxPerChannel: MAX_PER_CHANNEL, contas: true, versao: VERSAO_SITE, turn: iceServers.length > 1, email: correio.ativo });
+  res.json({ iceServers, maxPerChannel: MAX_PER_CHANNEL, contas: true, versao: VERSAO_SITE, turn: iceServers.length > 1, email: correio.ativo, cadastro: modoCadastroReal() });
 });
 
 // ---------- Contas ----------
@@ -115,9 +115,29 @@ const cleanUsername = (s) => String(s || '').trim().toLowerCase();
 const publicUser = (u) => ({
   id: u.id, username: u.username, name: u.name, avatar: u.avatar || '',
   role: u.role, status: u.status, createdAt: u.created_at,
-  email: u.email || '', emailOk: !!u.email_ok,
+  email: u.email || '', emailOk: !!u.email_ok, vistoEm: u.visto_em || null,
 });
+// Conta aprovada entra no servidor principal (TalKing)
+async function entraNoPrincipal(u) {
+  if (!servers.has(SRV_MAIN)) return;
+  servers.get(SRV_MAIN).membros.set(Number(u.id), 'membro');
+  await banco.setMember(SRV_MAIN, u.id, 'membro');
+}
+const ultimoEntrou = new Map(); // uid -> última vez que registrei "entrou"
+// Registro de atividade (painel do dono): quem chegou e o que fez
+function registra(u, tipo, detalhe = '') {
+  banco.addEvento({ uid: u?.id || 0, nome: u?.name || u?.username || '', tipo, detalhe: String(detalhe).slice(0, 200) }).catch((e) => console.error('evento:', e.message));
+}
 const correio = require('./email');
+
+// Cadastro: 'aprovacao' (o dono aprova cada conta) ou 'livre' (entra na hora). Guardado no banco.
+const MODOS_CADASTRO = { email: 'entra na hora; só entra/cria servidor com o e-mail confirmado', aprovacao: 'com aprovação do dono', livre: 'entra na hora, sem exigir e-mail' };
+let cadastroModo = 'email';
+const modoCadastroReal = () => (cadastroModo === 'email' && !correio.ativo ? 'aprovacao' : cadastroModo); // sem e-mail configurado cai na aprovação
+async function carregaAjustes() {
+  try { const m = await banco.getAjuste('cadastro'); if (MODOS_CADASTRO[m]) cadastroModo = m; } catch {}
+  console.log(`Cadastro: ${MODOS_CADASTRO[modoCadastroReal()]}`);
+}
 
 // ---------- Códigos por e-mail (confirmação e recuperação de senha) ----------
 const CODIGO_MIN = 15; // minutos de validade
@@ -174,18 +194,22 @@ app.post('/api/register', async (req, res) => {
     const email = correio.limpaEmail(req.body?.email);
     if (correio.ativo && !email) return erro(res, 400, 'Digite seu e-mail (serve para recuperar a senha).');
     if (email && !correio.emailValido(email)) return erro(res, 400, 'Esse e-mail não parece válido.');
+    if (!req.body?.termos) return erro(res, 400, 'Você precisa aceitar os Termos de uso e a Política de privacidade.');
     if (await banco.byUsername(username)) return erro(res, 409, 'Esse usuário já existe. Escolha outro.');
     if (email && await banco.byEmail(email)) return erro(res, 409, 'Já existe uma conta com esse e-mail.');
     // A primeira conta criada é a do dono (já aprovada)
     const primeiro = (await banco.count()) === 0;
+    const modo = modoCadastroReal();
+    const entraNaHora = primeiro || modo !== 'aprovacao'; // 'email' e 'livre' entram na hora; o e-mail confirmado só é exigido para servidores
     const u = await banco.create({
-      username, name, pass: hashSenha(senha), email, email_ok: false,
+      username, name, pass: hashSenha(senha), email, email_ok: false, termos_em: new Date(),
       role: primeiro ? 'owner' : 'member',
-      status: primeiro ? 'approved' : 'pending',
+      status: entraNaHora ? 'approved' : 'pending',
     });
+    registra(u, 'conta-criada', email ? `e-mail ${email}` : 'sem e-mail');
     const confirmar = !!(email && correio.ativo);
     if (confirmar) mandaConfirmacaoFundo(u, email);
-    if (primeiro) {
+    if (entraNaHora) {
       return res.json({ ok: true, status: 'approved', confirmar, token: criaToken(u.id), user: publicUser(u) });
     }
     avisaPendentes();
@@ -480,6 +504,8 @@ app.post('/api/email/confirmar', async (req, res) => {
     if (!c.ok) return erro(res, 400, c.motivo);
     if (c.email && c.email !== u.email) { const outro = await banco.byEmail(c.email); if (outro && outro.id !== u.id) return erro(res, 409, 'Já existe uma conta com esse e-mail.'); }
     const novo = await banco.update(u.id, { email: c.email || u.email, email_ok: true });
+    registra(novo, 'email-confirmado', novo.email);
+    refreshLive(novo);
     res.json({ ok: true, user: publicUser(novo) });
   } catch (e) {
     console.error('confirmar e-mail:', e);
@@ -555,6 +581,38 @@ app.post('/api/senha/redefinir', async (req, res) => {
     erro(res, 500, 'Erro no servidor.');
   }
 });
+
+// Apagar a própria conta (pede a senha). O dono do TalKing não pode apagar a dele.
+app.post('/api/conta/apagar', async (req, res) => {
+  try {
+    const u = await userFromReq(req);
+    if (!u) return erro(res, 401, 'Entre de novo.');
+    if (u.role === 'owner') return erro(res, 400, 'A conta do dono do TalKing não pode ser apagada por aqui.');
+    if (!confereSenha(req.body?.password, u.pass)) return erro(res, 401, 'A senha está errada.');
+    await apagaConta(u, 'você');
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('apagar conta:', e);
+    erro(res, 500, 'Erro no servidor.');
+  }
+});
+// Ajuste do dono: cadastro com aprovação ou livre
+app.post('/api/ajustes', async (req, res) => {
+  try {
+    const u = await userFromReq(req);
+    if (!u || u.role !== 'owner') return erro(res, 403, 'Só o dono muda isso.');
+    const modo = MODOS_CADASTRO[req.body?.cadastro] ? req.body.cadastro : 'email';
+    cadastroModo = modo;
+    await banco.setAjuste('cadastro', modo);
+    registra(u, 'ajuste', `cadastro: ${MODOS_CADASTRO[modo]}`);
+    res.json({ ok: true, cadastro: modo });
+  } catch (e) {
+    erro(res, 500, 'Erro no servidor.');
+  }
+});
+// Páginas de termos e privacidade também em endereços curtos
+app.get('/termos', (req, res) => res.sendFile(path.join(__dirname, 'public', 'termos.html')));
+app.get('/privacidade', (req, res) => res.sendFile(path.join(__dirname, 'public', 'privacidade.html')));
 
 if (process.env.EMAIL_TESTE) app.get('/_teste/emails', (req, res) => res.json(correio.caixaTeste));
 
@@ -685,9 +743,16 @@ async function loadServers() {
   }
 }
 // Cargo de uma pessoa num servidor (dono da plataforma manda em todos)
+// Cargo "real" (só pela participação no servidor, sem contar o poder de dono/moderador do TalKing)
+function cargoReal(srvId, user) {
+  const sv = servers.get(srvId);
+  if (!sv || !user) return null;
+  if (sv.dono === Number(user.id)) return 'dono';
+  return sv.membros.get(Number(user.id)) || null;
+}
 function cargoEm(srvId, user) {
   if (!user) return null;
-  if (user.role === 'owner') return 'dono';
+  if (user.role === 'owner' || user.role === 'mod') return 'dono'; // dono e moderadores do TalKing mandam em todos os servidores
   const sv = servers.get(srvId);
   if (!sv) return null;
   if (sv.dono === Number(user.id)) return 'dono';
@@ -1184,7 +1249,7 @@ async function avisaPendentes() {
 // Atualiza nome/foto/cargo de uma conta em todos os lugares onde ela está
 function refreshLive(u) {
   socketsOf(u.id).forEach((s) => {
-    s.data.user = { ...s.data.user, name: u.name, avatar: u.avatar || '', role: u.role };
+    s.data.user = { ...s.data.user, name: u.name, avatar: u.avatar || '', role: u.role, emailOk: !!u.email_ok };
     if (RANK[u.role] >= RANK.mod) s.join('mods'); else s.leave('mods');
     s.emit('me', publicUser(u));
     const entry = byId(s.data.channel)?.users.get(s.id);
@@ -1224,6 +1289,43 @@ const FUN_COOLDOWN = 5_000; // 5 segundos entre um uso e outro
 const FUN_KINDS = ['tomato', 'nudge', 'beer', 'smoke'];
 const funUsado = new Map(); // "uid|tipo" -> horário
 
+// Tira a pessoa das salas de um servidor (quando sai, é expulsa ou o servidor é apagado)
+function tiraDoServidorPor(srvId, uid, motivo, por = 'TalKing') {
+  for (const sk of socketsOf(uid)) {
+    const ch = byId(sk.data.channel);
+    if (ch && ch.srv === srvId) { sk.emit('kicked', { by: por, motivo }); leave(sk); }
+    for (const c of channels) if (c.srv === srvId && c.tipo === 'texto') sk.leave(`txt:${c.id}`);
+  }
+}
+// Apaga um servidor inteiro (salas, membros, convites)
+async function apagaServidor(sv, por = 'TalKing') {
+  const membros = [...sv.membros.keys()];
+  for (const uid of membros) tiraDoServidorPor(sv.id, uid, 'servidor-apagado', por);
+  for (const c of channels.filter((x) => x.srv === sv.id)) {
+    if (dj.room === c.id) { dj.room = null; djPause(); broadcastDj(); }
+    if (tv.room === c.id) { tv.room = null; broadcastTv(); }
+    arcadeBot.onChannelDeleted(c.id);
+    channels.splice(channels.indexOf(c), 1);
+  }
+  servers.delete(sv.id);
+  await banco.deleteServer(sv.id).catch(() => {});
+  persistChannels();
+}
+
+// Apaga uma conta de vez: servidores que ela criou, participações, mensagens e a própria conta
+async function apagaConta(u, por) {
+  if (por === 'você') registra(u, 'conta-apagada', 'pela própria pessoa');
+  for (const sv of [...servers.values()]) {
+    if (sv.dono === Number(u.id) && sv.id !== SRV_MAIN) await apagaServidor(sv);
+    else sv.membros.delete(Number(u.id));
+  }
+  await banco.removeMemberEverywhere(u.id);
+  await banco.removeMsgsOf(u.id);
+  await banco.remove(u.id);
+  expulsaConta(u.id, por, 'apagada');
+  broadcastChannels();
+}
+
 // Tira a conta de todos os lugares (banida ou apagada)
 function expulsaConta(uid, by, motivo = 'banida') {
   socketsOf(uid).forEach((s) => {
@@ -1241,7 +1343,7 @@ io.use(async (socket, next) => {
     const u = await banco.byId(uid);
     if (!u) return next(new Error('login'));
     if (u.status !== 'approved') return next(new Error(u.status)); // 'pending' ou 'banned'
-    socket.data.user = { id: u.id, username: u.username, name: u.name, avatar: u.avatar || '', role: u.role };
+    socket.data.user = { id: u.id, username: u.username, name: u.name, avatar: u.avatar || '', role: u.role, emailOk: !!u.email_ok };
     next();
   } catch (e) {
     console.error('entrada:', e.message);
@@ -1251,26 +1353,128 @@ io.use(async (socket, next) => {
 
 arcadeBot = require('./arcade-servidor')(io, { byId, socketsOf, BOTS_ROOM, broadcastChannels, RANK });
 
+// ---------- Pedidos: alteração feita por moderador do TalKing só vale depois que o dono confirma ----------
+const EVENTOS_COM_APROVACAO = {
+  'admin-set': { srv: () => null, precisa: 'plataforma' },
+  'admin-srv-add': { srv: (d) => d.id, precisa: 'dono' },
+  'srv-member': { srv: (d) => d.id, precisa: (d) => (['mod', 'membro', 'coroa'].includes(d.action) ? 'dono' : 'mod') },
+  'srv-delete': { srv: (d) => d.id, precisa: 'dono' },
+  'srv-edit': { srv: (d) => d.id, precisa: 'mod' },
+  'create-channel': { srv: (d) => d.srv, precisa: 'mod' },
+  'delete-channel': { srv: (d) => byId(d.id)?.srv, precisa: 'mod' },
+  'rename-channel': { srv: (d) => byId(d.id)?.srv, precisa: 'mod' },
+  'channel-theme': { srv: (d) => byId(d.id)?.srv, precisa: 'mod' },
+};
+// Moderador do TalKing precisa de aprovação quando a ação depende do poder de moderador (e não de um cargo real naquele servidor)
+function precisaAprovacao(user, evento, dados) {
+  if (!user || user.role !== 'mod') return false;
+  const regra = EVENTOS_COM_APROVACAO[evento];
+  if (!regra) return false;
+  const srvId = regra.srv(dados || {});
+  if (regra.precisa === 'plataforma' || !srvId) return true;
+  const precisa = typeof regra.precisa === 'function' ? regra.precisa(dados) : regra.precisa;
+  return (CARGO[cargoReal(String(srvId), user)] || 0) < CARGO[precisa === 'dono' ? 'dono' : 'mod'];
+}
+async function descrevePedido(evento, d = {}) {
+  const nomeConta = async (id) => { const u = await banco.byId(id); return u ? `${u.name} (@${u.username})` : `conta ${id}`; };
+  const nomeSrv = (id) => servers.get(String(id))?.nome || `servidor ${id}`;
+  const nomeSala = (id) => byId(id)?.name || `sala ${id}`;
+  const ACOES = { approve: 'Aprovar a conta', reject: 'Recusar a conta', ban: 'Banir do TalKing', unban: 'Desbanir', delete: 'Apagar a conta', 'reset-pass': 'Criar senha nova para', 'make-mod': 'Tornar moderador do TalKing', 'make-member': 'Tirar moderador do TalKing' };
+  const SRVACOES = { kick: 'Expulsar', ban: 'Banir', unban: 'Desbanir', mod: 'Dar moderador a', membro: 'Tirar moderador de', coroa: 'Passar a coroa para' };
+  switch (evento) {
+    case 'admin-set': return `${ACOES[d.action] || d.action} ${await nomeConta(d.userId)}`;
+    case 'admin-srv-add': return `Colocar ${await nomeConta(d.uid)} no servidor ${nomeSrv(d.id)}`;
+    case 'srv-member': return `${SRVACOES[d.action] || d.action} ${await nomeConta(d.uid)} no servidor ${nomeSrv(d.id)}`;
+    case 'srv-delete': return `Apagar o servidor ${nomeSrv(d.id)}`;
+    case 'srv-edit': return `Mudar nome/ícone do servidor ${nomeSrv(d.id)}${d.nome ? ` para "${d.nome}"` : ''}`;
+    case 'create-channel': return `Criar sala "${d.name}" (${d.tipo || 'voz'}) no servidor ${nomeSrv(d.srv)}`;
+    case 'delete-channel': return `Apagar a sala ${nomeSala(d.id)} do servidor ${nomeSrv(byId(d.id)?.srv)}`;
+    case 'rename-channel': return `Renomear a sala ${nomeSala(d.id)} para "${d.name}"`;
+    case 'channel-theme': return `Trocar cenário/regras da sala ${nomeSala(d.id)}`;
+    default: return evento;
+  }
+}
+async function avisaPedidos() {
+  try {
+    const n = (await banco.listPedidos()).filter((p) => p.status === 'pendente').length;
+    for (const s of io.sockets.sockets.values()) if (s.data.user?.role === 'owner') s.emit('pedidos', { count: n });
+  } catch {}
+}
+
 io.on('connection', (socket) => {
   socket.data.channel = null;
   const me = () => socket.data.user;
   const isMod = () => RANK[me().role] >= RANK.mod;
+  // Embrulha os eventos que alteram coisas: moderador do TalKing gera um pedido; o dono executa ao aprovar
+  socket.data.handlers = {};
+  const onOriginal = socket.on.bind(socket);
+  socket.on = (evento, handler) => {
+    if (!EVENTOS_COM_APROVACAO[evento]) return onOriginal(evento, handler);
+    socket.data.handlers[evento] = handler;
+    return onOriginal(evento, async (dados = {}, ack = () => {}) => {
+      if (!precisaAprovacao(me(), evento, dados)) return handler(dados, ack);
+      try {
+        const descricao = await descrevePedido(evento, dados);
+        const pd = await banco.addPedido({ de_uid: me().id, de_nome: me().name, evento, dados, descricao });
+        registra(me(), 'pedido', descricao);
+        avisaPedidos();
+        ack({ ok: true, pedido: true, id: pd.id, msg: `Pedido enviado ao dono para confirmar: ${descricao}` });
+      } catch (e) {
+        console.error('pedido:', e);
+        ack({ error: 'Não consegui registrar o pedido.' });
+      }
+    });
+  };
+  socket.on('pedidos-list', async (_ = {}, ack = () => {}) => {
+    if (!isMod()) return ack({ error: 'Sem permissão.' });
+    const todos = await banco.listPedidos();
+    ack({ ok: true, pedidos: me().role === 'owner' ? todos : todos.filter((p) => Number(p.de_uid) === Number(me().id)) });
+  });
+  socket.on('pedido-decidir', async ({ id, aprovar } = {}, ack = () => {}) => {
+    if (me().role !== 'owner') return ack({ error: 'Só o dono decide os pedidos.' });
+    const pd = (await banco.listPedidos()).find((p) => p.id === Number(id));
+    if (!pd || pd.status !== 'pendente') return ack({ error: 'Pedido não encontrado ou já decidido.' });
+    if (!aprovar) {
+      await banco.setPedido(pd.id, { status: 'recusado', decidido_por: me().name });
+      registra(me(), 'pedido-recusado', `${pd.descricao} (pedido de ${pd.de_nome})`);
+      for (const s of socketsOf(Number(pd.de_uid))) s.emit('pedido-decidido', { id: pd.id, aprovado: false, descricao: pd.descricao });
+      avisaPedidos();
+      return ack({ ok: true });
+    }
+    // Executa com os poderes do dono, pelo próprio handler do evento
+    const h = socket.data.handlers[pd.evento];
+    if (!h) return ack({ error: 'Não sei executar esse pedido.' });
+    h(pd.dados, async (r = {}) => {
+      if (r.error) return ack({ error: `Não deu: ${r.error}` });
+      await banco.setPedido(pd.id, { status: 'aprovado', decidido_por: me().name });
+      registra(me(), 'pedido-aprovado', `${pd.descricao} (pedido de ${pd.de_nome})`);
+      for (const s of socketsOf(Number(pd.de_uid))) s.emit('pedido-decidido', { id: pd.id, aprovado: true, descricao: pd.descricao });
+      avisaPedidos();
+      ack({ ok: true, resultado: r });
+    });
+  });
   if (isMod()) {
     socket.join('mods');
     avisaPendentes();
+    if (me().role === 'owner') avisaPedidos();
   }
   socket.emit('me', { ...me(), status: 'approved' });
-  // Conta aprovada que ainda não está em nenhum servidor entra no TalKing (como sempre foi)
+  // Só o dono e os moderadores do TalKing entram no servidor principal sozinhos.
+  // Todo mundo fica "solto" até entrar com um convite ou criar o próprio servidor.
   const principal = servers.get(SRV_MAIN);
-  if (principal && !principal.membros.has(Number(me().id))) {
-    const cargo = me().role === 'owner' ? 'dono' : me().role === 'mod' ? 'mod' : 'membro';
-    if (cargo !== 'membro' || ![...servers.values()].some((sv) => sv.membros.has(Number(me().id)))) {
-      principal.membros.set(Number(me().id), cargo);
-      banco.setMember(SRV_MAIN, me().id, cargo).catch(() => {});
-      if (me().role === 'owner' && !principal.dono) { principal.dono = Number(me().id); banco.updateServer(SRV_MAIN, { dono: me().id }).catch(() => {}); }
-    }
+  if (principal && !principal.membros.has(Number(me().id)) && RANK[me().role] >= RANK.mod) {
+    const cargo = me().role === 'owner' ? 'dono' : 'mod';
+    principal.membros.set(Number(me().id), cargo);
+    banco.setMember(SRV_MAIN, me().id, cargo).catch(() => {});
+    if (me().role === 'owner' && !principal.dono) { principal.dono = Number(me().id); banco.updateServer(SRV_MAIN, { dono: me().id }).catch(() => {}); }
   }
   socket.emit('channels', snapshotFor(me()));
+  // "entrou": registra no máximo uma vez a cada 30 min por pessoa (reconexões não contam)
+  if (Date.now() - (ultimoEntrou.get(Number(me().id)) || 0) > 30 * 60_000) {
+    ultimoEntrou.set(Number(me().id), Date.now());
+    registra(me(), 'entrou');
+    banco.update(me().id, { visto_em: new Date() }).catch(() => {});
+  }
   if (socketsOf(me().id).length === 1) avisaPresenca(me().id);
   banco.unread(me().id).then((u) => socket.emit('dm-unread', u)).catch(() => {});
   friendMap(me().id).then((m) => socket.emit('friends', m)).catch(() => {});
@@ -1682,16 +1886,13 @@ io.on('connection', (socket) => {
   // Criar uma sala nova
   // ---------- 🏰 Servidores ----------
   const MAX_SRV_POR_PESSOA = 10;
-  // Tira a pessoa das salas de um servidor (quando sai, é expulsa ou o servidor é apagado)
-  const tiraDoServidor = (srvId, uid, motivo) => {
-    for (const sk of socketsOf(uid)) {
-      const ch = byId(sk.data.channel);
-      if (ch && ch.srv === srvId) { sk.emit('kicked', { by: me().name, motivo }); leave(sk); }
-      for (const c of channels) if (c.srv === srvId && c.tipo === 'texto') sk.leave(`txt:${c.id}`);
-    }
-  };
+  const tiraDoServidor = (srvId, uid, motivo) => tiraDoServidorPor(srvId, uid, motivo, me().name);
+  // Precisa do e-mail confirmado para criar ou entrar em servidores (quando o site manda e-mail)
+  const precisaEmail = () => modoCadastroReal() === 'email' && !me().emailOk && me().role !== 'owner';
+  const ERRO_EMAIL = 'Confirme seu e-mail primeiro (⚙ Configurações → Conta) para entrar ou criar servidores.';
   socket.on('srv-create', async ({ nome, icone } = {}, ack = () => {}) => {
     try {
+      if (precisaEmail()) return ack({ error: ERRO_EMAIL, email: true });
       const n = cleanName(nome, '');
       if (!n) return ack({ error: 'Dê um nome para o servidor.' });
       const meus = [...servers.values()].filter((sv) => sv.dono === Number(me().id)).length;
@@ -1702,6 +1903,7 @@ io.on('connection', (socket) => {
       await banco.createServer({ id, nome: n, icone: sv.icone, dono: me().id });
       await banco.setMember(id, me().id, 'dono');
       servers.set(id, sv);
+      registra(me(), 'servidor-criado', n);
       // Todo servidor nasce com uma sala de voz e uma de mensagens
       const voz = makeChannel(novoIdSala(), 'Geral', id, 'voz');
       channels.push(voz);
@@ -1737,6 +1939,7 @@ io.on('connection', (socket) => {
   });
   // Entrar num servidor pelo código do convite
   socket.on('srv-join', async ({ codigo } = {}, ack = () => {}) => {
+    if (precisaEmail()) return ack({ error: ERRO_EMAIL, email: true });
     try {
       const c = String(codigo || '').trim().split('/').pop();
       const sv = [...servers.values()].find((x) => x.convite === c);
@@ -1746,6 +1949,7 @@ io.on('connection', (socket) => {
       sv.membros.set(Number(me().id), 'membro');
       await banco.setMember(sv.id, me().id, 'membro');
       await banco.useInvite(c);
+      registra(me(), 'entrou-servidor', sv.nome);
       ack({ ok: true, id: sv.id });
       broadcastChannels();
       for (const c2 of channels) if (c2.srv === sv.id && c2.tipo === 'texto') { const m = { id: ++chatSeq, from: 'sys', name: 'TalKing', avatar: '', text: `👋 ${me().name} entrou no servidor.`, ts: Date.now(), sys: true, channel: c2.id }; c2.chat.push(m); if (c2.chat.length > CHAT_KEEP) c2.chat.shift(); emitTexto(c2, m); }
@@ -1762,6 +1966,7 @@ io.on('connection', (socket) => {
     sv.membros.delete(Number(me().id));
     await banco.removeMember(sv.id, me().id).catch(() => {});
     tiraDoServidor(sv.id, me().id, 'saiu-servidor');
+    registra(me(), 'saiu-servidor', sv.nome);
     ack({ ok: true });
     socket.emit('channels', snapshotFor(me()));
     broadcastServer(sv.id);
@@ -1793,6 +1998,7 @@ io.on('connection', (socket) => {
         if (action === 'ban') { sv.bans.add(alvo); await banco.setBan(sv.id, alvo, true); }
         tiraDoServidor(sv.id, alvo, action === 'ban' ? 'banido-servidor' : 'expulso-servidor');
         for (const sk of socketsOf(alvo)) sk.emit('channels', snapshotFor(sk.data.user));
+        registra(await banco.byId(alvo), action === 'ban' ? 'banido-servidor' : 'expulso-servidor', `${sv.nome} · por ${me().name}`);
       } else if (action === 'unban') {
         sv.bans.delete(alvo);
         await banco.setBan(sv.id, alvo, false);
@@ -1804,12 +2010,12 @@ io.on('connection', (socket) => {
       } else if (action === 'coroa') {
         if (meuCargo !== 'dono') return ack({ error: 'Só o dono passa a coroa.' });
         if (!sv.membros.has(alvo)) return ack({ error: 'Essa pessoa não está no servidor.' });
+        const antigo = sv.dono;
         sv.dono = alvo;
         sv.membros.set(alvo, 'dono');
-        sv.membros.set(Number(me().id), 'mod');
         await banco.updateServer(sv.id, { dono: alvo });
         await banco.setMember(sv.id, alvo, 'dono');
-        await banco.setMember(sv.id, me().id, 'mod');
+        if (antigo && sv.membros.has(antigo)) { sv.membros.set(antigo, 'mod'); await banco.setMember(sv.id, antigo, 'mod'); }
       } else return ack({ error: 'Ação desconhecida.' });
       ack({ ok: true });
       broadcastServer(sv.id);
@@ -1842,17 +2048,7 @@ io.on('connection', (socket) => {
     const sv = servers.get(String(id));
     if (!sv || cargoEm(sv.id, me()) !== 'dono') return ack({ error: 'Só o dono apaga o servidor.' });
     if (sv.id === SRV_MAIN) return ack({ error: 'O servidor principal não pode ser apagado.' });
-    const membros = [...sv.membros.keys()];
-    for (const uid of membros) tiraDoServidor(sv.id, uid, 'servidor-apagado');
-    for (const c of channels.filter((x) => x.srv === sv.id)) {
-      if (dj.room === c.id) { dj.room = null; djPause(); broadcastDj(); }
-      if (tv.room === c.id) { tv.room = null; broadcastTv(); }
-      arcadeBot.onChannelDeleted(c.id);
-      channels.splice(channels.indexOf(c), 1);
-    }
-    servers.delete(sv.id);
-    await banco.deleteServer(sv.id).catch(() => {});
-    persistChannels();
+    await apagaServidor(sv, me().name);
     ack({ ok: true });
     broadcastChannels();
   });
@@ -1884,6 +2080,7 @@ io.on('connection', (socket) => {
     if (doSrv.some((c) => c.name.toLowerCase() === novo.toLowerCase())) return ack({ error: 'Já existe uma sala com esse nome neste servidor.' });
     const ch = makeChannel(novoIdSala(), novo, srvId, TIPOS_SALA.includes(tipo) ? tipo : 'voz', tema, plateia);
     channels.push(ch);
+    registra(me(), 'sala-criada', `${novo} (${ch.tipo}) em ${servers.get(srvId)?.nome || srvId}`);
     namesVersion = Date.now();
     ack({ ok: true, id: ch.id });
     broadcastChannels();
@@ -2137,11 +2334,11 @@ io.on('connection', (socket) => {
   });
 
   // Quem quer assistir (ou parar de assistir) avisa quem está transmitindo.
-  socket.on('watch', ({ id, on } = {}) => {
+  socket.on('watch', ({ id, on, leve } = {}) => {
     const ch = byId(socket.data.channel);
     const target = io.sockets.sockets.get(id);
     if (!ch || !target || target.data.channel !== ch.id) return;
-    target.emit('watch-request', { from: socket.id, on: !!on });
+    target.emit('watch-request', { from: socket.id, on: !!on, leve: !!leve });
   });
 
   // ---------- Moderação dentro da chamada ----------
@@ -2188,6 +2385,7 @@ io.on('connection', (socket) => {
         target.emit('mod-stop-music', { by });
         broadcastChannels();
       } else if (action === 'ban') {
+        registra(tu, 'banido', `por ${me().name}`);
         await banco.update(tu.id, { status: 'banned' });
         expulsaConta(tu.id, by);
       } else {
@@ -2210,6 +2408,45 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Painel do dono: todos os servidores com membros
+  socket.on('admin-servers', async (_ = {}, ack = () => {}) => {
+    if (!isMod()) return ack({ error: 'Só o dono e os moderadores.' });
+    try {
+      const todos = await banco.list();
+      const nomeDe = (uid) => { const u = todos.find((x) => Number(x.id) === Number(uid)); return u ? { id: Number(u.id), name: u.name, username: u.username, avatar: u.avatar || '' } : { id: Number(uid), name: '?', username: '', avatar: '' }; };
+      const lista = [...servers.values()].map((sv) => ({
+        id: sv.id, nome: sv.nome, icone: sv.icone, dono: nomeDe(sv.dono), principal: sv.id === SRV_MAIN,
+        salas: channels.filter((c) => c.srv === sv.id).map((c) => ({ id: c.id, name: c.name, tipo: c.tipo, pessoas: c.users.size })),
+        online: channels.filter((c) => c.srv === sv.id).reduce((n, c) => n + c.users.size, 0),
+        membros: [...sv.membros.entries()].map(([uid, cargo]) => ({ ...nomeDe(uid), cargo: sv.dono === uid ? 'dono' : cargo, online: socketsOf(uid).length > 0 })).sort((a, b) => CARGO[b.cargo] - CARGO[a.cargo] || a.name.localeCompare(b.name)),
+        banidos: [...sv.bans].map(nomeDe),
+      }));
+      ack({ ok: true, servers: lista });
+    } catch (e) {
+      console.error('admin-servers:', e);
+      ack({ error: 'Erro no servidor.' });
+    }
+  });
+  // Painel do dono: colocar uma pessoa num servidor (sem convite)
+  socket.on('admin-srv-add', async ({ id, uid } = {}, ack = () => {}) => {
+    if (!isMod()) return ack({ error: 'Só o dono e os moderadores.' });
+    const sv = servers.get(String(id)), u = await banco.byId(uid);
+    if (!sv || !u) return ack({ error: 'Servidor ou conta não encontrados.' });
+    if (sv.membros.has(Number(u.id))) return ack({ ok: true, ja: true });
+    sv.bans.delete(Number(u.id)); await banco.setBan(sv.id, u.id, false).catch(() => {});
+    sv.membros.set(Number(u.id), 'membro');
+    await banco.setMember(sv.id, u.id, 'membro');
+    registra(u, 'entrou-servidor', `${sv.nome} · colocado por ${me().name}`);
+    for (const sk of socketsOf(Number(u.id))) sk.emit('channels', snapshotFor(sk.data.user));
+    ack({ ok: true });
+  });
+  // Painel do dono: registro de atividade
+  socket.on('admin-events', async ({ limite } = {}, ack = () => {}) => {
+    if (!isMod()) return ack({ error: 'Só o dono e os moderadores.' });
+    try { ack({ ok: true, eventos: await banco.listEventos(Math.min(1000, Number(limite) || 300)) }); }
+    catch (e) { ack({ error: 'Erro no servidor.' }); }
+  });
+
   socket.on('admin-set', async ({ userId, action } = {}, ack = () => {}) => {
     try {
       if (!isMod()) return ack({ error: 'Sem permissão.' });
@@ -2221,13 +2458,13 @@ io.on('connection', (socket) => {
 
       if (action === 'approve') {
         await banco.update(u.id, { status: 'approved' });
-        // Conta aprovada entra no servidor principal (TalKing)
-        if (servers.has(SRV_MAIN)) { servers.get(SRV_MAIN).membros.set(Number(u.id), 'membro'); await banco.setMember(SRV_MAIN, u.id, 'membro'); }
+        registra(u, 'aprovada', `por ${me().name}`);
       } else if (action === 'reject') {
         if (u.status !== 'pending') return ack({ error: 'Só dá para recusar contas esperando aprovação.' });
         await banco.remove(u.id);
       } else if (action === 'ban') {
         await banco.update(u.id, { status: 'banned' });
+        registra(u, 'banido', `por ${me().name}`);
         expulsaConta(u.id, me().name);
       } else if (action === 'reset-pass') {
         // Senha provisória fácil de ditar (ex.: rei4821); a pessoa troca depois
@@ -2241,17 +2478,16 @@ io.on('connection', (socket) => {
         return ack({ ok: true, password: nova });
       } else if (action === 'unban') {
         await banco.update(u.id, { status: 'approved' });
+        registra(u, 'desbanido', `por ${me().name}`);
       } else if (action === 'make-mod' || action === 'make-member') {
         if (!souDono) return ack({ error: 'Só o dono pode mudar cargos.' });
         const nu = await banco.update(u.id, { role: action === 'make-mod' ? 'mod' : 'member' });
         refreshLive(nu);
       } else if (action === 'delete') {
-        for (const sv of servers.values()) sv.membros.delete(Number(u.id));
-        await banco.removeMemberEverywhere(u.id);
         if (!souDono) return ack({ error: 'Só o dono pode apagar contas.' });
-        await banco.remove(u.id);
-        await banco.removeMsgsOf(u.id);
-        expulsaConta(u.id, me().name, 'apagada');
+        if (u.role === 'owner') return ack({ error: 'A conta do dono não pode ser apagada.' });
+        registra(u, 'conta-apagada', `pelo dono ${me().name}`);
+        await apagaConta(u, me().name);
       } else {
         return ack({ error: 'Ação desconhecida.' });
       }
@@ -2271,6 +2507,7 @@ io.on('connection', (socket) => {
 
 if (process.env.KL_TEST) module.exports._dj = { dj, djNext, djVoltar, djAvanca, djDeNovo };
 banco.init()
+  .then(carregaAjustes)
   .then(loadServers)
   .then(loadChannels)
   .then(() => {

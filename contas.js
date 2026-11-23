@@ -43,6 +43,13 @@ class Memoria {
     for (const u of this.users.values()) if (u.email === email) return { ...u };
     return null;
   }
+  async addPedido(pd) { this.pedidos = this.pedidos || []; const row = { id: (this.pedidos.at(-1)?.id || 0) + 1, status: 'pendente', quando: new Date(), ...pd }; this.pedidos.push(row); return { ...row }; }
+  async listPedidos() { return (this.pedidos || []).map((p) => ({ ...p })).reverse(); }
+  async setPedido(id, f) { const p = (this.pedidos || []).find((x) => x.id === Number(id)); if (p) Object.assign(p, f); return p ? { ...p } : null; }
+  async addEvento(e) { this.eventos = this.eventos || []; this.eventos.push({ id: this.eventos.length + 1, quando: new Date(), ...e }); if (this.eventos.length > 5000) this.eventos.splice(0, this.eventos.length - 5000); }
+  async listEventos(limite = 300) { return (this.eventos || []).slice(-limite).reverse().map((e) => ({ ...e })); }
+  async getAjuste(chave) { return (this.ajustes || {})[chave] ?? null; }
+  async setAjuste(chave, valor) { this.ajustes = this.ajustes || {}; this.ajustes[chave] = String(valor); }
   async update(id, fields) {
     const u = this.users.get(Number(id));
     if (!u) return null;
@@ -177,6 +184,11 @@ class Postgres {
       )`);
     await this.pool.query(`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS email TEXT NOT NULL DEFAULT ''`);
     await this.pool.query(`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS email_ok BOOLEAN NOT NULL DEFAULT false`);
+    await this.pool.query(`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS termos_em TIMESTAMPTZ`);
+    await this.pool.query(`CREATE TABLE IF NOT EXISTS ajustes (chave TEXT PRIMARY KEY, valor TEXT NOT NULL DEFAULT '')`);
+    await this.pool.query(`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS visto_em TIMESTAMPTZ`);
+    await this.pool.query(`CREATE TABLE IF NOT EXISTS pedidos (id SERIAL PRIMARY KEY, de_uid INTEGER NOT NULL DEFAULT 0, de_nome TEXT NOT NULL DEFAULT '', evento TEXT NOT NULL, dados TEXT NOT NULL DEFAULT '{}', descricao TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pendente', decidido_por TEXT NOT NULL DEFAULT '', quando TIMESTAMPTZ NOT NULL DEFAULT now(), decidido_em TIMESTAMPTZ)`);
+    await this.pool.query(`CREATE TABLE IF NOT EXISTS eventos (id SERIAL PRIMARY KEY, uid INTEGER NOT NULL DEFAULT 0, nome TEXT NOT NULL DEFAULT '', tipo TEXT NOT NULL, detalhe TEXT NOT NULL DEFAULT '', quando TIMESTAMPTZ NOT NULL DEFAULT now())`);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS mensagens (
         id SERIAL PRIMARY KEY,
@@ -263,8 +275,8 @@ class Postgres {
   }
   async create(u) {
     const r = await this.pool.query(
-      'INSERT INTO usuarios (username, name, pass, role, status, email, email_ok) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
-      [u.username, u.name, u.pass, u.role, u.status, u.email || '', !!u.email_ok]
+      'INSERT INTO usuarios (username, name, pass, role, status, email, email_ok, termos_em) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',
+      [u.username, u.name, u.pass, u.role, u.status, u.email || '', !!u.email_ok, u.termos_em || null]
     );
     return r.rows[0];
   }
@@ -281,8 +293,36 @@ class Postgres {
     const r = await this.pool.query('SELECT * FROM usuarios WHERE email = $1 ORDER BY id LIMIT 1', [email]);
     return r.rows[0] || null;
   }
+  async addPedido(pd) {
+    const r = await this.pool.query('INSERT INTO pedidos (de_uid, de_nome, evento, dados, descricao) VALUES ($1,$2,$3,$4,$5) RETURNING *', [Number(pd.de_uid) || 0, pd.de_nome || '', pd.evento, JSON.stringify(pd.dados || {}), pd.descricao || '']);
+    return this._pedido(r.rows[0]);
+  }
+  _pedido(r) { return r ? { ...r, dados: (() => { try { return JSON.parse(r.dados); } catch { return {}; } })() } : null; }
+  async listPedidos() {
+    const r = await this.pool.query('SELECT * FROM pedidos ORDER BY id DESC LIMIT 200');
+    return r.rows.map((x) => this._pedido(x));
+  }
+  async setPedido(id, f) {
+    const r = await this.pool.query('UPDATE pedidos SET status = $2, decidido_por = $3, decidido_em = now() WHERE id = $1 RETURNING *', [Number(id), f.status, f.decidido_por || '']);
+    return this._pedido(r.rows[0]);
+  }
+  async addEvento(e) {
+    await this.pool.query('INSERT INTO eventos (uid, nome, tipo, detalhe) VALUES ($1, $2, $3, $4)', [Number(e.uid) || 0, e.nome || '', e.tipo || '', e.detalhe || '']);
+    if (Math.random() < 0.02) await this.pool.query('DELETE FROM eventos WHERE id NOT IN (SELECT id FROM eventos ORDER BY id DESC LIMIT 5000)').catch(() => {});
+  }
+  async listEventos(limite = 300) {
+    const r = await this.pool.query('SELECT id, uid, nome, tipo, detalhe, quando FROM eventos ORDER BY id DESC LIMIT $1', [limite]);
+    return r.rows;
+  }
+  async getAjuste(chave) {
+    const r = await this.pool.query('SELECT valor FROM ajustes WHERE chave = $1', [chave]);
+    return r.rows[0]?.valor ?? null;
+  }
+  async setAjuste(chave, valor) {
+    await this.pool.query('INSERT INTO ajustes (chave, valor) VALUES ($1, $2) ON CONFLICT (chave) DO UPDATE SET valor = EXCLUDED.valor', [chave, String(valor)]);
+  }
   async update(id, fields) {
-    const keys = Object.keys(fields).filter((k) => ['name', 'avatar', 'role', 'status', 'pass', 'email', 'email_ok'].includes(k));
+    const keys = Object.keys(fields).filter((k) => ['name', 'avatar', 'role', 'status', 'pass', 'email', 'email_ok', 'termos_em', 'visto_em'].includes(k));
     if (!keys.length) return this.byId(id);
     const sets = keys.map((k, i) => `${k} = $${i + 2}`).join(', ');
     const r = await this.pool.query(
