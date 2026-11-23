@@ -1067,6 +1067,7 @@ async function joinChannel(id) {
 
     await setupMicPipeline();
     const res = await emitAck('join', { channel: id, proto: 3 });
+    if (!res.error) window.dispatchEvent(new CustomEvent('talking-chamada', { detail: true }));
     if (res.error) {
       toast(res.error);
       stopMic();
@@ -1099,6 +1100,7 @@ async function joinChannel(id) {
 }
 
 function leaveChannel(switching = false) {
+  if (!switching) window.dispatchEvent(new CustomEvent('talking-chamada', { detail: false }));
   rejoinId = null;
   if (!currentChannel) return;
   palcoMode = false; noPalco = false;
@@ -2068,6 +2070,59 @@ socket.on('disconnect', (reason) => {
   }
 });
 
+// ---------- 📱 Ponte com o aplicativo Android (TalKing app) ----------
+// Dentro do app, a tela do celular é capturada pelo app (nativo) e entra aqui como um vídeo
+// por uma conexão WebRTC local (app → site). Daí o site manda pros amigos como sempre.
+const noApp = !!window.TalKingApp;
+if (noApp) {
+  document.body.classList.add('app');
+  const appManda = (m) => { try { window.TalKingApp.postMessage(JSON.stringify(m)); } catch (e) { console.warn('app:', e); } };
+  let appPc = null, appResolve = null, appReject = null, appTimer = null;
+  const appFecha = () => { if (appPc) { try { appPc.close(); } catch {} appPc = null; } };
+  window.TalKingAppRecebe = async (m) => {
+    try {
+      if (typeof m === 'string') m = JSON.parse(m);
+      if (m.tipo === 'offer') {
+        appFecha();
+        appPc = new RTCPeerConnection({ iceServers: [] });
+        appPc.onicecandidate = (e) => { if (e.candidate) appManda({ tipo: 'ice', candidate: e.candidate.toJSON ? e.candidate.toJSON() : e.candidate }); };
+        appPc.ontrack = (e) => { const st = e.streams[0] || new MediaStream([e.track]); if (appResolve) { clearTimeout(appTimer); appResolve(st); appResolve = appReject = null; } };
+        await appPc.setRemoteDescription({ type: 'offer', sdp: m.sdp });
+        const a = await appPc.createAnswer();
+        await appPc.setLocalDescription(a);
+        appManda({ tipo: 'answer', sdp: appPc.localDescription.sdp });
+      } else if (m.tipo === 'ice') {
+        if (appPc && m.candidate) await appPc.addIceCandidate(m.candidate).catch(() => {});
+      } else if (m.tipo === 'share-erro') {
+        clearTimeout(appTimer);
+        if (appReject) appReject(new Error(m.msg || 'cancelado'));
+        appResolve = appReject = null;
+        if (m.msg) toast(m.msg);
+      } else if (m.tipo === 'share-fim') {
+        if (screenStream) stopShare();
+      } else if (m.tipo === 'voltar') {
+        // botão voltar do celular: fecha o que estiver aberto; se nada, o app decide
+        const aberto = [...document.querySelectorAll('.modal:not([hidden])')].pop();
+        if (aberto) { aberto.hidden = true; return appManda({ tipo: 'voltar-ok', fechou: true }); }
+        if (textRoom) { closeTextRoom(); renderChannels(); return appManda({ tipo: 'voltar-ok', fechou: true }); }
+        if (dmOpen) { setDmOpen(false); return appManda({ tipo: 'voltar-ok', fechou: true }); }
+        appManda({ tipo: 'voltar-ok', fechou: false, emChamada: !!currentChannel });
+      }
+    } catch (e) { console.warn('ponte app:', e); }
+  };
+  // Dentro do app, "compartilhar tela" pede a captura nativa
+  navigator.mediaDevices.getDisplayMedia = (c = {}) => new Promise((res, rej) => {
+    appResolve = res; appReject = rej;
+    const v = c.video || {};
+    appManda({ tipo: 'share-start', fps: v.frameRate?.ideal || 30, w: v.width?.ideal || 1280, h: v.height?.ideal || 720 });
+    appTimer = setTimeout(() => { if (appReject) appReject(new Error('timeout')); appResolve = appReject = null; }, 60_000);
+  });
+  // avisa o app quando a transmissão para (botão do site)
+  window.addEventListener('talking-share-stop', () => { appManda({ tipo: 'share-stop' }); appFecha(); });
+  // em chamada: o app segura um serviço em segundo plano (voz continua com a tela apagada)
+  window.addEventListener('talking-chamada', (e) => appManda({ tipo: e.detail ? 'call-on' : 'call-off' }));
+}
+
 // ---------- Compartilhar tela ----------
 async function toggleShare() {
   if (screenStream) return stopShare();
@@ -2115,6 +2170,7 @@ function stopShare() {
   screenStream.getTracks().forEach((t) => t.stop());
   screenStream = null;
   socket.emit('share-stop');
+  window.dispatchEvent(new Event('talking-share-stop'));
   camFromFloating();
   renderScreens();
   renderAll();
@@ -6199,6 +6255,16 @@ function renderCinema(ch, box) {
   info.className = 'cinema-info';
   const regras = (ch.plateia?.mic === 'mudo' ? '<span title="A plateia não fala; só o palco">🔇 plateia sem mic</span>' : '') + (ch.plateia?.cam === 'mudo' ? '<span title="A plateia não liga câmera; só o palco">🚫 plateia sem câmera</span>' : '');
   info.innerHTML = `<span>🎭 Palco ${palco.length}/2</span><span>🍿 Plateia ${plateia.length}</span>${gerente ? `<button type="button" class="tema-btn" title="Cenário e regras da plateia">${cena.emoji} ${cena.nome} · 🎨</button>` : `<span>${cena.emoji} ${cena.nome}</span>`}${regras}`;
+  // ⛶ tela cheia (no celular, deita a tela): o cinema ocupa a tela toda
+  const fs = document.createElement('button');
+  fs.type = 'button'; fs.className = 'tema-btn fs-btn'; fs.title = 'Tela cheia'; fs.textContent = document.fullscreenElement ? '✕ Sair' : '⛶';
+  fs.onclick = async () => {
+    try {
+      if (document.fullscreenElement) { await document.exitFullscreen(); try { screen.orientation?.unlock?.(); } catch {} }
+      else { await $('#stage').requestFullscreen(); try { await screen.orientation?.lock?.('landscape'); } catch {} }
+    } catch (e) { toast('Tela cheia não disponível aqui.'); }
+  };
+  info.appendChild(fs);
   const tb = info.querySelector('.tema-btn');
   if (tb) tb.onclick = async () => {
     const e = await escolheTema(ch.tema, ch.plateia);
@@ -6262,7 +6328,7 @@ function renderCinema(ch, box) {
   }
   ch.users.forEach((u) => { if (!u.stage) vistos.add(u.id); else vistos.delete(u.id); });
   requestAnimationFrame(posicionaTelona);
-  if (!cinemaObs) { cinemaObs = new ResizeObserver(() => posicionaTelona()); window.addEventListener('resize', posicionaTelona); }
+  if (!cinemaObs) { cinemaObs = new ResizeObserver(() => posicionaTelona()); window.addEventListener('resize', posicionaTelona); document.addEventListener('fullscreenchange', () => { renderMain(); setTimeout(posicionaTelona, 100); }); }
   cinemaObs.disconnect();
   cinemaObs.observe(wrap);
 }

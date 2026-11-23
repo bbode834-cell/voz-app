@@ -1578,3 +1578,24 @@ body.palco #screens[hidden] { display: none; }
 .pedido small { display: block; color: var(--muted); font-size: 12px; }
 .pedido.aprovado .st { color: #6fe3a1; } .pedido.recusado .st { color: #ff8a8d; }
 .mod-tabs button .chat-badge { margin-left: 4px; }
+
+/* 📱 dentro do aplicativo: toques maiores, sem dicas de "instale/abra no Chrome" */
+body.app { -webkit-tap-highlight-color: transparent; }
+body.app .btn, body.app .icon-btn { min-height: 44px; }
+body.app #secure-warning { display: none; }
+
+/* 📱 palco no celular: cinema de ponta a ponta, sem cabeçalho; e tela cheia */
+@media (max-width: 720px) {
+  body.palco .main-header { display: none; }
+  body.palco .stage { padding: 0; }
+  body.palco .cinema { border-radius: 0; border-left: 0; border-right: 0; max-height: none; }
+  .cinema-info { left: 6px; top: 6px; gap: 4px; font-size: 11px; }
+  .cinema-info span, .cinema-info .tema-btn { padding: 3px 7px; }
+  .cinema .hand-btn { right: 6px; bottom: 6px; font-size: 12px; padding: 6px 10px; }
+  .reacao-bar { right: 6px; top: 40px; }
+}
+#stage:fullscreen { background: #000; padding: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+#stage:fullscreen .tiles { width: 100%; }
+#stage:fullscreen .cinema { width: min(100%, calc(100vh * 1000 / 640)); max-height: 100vh; border-radius: 0; border: 0; margin: 0 auto; }
+#stage:fullscreen .main-header { display: none; }
+.fs-btn { font-weight: 800; }
