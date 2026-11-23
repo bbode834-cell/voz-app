@@ -289,10 +289,15 @@ applyTheme(themeChoice);
 if (!window.isSecureContext) $('#secure-warning').hidden = false;
 let authMode = 'login';
 
+// Descobre cedo se o site manda e-mail (pra pedir o e-mail no cadastro)
+fetch('/config').then((r) => r.json()).then((c) => { if (c) { config = c; setAuthMode(authMode); } }).catch(() => {});
 function setAuthMode(mode) {
   authMode = mode;
   document.querySelectorAll('.auth-tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === mode));
   $('#auth-name-row').hidden = mode !== 'register';
+  $('#auth-email').required = mode === 'register' && !!config?.email;
+  $('#auth-email-dica').textContent = config?.email ? '(para recuperar a senha)' : '(opcional)';
+  $('#auth-forgot').hidden = mode !== 'login' || !config?.email;
   $('#auth-submit').textContent = mode === 'register' ? 'Criar conta' : 'Entrar';
   $('#auth-pass').autocomplete = mode === 'register' ? 'new-password' : 'current-password';
   $('#auth-hint').innerHTML = mode === 'register'
@@ -319,6 +324,7 @@ function fillRemembered() {
   }
 }
 function showAuth(msg, kind) {
+  setAuthMode('login');
   fillRemembered();
   $('#auth').hidden = false;
   $('#settings').hidden = true;
@@ -345,11 +351,12 @@ $('#auth-form').addEventListener('submit', async (e) => {
   btn.disabled = true;
   try {
     if (authMode === 'register') {
-      const r = await api('/api/register', { username, password, name: $('#auth-name').value.trim() });
+      const r = await api('/api/register', { username, password, name: $('#auth-name').value.trim(), email: $('#auth-email').value.trim() });
       if (r.error) return authMsg(r.error);
-      if (r.token) return startSession(r.token, r.user, true); // primeira conta = dono
+      if (r.token) { await startSession(r.token, r.user, true); if (r.confirmar) pedeCodigoEmail(username); return; } // primeira conta = dono
       setAuthMode('login');
       authMsg('Conta criada! Agora é só esperar o dono aprovar. Depois entre com seu usuário e senha.', 'ok');
+      if (r.confirmar) pedeCodigoEmail(username);
     } else {
       const r = await api('/api/login', { username, password });
       if (r.error) return authMsg(r.error, r.httpStatus === 403 ? 'wait' : 'error');
@@ -361,6 +368,88 @@ $('#auth-form').addEventListener('submit', async (e) => {
   } finally {
     btn.disabled = false;
   }
+});
+
+// ---------- E-mail: código de confirmação e recuperação de senha ----------
+let codigoUser = '';
+function pedeCodigoEmail(username, texto) {
+  codigoUser = username || me?.username || '';
+  $('#codigo-texto').textContent = texto || 'Mandamos um código de 6 números para o seu e-mail. Olhe também a caixa de spam.';
+  $('#codigo-input').value = '';
+  $('#codigo-msg').hidden = true;
+  $('#codigo-modal').hidden = false;
+  setTimeout(() => $('#codigo-input').focus(), 50);
+}
+const msgEm = (sel, text, kind = 'error') => { const el = $(sel); el.hidden = !text; el.textContent = text; el.className = 'auth-msg ' + kind; };
+$('#codigo-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const r = await api('/api/email/confirmar', { username: codigoUser, code: $('#codigo-input').value.trim() });
+  if (r.error) return msgEm('#codigo-msg', r.error);
+  $('#codigo-modal').hidden = true;
+  if (r.user && me && r.user.id === me.id) { me = r.user; renderSettings(); }
+  toast('✅ E-mail confirmado!');
+  if (!loggedIn) authMsg('E-mail confirmado! Quando o dono aprovar sua conta, é só entrar.', 'ok');
+});
+$('#codigo-reenviar').onclick = async () => {
+  const r = await api('/api/email/reenviar', { username: codigoUser });
+  msgEm('#codigo-msg', r.error || 'Código reenviado. Olhe a caixa de entrada e o spam.', r.error ? 'error' : 'ok');
+};
+$('#codigo-depois').onclick = () => { $('#codigo-modal').hidden = true; };
+
+let senhaPasso = 1;
+function abreRecuperar() {
+  senhaPasso = 1;
+  $('#senha-login').value = $('#auth-user').value.trim();
+  $('#senha-codigo').value = $('#senha-nova').value = '';
+  $('#senha-passo1').hidden = false; $('#senha-passo2').hidden = true;
+  $('#senha-ok').textContent = 'Enviar código';
+  $('#senha-msg').hidden = true;
+  $('#senha-modal').hidden = false;
+  setTimeout(() => $('#senha-login').focus(), 50);
+}
+$('#auth-forgot').onclick = abreRecuperar;
+$('#senha-cancelar').onclick = () => { $('#senha-modal').hidden = true; };
+$('#senha-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const login = $('#senha-login').value.trim();
+  if (!login) return msgEm('#senha-msg', 'Digite seu usuário ou e-mail.');
+  const btn = $('#senha-ok'); btn.disabled = true;
+  try {
+    if (senhaPasso === 1) {
+      const r = await api('/api/senha/esqueci', { login });
+      if (r.error) return msgEm('#senha-msg', r.error);
+      senhaPasso = 2;
+      $('#senha-passo1').hidden = true; $('#senha-passo2').hidden = false;
+      $('#senha-dica').textContent = r.dica ? `Se a conta existir, o código foi para ${r.dica}. Digite o código e a senha nova.` : 'Se a conta existir e tiver e-mail, o código foi enviado. Digite o código e a senha nova.';
+      $('#senha-ok').textContent = 'Criar senha nova';
+      msgEm('#senha-msg', '');
+      setTimeout(() => $('#senha-codigo').focus(), 50);
+    } else {
+      const r = await api('/api/senha/redefinir', { login, code: $('#senha-codigo').value.trim(), password: $('#senha-nova').value });
+      if (r.error) return msgEm('#senha-msg', r.error);
+      $('#senha-modal').hidden = true;
+      if (!login.includes('@')) $('#auth-user').value = login;
+      $('#auth-pass').value = '';
+      authMsg('Senha nova criada! Agora é só entrar.', 'ok');
+    }
+  } catch {
+    msgEm('#senha-msg', 'Não consegui falar com o servidor. Tente de novo.');
+  } finally { btn.disabled = false; }
+});
+// Configurações: trocar/adicionar e-mail
+$('#email-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const email = $('#email-novo').value.trim();
+  const r = await api('/api/email', { email, password: $('#email-senha').value });
+  if (r.error) return toast(r.error);
+  $('#email-senha').value = '';
+  pedeCodigoEmail(me.username, `Mandamos um código de 6 números para ${email}. Digite aqui para confirmar.`);
+});
+$('#email-atual').addEventListener('click', async (e) => {
+  if (!e.target.matches('.link-btn')) return;
+  const r = await api('/api/email/reenviar', { username: me.username });
+  if (r.error) return toast(r.error);
+  pedeCodigoEmail(me.username);
 });
 
 async function startSession(token, user, firstTime) {
@@ -378,6 +467,7 @@ async function startSession(token, user, firstTime) {
   loadSounds();
   socket.connect();
   renderAll();
+  if (config?.email && me && !me.email) setTimeout(() => toast('📧 Cadastre um e-mail em Configurações → Sua conta para poder recuperar a senha.'), 2500);
   // Só abre o menu sozinho para conta nova (ainda sem foto) e uma única vez
   if (!myAvatar && !store.get('voz-menu-visto', false)) {
     store.set('voz-menu-visto', true);
@@ -498,6 +588,13 @@ function renderSettings() {
   $('#tab-mod').hidden = !isMod();
   $('#acc-username').textContent = me ? `@${me.username}` : '';
   $('#acc-role').textContent = me ? ROLE_LABEL[me.role] || '' : '';
+  $('#email-sec').hidden = !config?.email;
+  if (me) {
+    $('#email-atual').innerHTML = me.email
+      ? `${esc(me.email)} ${me.emailOk ? '<span class="ok-tag">✅ confirmado</span>' : '<span class="warn-tag">⚠️ não confirmado</span> <button type="button" class="link-btn">Confirmar agora</button>'}`
+      : '<span class="warn-tag">⚠️ Sem e-mail.</span> Cadastre um para poder recuperar a senha.';
+    $('#email-novo').placeholder = me.email ? 'Trocar para outro e-mail' : 'Seu e-mail';
+  }
   $('#ns-toggle').checked = nsOn;
   $('#ns-status').textContent = nsStatusText();
   updatePendingBadges();
@@ -5457,16 +5554,16 @@ const CENAS = {
   },
   sala: {
     nome: 'Sala de estar (fumantes)', emoji: '🚬', desc: 'Sala vidro e neon, TV na parede; cada um entra pela porta e senta',
-    tela: { x: 280, y: 44, w: 440, h: 248 },
+    tela: { x: 244, y: 40, w: 512, h: 288 },
     porta: { x: 6, y: 66 }, // de onde o avatar entra (em % da cena)
-    palcoPos: [{ left: '24%', top: '60%' }, { left: '72%', top: '60%' }], // quem está no palco fica do lado do rack
+    palcoPos: [{ left: '25%', top: '60%' }, { left: '77%', top: '60%' }], // quem está no palco fica do lado do rack
     fumar: true,
     cinzeiro: { x: 50, y: 73 }, // onde o baseado é jogado no fim (em % da cena)
     filas: [{ y: 97, k: 1, cap: 5 }, { y: 86, k: 0.86, cap: 6 }, { y: 77, k: 0.74, cap: 7 }, { y: 70, k: 0.64, cap: 8 }],
     assentos: ['sofa', 'sofa', 'puff'], cores: ['#5b4bd6', '#2a9ec9', '#c2429a', '#3b3f8f', '#7c5cff'],
     svg(rnd) {
       let livros = '';
-      for (let i = 0; i < 9; i++) { const x = 134 + (i % 3) * 18, y = 150 + Math.floor(i / 3) * 76; livros += `<rect x="${x}" y="${y}" width="13" height="${34 + rnd() * 16}" rx="2" fill="${['#22d3ee', '#8b5cf6', '#f472b6', '#a5f3fc'][Math.floor(rnd() * 4)]}" opacity=".9"/>`; }
+      for (let i = 0; i < 9; i++) { const x = 124 + (i % 3) * 15, y = 150 + Math.floor(i / 3) * 76; livros += `<rect x="${x}" y="${y}" width="11" height="${34 + rnd() * 16}" rx="2" fill="${['#22d3ee', '#8b5cf6', '#f472b6', '#a5f3fc'][Math.floor(rnd() * 4)]}" opacity=".9"/>`; }
       let estrelas = '';
       for (let i = 0; i < 16; i++) estrelas += `<circle cx="${(828 + rnd() * 154).toFixed(0)}" cy="${(64 + rnd() * 160).toFixed(0)}" r="${(1 + rnd() * 1.4).toFixed(1)}" fill="#fff" opacity=".8"/>`;
       let grade = '';
@@ -5493,27 +5590,28 @@ const CENAS = {
     <rect x="24" y="232" width="72" height="200" rx="4" fill="#22d3ee" opacity=".12"/><line x1="60" y1="232" x2="60" y2="432" stroke="#22d3ee" stroke-width="1" opacity=".4"/>
     <rect x="84" y="320" width="5" height="26" rx="2" fill="#f472b6"/>
     <!-- estante de vidro ao lado da porta, em pé no chão -->
-    <rect x="124" y="136" width="64" height="304" rx="4" fill="#120e36"/><rect x="124" y="136" width="64" height="304" rx="4" fill="none" stroke="url(#s-neon)" stroke-width="2"/>
-    <rect x="124" y="208" width="64" height="3" fill="#22d3ee" opacity=".8"/><rect x="124" y="284" width="64" height="3" fill="#8b5cf6" opacity=".8"/><rect x="124" y="360" width="64" height="3" fill="#f472b6" opacity=".8"/>
+    <rect x="116" y="136" width="54" height="304" rx="4" fill="#120e36"/><rect x="116" y="136" width="54" height="304" rx="4" fill="none" stroke="url(#s-neon)" stroke-width="2"/>
+    <rect x="116" y="208" width="54" height="3" fill="#22d3ee" opacity=".8"/><rect x="116" y="284" width="54" height="3" fill="#8b5cf6" opacity=".8"/><rect x="116" y="360" width="54" height="3" fill="#f472b6" opacity=".8"/>
     ${livros}
-    <rect x="134" y="378" width="44" height="50" rx="4" fill="#2a1f6e"/><circle cx="156" cy="403" r="10" fill="#22d3ee" opacity=".8"/>
+    <rect x="124" y="378" width="38" height="50" rx="4" fill="#2a1f6e"/><circle cx="143" cy="403" r="9" fill="#22d3ee" opacity=".8"/>
     <!-- abajur de pé neon -->
-    <rect x="222" y="150" width="5" height="286" fill="#9aa5c9"/><path d="M198 150 L254 150 L244 96 L208 96Z" fill="#1c1450" stroke="#22d3ee" stroke-width="2"/><ellipse cx="226" cy="150" rx="28" ry="5" fill="#22d3ee" opacity=".8"/>
-    <ellipse cx="226" cy="230" rx="90" ry="130" fill="url(#s-luz)"/><path d="M204 436 L248 436 L240 426 L212 426Z" fill="#9aa5c9"/>
+    <rect x="198" y="150" width="5" height="286" fill="#9aa5c9"/><path d="M176 150 L226 150 L217 96 L185 96Z" fill="#1c1450" stroke="#22d3ee" stroke-width="2"/><ellipse cx="201" cy="150" rx="25" ry="5" fill="#22d3ee" opacity=".8"/>
+    <ellipse cx="201" cy="230" rx="80" ry="130" fill="url(#s-luz)"/><path d="M180 436 L222 436 L214 426 L188 426Z" fill="#9aa5c9"/>
     <!-- relógio -->
-    <circle cx="226" cy="56" r="22" fill="#120e36" stroke="#8b5cf6" stroke-width="3"/><line x1="226" y1="56" x2="226" y2="42" stroke="#a5f3fc" stroke-width="3"/><line x1="226" y1="56" x2="237" y2="61" stroke="#a5f3fc" stroke-width="3"/>
+    <circle cx="150" cy="60" r="22" fill="#120e36" stroke="#8b5cf6" stroke-width="3"/><line x1="150" y1="60" x2="150" y2="46" stroke="#a5f3fc" stroke-width="3"/><line x1="150" y1="60" x2="161" y2="65" stroke="#a5f3fc" stroke-width="3"/>
     <!-- TV na parede com LED atrás + rack de vidro -->
-    <ellipse cx="500" cy="170" rx="330" ry="200" fill="url(#s-tvluz)"/>
-    <rect x="260" y="24" width="480" height="288" rx="12" fill="url(#s-neon)" opacity=".7" filter="url(#s-blur)"/>
-    <rect x="266" y="30" width="468" height="276" rx="8" fill="#0b0826" stroke="url(#s-neon)" stroke-width="2"/>
-    <rect x="280" y="44" width="440" height="248" rx="3" fill="#06040f"/>
-    <rect x="330" y="334" width="340" height="56" rx="6" fill="#1c1450"/><rect x="330" y="334" width="340" height="56" rx="6" fill="none" stroke="url(#s-neon)" stroke-width="2"/>
-    <rect x="470" y="346" width="60" height="30" rx="3" fill="#0b0826"/><circle cx="486" cy="361" r="3" fill="#22d3ee"/><circle cx="498" cy="361" r="3" fill="#f472b6"/>
-    <rect x="356" y="350" width="34" height="22" rx="3" fill="#2a1f6e"/><rect x="610" y="350" width="34" height="22" rx="3" fill="#2a1f6e"/>
-    <!-- caixa de som -->
-    <rect x="380" y="298" width="16" height="36" rx="3" fill="#0b0826" stroke="#22d3ee" stroke-width="1"/><circle cx="388" cy="306" r="3" fill="#22d3ee"/>
-    <!-- planta neon -->
-    <rect x="600" y="302" width="30" height="32" rx="4" fill="#1c1450" stroke="#8b5cf6" stroke-width="1.5"/><path d="M615 302 Q590 272 605 250 Q615 276 615 302 Q625 268 645 258 Q630 286 615 302Z" fill="#34d399"/>
+    <ellipse cx="500" cy="190" rx="360" ry="230" fill="url(#s-tvluz)"/>
+    <rect x="224" y="20" width="552" height="328" rx="12" fill="url(#s-neon)" opacity=".7" filter="url(#s-blur)"/>
+    <rect x="230" y="26" width="540" height="316" rx="8" fill="#0b0826" stroke="url(#s-neon)" stroke-width="2"/>
+    <rect x="244" y="40" width="512" height="288" rx="3" fill="#06040f"/>
+    <!-- rack de vidro, bem abaixo da TV -->
+    <rect x="340" y="384" width="320" height="50" rx="6" fill="#1c1450"/><rect x="340" y="384" width="320" height="50" rx="6" fill="none" stroke="url(#s-neon)" stroke-width="2"/>
+    <rect x="470" y="396" width="60" height="26" rx="3" fill="#0b0826"/><circle cx="486" cy="409" r="3" fill="#22d3ee"/><circle cx="498" cy="409" r="3" fill="#f472b6"/>
+    <rect x="364" y="398" width="34" height="22" rx="3" fill="#2a1f6e"/><rect x="602" y="398" width="34" height="22" rx="3" fill="#2a1f6e"/>
+    <!-- caixa de som em cima do rack -->
+    <rect x="350" y="352" width="14" height="32" rx="3" fill="#0b0826" stroke="#22d3ee" stroke-width="1"/><circle cx="357" cy="360" r="3" fill="#22d3ee"/>
+    <!-- planta neon no chão, ao lado do rack -->
+    <rect x="690" y="400" width="30" height="36" rx="4" fill="#1c1450" stroke="#8b5cf6" stroke-width="1.5"/><path d="M705 400 Q680 372 695 350 Q705 376 705 400 Q715 368 735 358 Q720 386 705 400Z" fill="#34d399"/>
     <!-- letreiro neon TalKing (coroa) + prateleiras à direita -->
     <g transform="translate(760 54) scale(2)"><path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 10H5L3 8z" fill="none" stroke="url(#s-neon)" stroke-width="2" stroke-linejoin="round" filter="url(#s-blur)"/><path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 10H5L3 8z" fill="#1c1450" stroke="url(#s-neon)" stroke-width="1.8" stroke-linejoin="round"/></g>
     <rect x="700" y="130" width="100" height="6" rx="3" fill="url(#s-neon)" opacity=".9"/><rect x="730" y="190" width="100" height="6" rx="3" fill="url(#s-neon)" opacity=".9"/>
@@ -5811,7 +5909,7 @@ function renderCinema(ch, box) {
   tela.hidden = alguemTransmite;
   wrap.appendChild(tela);
   const botaoPalco = (u) => {
-    if (u.id === selfId) return u.stage ? '<button type="button" class="btn small stage-btn" data-off="1">⬇ Descer do palco</button>' : '';
+    if (u.id === selfId) return u.stage ? '<button type="button" class="btn small stage-btn" data-off="1">⬇ Descer do palco</button>' : (gerente ? `<button type="button" class="btn small stage-btn" ${palco.length >= 2 ? 'disabled title="O palco só cabe 2"' : ''}>⬆ Subir ao palco</button>` : '');
     if (!gerente) return '';
     return u.stage ? '<button type="button" class="btn small stage-btn" data-off="1">⬇ Descer</button>' : `<button type="button" class="btn small stage-btn" ${palco.length >= 2 ? 'disabled title="O palco só cabe 2"' : ''}>⬆ Subir ao palco</button>`;
   };
@@ -5892,9 +5990,18 @@ function renderCinema(ch, box) {
   if (eu && !eu.stage) {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'btn hand-btn' + (eu.hand ? ' on' : '');
-    b.textContent = eu.hand ? '✋ Pedido enviado · cancelar' : '✋ Pedir para subir ao palco';
-    b.onclick = async () => { const r = await emitAck('stage-hand', { on: !eu.hand }); if (r?.error) toast(r.error); };
+    if (gerente) {
+      // dono/moderador sobe sozinho, sem pedir
+      b.className = 'btn hand-btn';
+      b.textContent = '🎭 Subir ao palco';
+      b.disabled = palco.length >= 2;
+      b.title = b.disabled ? 'O palco só cabe 2' : '';
+      b.onclick = async () => { const r = await emitAck('stage-set', { id: selfId, on: true }); if (r?.error) toast(r.error); };
+    } else {
+      b.className = 'btn hand-btn' + (eu.hand ? ' on' : '');
+      b.textContent = eu.hand ? '✋ Pedido enviado · cancelar' : '✋ Pedir para subir ao palco';
+      b.onclick = async () => { const r = await emitAck('stage-hand', { on: !eu.hand }); if (r?.error) toast(r.error); };
+    }
     wrap.appendChild(b);
   }
   // fumaça também em quem está no palco

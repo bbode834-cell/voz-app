@@ -91,7 +91,7 @@ app.get('/config', async (req, res) => {
     const cf = await turnCloudflare();
     if (cf) iceServers.push(...cf);
   } catch {}
-  res.json({ iceServers, maxPerChannel: MAX_PER_CHANNEL, contas: true, versao: VERSAO_SITE, turn: iceServers.length > 1 });
+  res.json({ iceServers, maxPerChannel: MAX_PER_CHANNEL, contas: true, versao: VERSAO_SITE, turn: iceServers.length > 1, email: correio.ativo });
 });
 
 // ---------- Contas ----------
@@ -115,7 +115,34 @@ const cleanUsername = (s) => String(s || '').trim().toLowerCase();
 const publicUser = (u) => ({
   id: u.id, username: u.username, name: u.name, avatar: u.avatar || '',
   role: u.role, status: u.status, createdAt: u.created_at,
+  email: u.email || '', emailOk: !!u.email_ok,
 });
+const correio = require('./email');
+
+// ---------- Códigos por e-mail (confirmação e recuperação de senha) ----------
+const CODIGO_MIN = 15; // minutos de validade
+const codigos = new Map(); // "tipo|idUsuario" -> { codigo, exp, erros, email }
+function geraCodigo(tipo, uid, email) {
+  const codigo = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+  codigos.set(`${tipo}|${uid}`, { codigo, exp: Date.now() + CODIGO_MIN * 60_000, erros: 0, email });
+  return codigo;
+}
+function confereCodigo(tipo, uid, digitado) {
+  const k = `${tipo}|${uid}`, c = codigos.get(k);
+  if (!c || Date.now() > c.exp) { codigos.delete(k); return { ok: false, motivo: 'Código vencido. Peça outro.' }; }
+  if (String(digitado || '').trim() !== c.codigo) {
+    c.erros++;
+    if (c.erros >= 6) { codigos.delete(k); return { ok: false, motivo: 'Muitas tentativas. Peça outro código.' }; }
+    return { ok: false, motivo: 'Código errado.' };
+  }
+  codigos.delete(k);
+  return { ok: true, email: c.email };
+}
+setInterval(() => { const now = Date.now(); for (const [k, c] of codigos) if (now > c.exp) codigos.delete(k); }, 60_000).unref();
+async function mandaConfirmacao(u, email) {
+  const codigo = geraCodigo('confirma', u.id, email);
+  await correio.enviaConfirmacao(email, u.name, codigo);
+}
 
 // Proteção contra quem fica tentando adivinhar senha (ou criando contas sem parar)
 const tentativas = new Map(); // "tipo|ip" -> [horários]
@@ -140,19 +167,27 @@ app.post('/api/register', async (req, res) => {
       return erro(res, 400, 'O usuário deve ter de 3 a 20 letras ou números (sem espaço nem acento).');
     }
     if (senha.length < 6) return erro(res, 400, 'A senha precisa ter pelo menos 6 caracteres.');
+    const email = correio.limpaEmail(req.body?.email);
+    if (correio.ativo && !email) return erro(res, 400, 'Digite seu e-mail (serve para recuperar a senha).');
+    if (email && !correio.emailValido(email)) return erro(res, 400, 'Esse e-mail não parece válido.');
     if (await banco.byUsername(username)) return erro(res, 409, 'Esse usuário já existe. Escolha outro.');
+    if (email && await banco.byEmail(email)) return erro(res, 409, 'Já existe uma conta com esse e-mail.');
     // A primeira conta criada é a do dono (já aprovada)
     const primeiro = (await banco.count()) === 0;
     const u = await banco.create({
-      username, name, pass: hashSenha(senha),
+      username, name, pass: hashSenha(senha), email, email_ok: false,
       role: primeiro ? 'owner' : 'member',
       status: primeiro ? 'approved' : 'pending',
     });
+    let confirmar = false;
+    if (email && correio.ativo) {
+      try { await mandaConfirmacao(u, email); confirmar = true; } catch (e) { console.error('e-mail de confirmação:', e.message); }
+    }
     if (primeiro) {
-      return res.json({ ok: true, status: 'approved', token: criaToken(u.id), user: publicUser(u) });
+      return res.json({ ok: true, status: 'approved', confirmar, token: criaToken(u.id), user: publicUser(u) });
     }
     avisaPendentes();
-    res.json({ ok: true, status: 'pending' });
+    res.json({ ok: true, status: 'pending', confirmar });
   } catch (e) {
     console.error('cadastro:', e);
     erro(res, 500, 'Erro no servidor. Tente de novo.');
@@ -429,6 +464,97 @@ app.post('/api/password', async (req, res) => {
     erro(res, 500, 'Erro no servidor.');
   }
 });
+
+// ---------- E-mail da conta ----------
+const acharConta = async (login) => (login.includes('@') ? banco.byEmail(login) : banco.byUsername(login));
+// Confirmar o e-mail com o código (logado, ou logo depois do cadastro pelo usuário)
+app.post('/api/email/confirmar', async (req, res) => {
+  try {
+    if (bloqueado('codigo|' + req.ip, 20)) return erro(res, 429, 'Muitas tentativas. Espere um minuto.');
+    anota('codigo|' + req.ip);
+    const u = (await userFromReq(req)) || (await banco.byUsername(cleanUsername(req.body?.username)));
+    if (!u) return erro(res, 404, 'Conta não encontrada.');
+    const c = confereCodigo('confirma', u.id, req.body?.code);
+    if (!c.ok) return erro(res, 400, c.motivo);
+    if (c.email && c.email !== u.email) { const outro = await banco.byEmail(c.email); if (outro && outro.id !== u.id) return erro(res, 409, 'Já existe uma conta com esse e-mail.'); }
+    const novo = await banco.update(u.id, { email: c.email || u.email, email_ok: true });
+    res.json({ ok: true, user: publicUser(novo) });
+  } catch (e) {
+    console.error('confirmar e-mail:', e);
+    erro(res, 500, 'Erro no servidor.');
+  }
+});
+// Reenviar o código de confirmação (pelo usuário, sem precisar estar logado)
+app.post('/api/email/reenviar', async (req, res) => {
+  try {
+    if (!correio.ativo) return erro(res, 400, 'O envio de e-mail não está configurado.');
+    if (bloqueado('reenvio|' + req.ip, 3)) return erro(res, 429, 'Espere um minuto para pedir outro código.');
+    anota('reenvio|' + req.ip);
+    const u = (await userFromReq(req)) || (await banco.byUsername(cleanUsername(req.body?.username)));
+    if (!u || !u.email) return erro(res, 404, 'Conta sem e-mail.');
+    await mandaConfirmacao(u, u.email);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('reenviar código:', e.message);
+    erro(res, 500, 'Não consegui enviar o e-mail agora. Tente de novo em instantes.');
+  }
+});
+// Trocar/adicionar o e-mail (logado, com a senha atual) → manda código pro e-mail novo
+app.post('/api/email', async (req, res) => {
+  try {
+    if (!correio.ativo) return erro(res, 400, 'O envio de e-mail não está configurado.');
+    const u = await userFromReq(req);
+    if (!u) return erro(res, 401, 'Entre de novo.');
+    if (bloqueado('reenvio|' + req.ip, 3)) return erro(res, 429, 'Espere um minuto para pedir outro código.');
+    if (!confereSenha(req.body?.password, u.pass)) return erro(res, 401, 'A senha está errada.');
+    const email = correio.limpaEmail(req.body?.email);
+    if (!correio.emailValido(email)) return erro(res, 400, 'Esse e-mail não parece válido.');
+    const outro = await banco.byEmail(email);
+    if (outro && outro.id !== u.id) return erro(res, 409, 'Já existe uma conta com esse e-mail.');
+    anota('reenvio|' + req.ip);
+    await mandaConfirmacao(u, email);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('trocar e-mail:', e.message);
+    erro(res, 500, 'Não consegui enviar o e-mail agora. Tente de novo em instantes.');
+  }
+});
+// Esqueci a senha: manda um código pro e-mail da conta (pelo usuário ou pelo e-mail)
+app.post('/api/senha/esqueci', async (req, res) => {
+  try {
+    if (!correio.ativo) return erro(res, 400, 'A recuperação de senha por e-mail não está configurada. Fale com o dono.');
+    if (bloqueado('esqueci|' + req.ip, 3)) return erro(res, 429, 'Espere um minuto para pedir outro código.');
+    anota('esqueci|' + req.ip);
+    const u = await acharConta(String(req.body?.login || '').trim().toLowerCase());
+    // Resposta igual com ou sem conta, pra ninguém descobrir quais contas existem
+    if (u && u.email) {
+      try { await correio.enviaRecuperacao(u.email, u.name, geraCodigo('senha', u.id, u.email)); }
+      catch (e) { console.error('e-mail de recuperação:', e.message); return erro(res, 500, 'Não consegui enviar o e-mail agora. Tente de novo em instantes.'); }
+    }
+    res.json({ ok: true, dica: u?.email ? u.email.replace(/^(.{2}).*(@.*)$/, '$1•••$2') : '' });
+  } catch (e) {
+    erro(res, 500, 'Erro no servidor.');
+  }
+});
+// Esqueci a senha: com o código, cria a senha nova
+app.post('/api/senha/redefinir', async (req, res) => {
+  try {
+    if (bloqueado('codigo|' + req.ip, 20)) return erro(res, 429, 'Muitas tentativas. Espere um minuto.');
+    anota('codigo|' + req.ip);
+    const u = await acharConta(String(req.body?.login || '').trim().toLowerCase());
+    if (!u) return erro(res, 400, 'Código errado.');
+    const c = confereCodigo('senha', u.id, req.body?.code);
+    if (!c.ok) return erro(res, 400, c.motivo);
+    const senha = String(req.body?.password || '');
+    if (senha.length < 6) return erro(res, 400, 'A senha nova precisa ter pelo menos 6 caracteres.');
+    await banco.update(u.id, { pass: hashSenha(senha), email_ok: true });
+    res.json({ ok: true });
+  } catch (e) {
+    erro(res, 500, 'Erro no servidor.');
+  }
+});
+
+if (process.env.EMAIL_TESTE) app.get('/_teste/emails', (req, res) => res.json(correio.caixaTeste));
 
 // ---------- GIFs (KLIPY) ----------
 // A chave fica no Render (variável KLIPY_KEY). As buscas passam pelo servidor

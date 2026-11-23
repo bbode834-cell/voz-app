@@ -29,7 +29,7 @@ class Memoria {
   async count() { return this.users.size; }
   async create(u) {
     const id = ++this.seq;
-    const row = { id, avatar: '', created_at: new Date(), ...u };
+    const row = { id, avatar: '', email: '', email_ok: false, created_at: new Date(), ...u };
     this.users.set(id, row);
     return { ...row };
   }
@@ -38,6 +38,11 @@ class Memoria {
     return null;
   }
   async byId(id) { const u = this.users.get(Number(id)); return u ? { ...u } : null; }
+  async byEmail(email) {
+    if (!email) return null;
+    for (const u of this.users.values()) if (u.email === email) return { ...u };
+    return null;
+  }
   async update(id, fields) {
     const u = this.users.get(Number(id));
     if (!u) return null;
@@ -170,6 +175,8 @@ class Postgres {
         status TEXT NOT NULL DEFAULT 'pending',
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       )`);
+    await this.pool.query(`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS email TEXT NOT NULL DEFAULT ''`);
+    await this.pool.query(`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS email_ok BOOLEAN NOT NULL DEFAULT false`);
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS mensagens (
         id SERIAL PRIMARY KEY,
@@ -256,8 +263,8 @@ class Postgres {
   }
   async create(u) {
     const r = await this.pool.query(
-      'INSERT INTO usuarios (username, name, pass, role, status) VALUES ($1,$2,$3,$4,$5) RETURNING *',
-      [u.username, u.name, u.pass, u.role, u.status]
+      'INSERT INTO usuarios (username, name, pass, role, status, email, email_ok) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
+      [u.username, u.name, u.pass, u.role, u.status, u.email || '', !!u.email_ok]
     );
     return r.rows[0];
   }
@@ -269,8 +276,13 @@ class Postgres {
     const r = await this.pool.query('SELECT * FROM usuarios WHERE id = $1', [Number(id)]);
     return r.rows[0] || null;
   }
+  async byEmail(email) {
+    if (!email) return null;
+    const r = await this.pool.query('SELECT * FROM usuarios WHERE email = $1 ORDER BY id LIMIT 1', [email]);
+    return r.rows[0] || null;
+  }
   async update(id, fields) {
-    const keys = Object.keys(fields).filter((k) => ['name', 'avatar', 'role', 'status', 'pass'].includes(k));
+    const keys = Object.keys(fields).filter((k) => ['name', 'avatar', 'role', 'status', 'pass', 'email', 'email_ok'].includes(k));
     if (!keys.length) return this.byId(id);
     const sets = keys.map((k, i) => `${k} = $${i + 2}`).join(', ');
     const r = await this.pool.query(

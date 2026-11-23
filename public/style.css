@@ -1522,3 +1522,16 @@ body.palco #screens[hidden] { display: none; }
 .no-palco-pessoa.arremessa .avatar, .no-palco-pessoa.arremessa .cam-redonda { animation: arremessoPalco .45s ease-in-out; }
 @keyframes arremesso { 0% { transform: translate(-50%, -55%) rotate(0); } 40% { transform: translate(-56%, -62%) rotate(-14deg); } 70% { transform: translate(-44%, -52%) rotate(12deg); } 100% { transform: translate(-50%, -55%) rotate(0); } }
 @keyframes arremessoPalco { 0% { transform: rotate(0); } 40% { transform: translate(-6px, -6px) rotate(-14deg); } 70% { transform: translate(6px, 2px) rotate(12deg); } 100% { transform: rotate(0); } }
+
+/* e-mail: código, recuperar senha, seção da conta */
+.link-btn { background: none; border: 0; color: var(--accent); cursor: pointer; font-size: 13px; padding: 2px 0; text-decoration: underline; }
+.link-btn[hidden] { display: none; }
+.modal-title { margin: 0; font-size: 20px; color: var(--text-strong); text-align: center; }
+.codigo-input { text-align: center; font-size: 26px; letter-spacing: 8px; font-weight: 800; }
+.row-between { display: flex; justify-content: space-between; gap: 8px; }
+.email-sec { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 10px; }
+.email-sec[hidden] { display: none; }
+.email-atual { margin: 0; font-size: 14px; color: var(--text); }
+.ok-tag { color: #6fe3a1; font-size: 12px; } .warn-tag { color: #ffb347; font-size: 12px; }
+#auth-email-dica { color: var(--muted); font-weight: 400; }
+#codigo-modal, #senha-modal { z-index: 60; }

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>TalKing</title>
   <link rel="icon" href="logo-coroa.svg" />
-  <link rel="stylesheet" href="style.css?v=205" />
+  <link rel="stylesheet" href="style.css?v=208" />
 </head>
 <body>
   <!-- Abertura: a logo parada e o fone caindo em cima da coroa (clique para pular) -->
@@ -30,16 +30,53 @@
       <div id="auth-name-row" class="field" hidden>
         <label class="field-label" for="auth-name">Nome que aparece para os amigos</label>
         <input id="auth-name" maxlength="24" placeholder="Como quer ser chamado?" />
+        <label class="field-label" for="auth-email">E-mail <small id="auth-email-dica">(para recuperar a senha)</small></label>
+        <input id="auth-email" type="email" maxlength="120" autocomplete="email" placeholder="voce@exemplo.com" />
       </div>
       <label class="field-label" for="auth-pass">Senha</label>
       <input id="auth-pass" type="password" minlength="6" autocomplete="current-password" placeholder="Mínimo 6 caracteres" required />
       <label class="remember-row"><input type="checkbox" id="auth-remember" /> Lembrar usuário e senha</label>
       <p id="auth-msg" class="auth-msg" hidden></p>
       <button type="submit" id="auth-submit" class="btn primary">Entrar</button>
+      <button type="button" id="auth-forgot" class="link-btn">Esqueci minha senha</button>
       <p id="auth-hint" class="auth-hint">Ainda não tem conta? Toque em <b>Criar conta</b>. O dono precisa aprovar antes do primeiro acesso.</p>
       <p id="secure-warning" class="warning" hidden>
         Atenção: o microfone só funciona em <b>https://</b> ou em <b>localhost</b>.
       </p>
+    </form>
+  </div>
+
+  <!-- Código enviado por e-mail (confirmar e-mail) -->
+  <div id="codigo-modal" class="modal" hidden>
+    <form id="codigo-form" class="modal-card auth-card">
+      <h2 class="modal-title">Confirme seu e-mail</h2>
+      <p class="auth-hint" id="codigo-texto">Mandamos um código de 6 números para o seu e-mail. Olhe também a caixa de spam.</p>
+      <input id="codigo-input" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="000000" class="codigo-input" required />
+      <p id="codigo-msg" class="auth-msg" hidden></p>
+      <button type="submit" class="btn primary">Confirmar</button>
+      <div class="row-between">
+        <button type="button" id="codigo-reenviar" class="link-btn">Reenviar código</button>
+        <button type="button" id="codigo-depois" class="link-btn">Deixar para depois</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Esqueci a senha -->
+  <div id="senha-modal" class="modal" hidden>
+    <form id="senha-form" class="modal-card auth-card">
+      <h2 class="modal-title">Recuperar a senha</h2>
+      <div id="senha-passo1">
+        <p class="auth-hint">Digite seu usuário ou o e-mail da conta. Vamos mandar um código por e-mail.</p>
+        <input id="senha-login" maxlength="120" autocapitalize="none" spellcheck="false" placeholder="usuário ou e-mail" />
+      </div>
+      <div id="senha-passo2" hidden>
+        <p class="auth-hint" id="senha-dica">Digite o código que chegou no seu e-mail e a senha nova.</p>
+        <input id="senha-codigo" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="código de 6 números" class="codigo-input" />
+        <input id="senha-nova" type="password" minlength="6" autocomplete="new-password" placeholder="Senha nova (mínimo 6)" />
+      </div>
+      <p id="senha-msg" class="auth-msg" hidden></p>
+      <button type="submit" id="senha-ok" class="btn primary">Enviar código</button>
+      <button type="button" id="senha-cancelar" class="link-btn">Voltar</button>
     </form>
   </div>
 
@@ -107,6 +144,15 @@
         <section data-sec="conta">
           <h2>Sua conta</h2>
           <p class="acc-me"><span id="acc-username"></span> · <span id="acc-role"></span></p>
+          <div id="email-sec" class="email-sec" hidden>
+            <span class="field-label">E-mail da conta</span>
+            <p id="email-atual" class="email-atual"></p>
+            <form id="email-form" class="pass-form">
+              <input id="email-novo" type="email" maxlength="120" placeholder="E-mail novo" autocomplete="email" required />
+              <input id="email-senha" type="password" placeholder="Sua senha (para confirmar)" autocomplete="current-password" required />
+              <button type="submit" class="btn small">Salvar e-mail</button>
+            </form>
+          </div>
           <form id="pass-form" class="pass-form">
             <span class="field-label">Trocar a senha</span>
             <input id="pass-old" type="password" placeholder="Senha atual" autocomplete="current-password" required />
@@ -463,6 +509,6 @@
   </div>
   <div id="photo-view" class="photo-view" hidden><img alt="Foto" /></div>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=205"></script>
+  <script src="app.js?v=208"></script>
 </body>
 </html>
