@@ -2304,6 +2304,7 @@ function renderScreens() {
           ${mine ? '' : '<button class="lat"></button>'}
           <button class="clip"></button><button class="icon-btn clip-off" title="Desligar os clipes" hidden>⏹</button>
           <button class="icon-btn cams" title="Mostrar/esconder as câmeras dos outros por cima da transmissão">👥</button>
+          <button class="icon-btn info" title="Detalhes: qualidade, atraso, volume e modo de atraso">ⓘ</button>
           <button class="icon-btn fs" title="Tela cheia">${ICON.full}</button>
           <button class="icon-btn close" title="${mine ? 'Parar de transmitir' : 'Parar de assistir'}">${ICON.close}</button>
         </div>
@@ -2351,6 +2352,8 @@ function renderScreens() {
       const lat = el.querySelector('.lat');
       if (lat) { lat.onclick = toggleLatency; updateLatencyButton(el); }
       el.querySelector('.cams').onclick = toggleCamStrip;
+      // ⓘ (só na telona do cinema): abre a gaveta com FPS/atraso, volume e "Mais liso"
+      el.querySelector('.info').onclick = (e) => { e.stopPropagation(); el.classList.toggle('info-aberta'); el.querySelector('.info').classList.toggle('on', el.classList.contains('info-aberta')); wake(); };
       el.querySelectorAll('.clip').forEach((b) => { b.onclick = (e) => { e.stopPropagation(); clipToggle(id, b); }; });
       el.querySelector('.clip-off').onclick = () => clipOff();
       // Volume da transmissão: a barra de cima e a da tela cheia andam juntas

@@ -1407,6 +1407,36 @@ body.palco .stage { overflow-y: auto; position: relative; isolation: isolate; }
 body.palco #screens { position: absolute; z-index: 5; display: grid; margin: 0; border-radius: 4px; overflow: hidden; background: #000; pointer-events: auto; }
 body.palco #screens:empty { display: none; }
 body.palco #screens .screen-card { height: 100%; border-radius: 0; }
+/* Telona limpa: só o vídeo. Controles enxutos aparecem ao passar o mouse e somem sozinhos;
+   números de FPS/atraso e o diagnóstico só em tela cheia */
+body.palco #screens .screen-card:not(:fullscreen) > .screen-stats,
+body.palco #screens .screen-card:not(:fullscreen) > .screen-sender,
+body.palco #screens .screen-card:not(:fullscreen) .lat,
+body.palco #screens .screen-card:not(:fullscreen) .screen-vol,
+body.palco #screens .screen-card:not(:fullscreen) .clip-off { display: none; }
+body.palco #screens .screen-card:not(:fullscreen) > .screen-label { left: 6px; top: 6px; padding: 3px 7px; font-size: 11px; gap: 5px; }
+body.palco #screens .screen-card:not(:fullscreen) > .screen-tools { right: 6px; top: 6px; gap: 4px; }
+body.palco #screens .screen-card:not(:fullscreen) .screen-tools .icon-btn:not([hidden]),
+body.palco #screens .screen-card:not(:fullscreen) .screen-tools .clip { width: 28px; height: 28px; padding: 0; font-size: 0; border-radius: 6px; display: grid; place-items: center; }
+body.palco #screens .screen-card:not(:fullscreen) .screen-tools .clip::before { content: '🎬'; font-size: 14px; }
+body.palco #screens .screen-card:not(:fullscreen) .screen-tools .icon-btn svg { width: 15px; height: 15px; }
+body.palco #screens .screen-card:not(:fullscreen) .screen-tools .icon-btn.cams:not([hidden]), body.palco #screens .screen-card:not(:fullscreen) .screen-tools .icon-btn.clip-off:not([hidden]) { font-size: 14px; }
+/* sem o mouse em cima, a telona fica só com a imagem (com a gaveta ⓘ aberta os controles ficam) */
+body.palco #screens .screen-card:not(:fullscreen):not(:hover):not(.info-aberta) > .screen-label,
+body.palco #screens .screen-card:not(:fullscreen):not(:hover):not(.info-aberta) > .screen-tools { opacity: 0; pointer-events: none; }
+/* ⓘ só existe na telona do cinema; aberta, traz de volta os detalhes numa faixa embaixo */
+.screen-card .screen-tools .info { display: none; }
+body.palco #screens .screen-card:not(:fullscreen) .screen-tools .icon-btn.info:not([hidden]) { display: grid; font-size: 15px; }
+body.palco #screens .screen-card .info.on { background: rgba(245,184,46,.85); color: #000; }
+body.palco #screens .screen-card.info-aberta:not(:fullscreen) > .screen-stats,
+body.palco #screens .screen-card.info-aberta:not(:fullscreen) > .screen-sender { display: block; font-size: 11px; padding: 2px 6px; left: 6px; }
+body.palco #screens .screen-card.info-aberta:not(:fullscreen) > .screen-stats { bottom: 6px; }
+body.palco #screens .screen-card.info-aberta:not(:fullscreen) > .screen-sender { bottom: 28px; }
+body.palco #screens .screen-card.info-aberta:not(:fullscreen) > .screen-stats:empty,
+body.palco #screens .screen-card.info-aberta:not(:fullscreen) > .screen-sender:empty { display: none; }
+body.palco #screens .screen-card.info-aberta:not(:fullscreen) .lat { display: inline-flex; height: 28px; padding: 0 8px; font-size: 11px; }
+body.palco #screens .screen-card.info-aberta:not(:fullscreen) .screen-vol { display: flex; }
+body.palco #screens .screen-card.info-aberta:not(:fullscreen) .screen-vol input { width: 60px; }
 .telona-txt { position: absolute; left: 15.2%; top: 6.6%; width: 69.6%; height: 60.3%; box-sizing: border-box; padding: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; text-align: center; color: var(--muted); z-index: 4; }
 .telona-txt span { font-size: 40px; filter: drop-shadow(0 0 16px var(--accent-glow, #22d3ee)); }
 .telona-txt strong { color: #fff; font-size: 16px; text-shadow: 0 1px 6px #000; }
@@ -1466,10 +1496,12 @@ body.palco #screens[hidden] { display: none; }
 #reacoes { position: absolute; inset: 0; pointer-events: none; z-index: 60; overflow: hidden; }
 #reacoes .reacao { position: absolute; left: 0; top: 0; font-size: 26px; line-height: 1; margin: -13px 0 0 -13px; will-change: transform, opacity; filter: drop-shadow(0 2px 4px rgba(0,0,0,.6)); }
 #reacoes .pedaco { font-size: 16px; margin: -8px 0 0 -8px; }
-.react-btns { position: absolute; left: 50%; transform: translateX(-50%); display: none; gap: 4px; z-index: 4; }
-.sentado .react-btns { top: -115%; }
-.no-palco-pessoa .react-btns { top: -34px; }
-.sentado:hover .react-btns, .no-palco-pessoa:hover .react-btns { display: flex; }
+/* 🍿🍅 aparecem ao passar o mouse e ficam um tempo (com "ponte" invisível até o avatar) para dar tempo de clicar */
+.react-btns { position: absolute; left: 50%; transform: translateX(-50%); display: flex; gap: 4px; z-index: 4; padding: 4px 10px 6px; opacity: 0; pointer-events: none; transition: opacity .25s ease 1.2s; }
+.react-btns::after { content: ''; position: absolute; left: -10px; right: -10px; top: 100%; height: 36px; pointer-events: none; }
+.sentado .react-btns { top: -125%; }
+.no-palco-pessoa .react-btns { top: -42px; }
+.sentado:hover .react-btns, .no-palco-pessoa:hover .react-btns, .react-btns:hover { opacity: 1; pointer-events: auto; transition-delay: 0s; }
 .sentado:hover .stage-btn { top: -62%; }
 .react-btn { background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.3); border-radius: 999px; width: 30px; height: 30px; font-size: 16px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
 .react-btn:hover { transform: scale(1.2); border-color: var(--accent); }
@@ -1477,7 +1509,7 @@ body.palco #screens[hidden] { display: none; }
 @keyframes treme { 0%,100% { translate: 0 0; } 20% { translate: -5px 2px; } 40% { translate: 5px -2px; } 60% { translate: -4px 0; } 80% { translate: 4px 1px; } }
 .sentado.atingido { animation: tremeSentado .5s ease-in-out; }
 @keyframes tremeSentado { 0%,100% { transform: translate(-50%, -100%); } 20% { transform: translate(calc(-50% - 5px), -100%); } 40% { transform: translate(calc(-50% + 5px), -100%); } 60% { transform: translate(calc(-50% - 4px), -100%); } 80% { transform: translate(calc(-50% + 4px), -100%); } }
-.reacao-bar { position: absolute; right: 12px; top: 8px; display: flex; gap: 6px; z-index: 8; background: rgba(0,0,0,.4); padding: 5px 8px; border-radius: 999px; backdrop-filter: blur(6px); }
+.reacao-bar { position: absolute; left: 12px; bottom: 10px; display: flex; gap: 6px; z-index: 8; background: rgba(0,0,0,.4); padding: 5px 8px; border-radius: 999px; backdrop-filter: blur(6px); }
 .reacao-bar button { background: transparent; border: 0; font-size: 22px; line-height: 1; cursor: pointer; padding: 2px 3px; transition: transform .12s; }
 .reacao-bar button:hover { transform: scale(1.35); }
 .reacao-bar button:active { transform: scale(.9); }
@@ -1607,7 +1639,7 @@ body.app #secure-warning { display: none; }
   .cinema-info { left: 6px; top: 6px; gap: 4px; font-size: 11px; }
   .cinema-info span, .cinema-info .tema-btn { padding: 3px 7px; }
   .cinema .hand-btn { right: 6px; bottom: 6px; font-size: 12px; padding: 6px 10px; }
-  .reacao-bar { right: 6px; top: 40px; }
+  .reacao-bar { left: 6px; bottom: 6px; }
 }
 #stage:fullscreen { background: #000; padding: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
 #stage:fullscreen .tiles { width: 100%; }
