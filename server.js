@@ -143,6 +143,10 @@ async function mandaConfirmacao(u, email) {
   const codigo = geraCodigo('confirma', u.id, email);
   await correio.enviaConfirmacao(email, u.name, codigo);
 }
+// Manda em segundo plano: a resposta pra pessoa sai na hora, e se o Gmail falhar fica no log
+function mandaConfirmacaoFundo(u, email) {
+  mandaConfirmacao(u, email).then(() => console.log(`e-mail de confirmação enviado para ${email}`)).catch((e) => console.error('e-mail de confirmação:', e.message));
+}
 
 // Proteção contra quem fica tentando adivinhar senha (ou criando contas sem parar)
 const tentativas = new Map(); // "tipo|ip" -> [horários]
@@ -179,10 +183,8 @@ app.post('/api/register', async (req, res) => {
       role: primeiro ? 'owner' : 'member',
       status: primeiro ? 'approved' : 'pending',
     });
-    let confirmar = false;
-    if (email && correio.ativo) {
-      try { await mandaConfirmacao(u, email); confirmar = true; } catch (e) { console.error('e-mail de confirmação:', e.message); }
-    }
+    const confirmar = !!(email && correio.ativo);
+    if (confirmar) mandaConfirmacaoFundo(u, email);
     if (primeiro) {
       return res.json({ ok: true, status: 'approved', confirmar, token: criaToken(u.id), user: publicUser(u) });
     }

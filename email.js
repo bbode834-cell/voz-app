@@ -1,7 +1,8 @@
 // Envio de e-mails do TalKing (código de confirmação e recuperação de senha).
 // Configuração no Render (variáveis de ambiente):
 //   EMAIL_USUARIO = o Gmail que envia (ex.: talking.app@gmail.com)
-//   EMAIL_SENHA   = a "senha de app" de 16 letras gerada no Google (não é a senha normal)
+//   BREVO_KEY     = chave de API do Brevo (o que funciona no Render grátis; ver abaixo)
+//   EMAIL_SENHA   = (só em servidor pago) a "senha de app" de 16 letras do Gmail, enviando por SMTP
 //   EMAIL_HOST    = (opcional) outro servidor SMTP; padrão smtp.gmail.com
 //   EMAIL_NOME    = (opcional) nome que aparece como remetente; padrão "TalKing"
 // Sem EMAIL_USUARIO/EMAIL_SENHA o site funciona normalmente, só sem os recursos de e-mail.
@@ -11,17 +12,54 @@ const USUARIO = process.env.EMAIL_USUARIO || '';
 const SENHA = process.env.EMAIL_SENHA || '';
 const HOST = process.env.EMAIL_HOST || 'smtp.gmail.com';
 const NOME = process.env.EMAIL_NOME || 'TalKing';
+// Render grátis bloqueia as portas de e-mail (SMTP). Por isso o jeito que funciona lá é a API do Brevo
+// (HTTP, grátis até 300 e-mails/dia): BREVO_KEY = chave de API v3; o remetente é EMAIL_USUARIO (validado no Brevo).
+const BREVO_KEY = process.env.BREVO_KEY || '';
 const TESTE = !!process.env.EMAIL_TESTE; // nos testes, nada é enviado: fica guardado em memória
-const ativo = TESTE || !!(USUARIO && SENHA);
+const ativo = TESTE || !!(USUARIO && (SENHA || BREVO_KEY));
 const caixaTeste = [];
 
+const PORTA = Number(process.env.EMAIL_PORTA) || 465; // 465 (SSL) ou 587 (STARTTLS)
 let transporte = null;
-if (ativo && !TESTE) {
-  transporte = nodemailer.createTransport({
+function criaTransporte(porta) {
+  return nodemailer.createTransport({
     host: HOST,
-    port: 465,
-    secure: true,
+    port: porta,
+    secure: porta === 465,
     auth: { user: USUARIO, pass: SENHA.replace(/\s+/g, '') },
+    // sem isso, se a porta estiver bloqueada o site fica travado esperando por minutos
+    connectionTimeout: 12_000,
+    greetingTimeout: 12_000,
+    socketTimeout: 20_000,
+  });
+}
+async function enviaBrevo(para, assunto, html, texto) {
+  const r = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: { 'api-key': BREVO_KEY, 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ sender: { name: NOME, email: USUARIO }, to: [{ email: para }], subject: assunto, htmlContent: html, textContent: texto }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { const j = await r.json(); msg += ` ${j.message || j.code || ''}`; } catch {}
+    throw new Error(`Brevo: ${msg}`);
+  }
+}
+if (ativo && !TESTE && BREVO_KEY) {
+  // Confere a chave ao ligar (sem mandar nada)
+  fetch('https://api.brevo.com/v3/account', { headers: { 'api-key': BREVO_KEY, Accept: 'application/json' }, signal: AbortSignal.timeout(15_000) })
+    .then(async (r) => { if (r.ok) { const j = await r.json(); console.log(`E-mail: pronto pelo Brevo (conta ${j.email || ''}, remetente ${USUARIO})`); } else console.error(`E-mail: o Brevo recusou a chave (HTTP ${r.status}). Confira BREVO_KEY.`); })
+    .catch((e) => console.error('E-mail: não consegui falar com o Brevo —', e.message));
+} else if (ativo && !TESTE) {
+  transporte = criaTransporte(PORTA);
+  // Testa a conexão ao ligar e escreve no log (pra ver no Render se o Gmail aceitou)
+  transporte.verify().then(() => console.log(`E-mail: pronto (${HOST}:${PORTA}, ${USUARIO})`)).catch(async (e) => {
+    console.error(`E-mail: falhou em ${HOST}:${PORTA} — ${e.message}`);
+    const outra = PORTA === 465 ? 587 : 465;
+    const t2 = criaTransporte(outra);
+    try { await t2.verify(); transporte = t2; console.log(`E-mail: pronto pela porta ${outra} (${USUARIO})`); }
+    catch (e2) { console.error(`E-mail: também falhou em ${HOST}:${outra} — ${e2.message}. Confira EMAIL_USUARIO / EMAIL_SENHA (senha de app de 16 letras) e se o Render deixa sair por 465/587.`); }
   });
 }
 
@@ -43,7 +81,8 @@ const caixaCodigo = (codigo) => `<div style="margin:16px 0;text-align:center"><s
 
 async function envia(para, assunto, html, texto) {
   if (TESTE) { caixaTeste.push({ para, assunto, texto, html, em: Date.now() }); return; }
-  if (!ativo) throw new Error('E-mail não configurado (EMAIL_USUARIO / EMAIL_SENHA).');
+  if (!ativo) throw new Error('E-mail não configurado (EMAIL_USUARIO + BREVO_KEY ou EMAIL_SENHA).');
+  if (BREVO_KEY) return enviaBrevo(para, assunto, html, texto);
   await transporte.sendMail({ from: `"${NOME}" <${USUARIO}>`, to: para, subject: assunto, text: texto, html });
 }
 
