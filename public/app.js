@@ -5962,6 +5962,7 @@ function animaReacao({ tipo, de, alvo }) {
 }
 socket.on('palco-reacao', (r) => { try { animaReacao(r); } catch (e) { console.warn('reação', e); } });
 
+const reagindoAte = new Map(); // id -> até quando os 🍿🍅 ficam visíveis
 function renderCinema(ch, box) {
   const gerente = podeGerirSrv(ch.srv);
   const palco = ch.users.filter((u) => u.stage);
@@ -6001,8 +6002,16 @@ function renderCinema(ch, box) {
   };
   const liga = (d, u) => {
     const sb = d.querySelector('.stage-btn');
-    if (sb) sb.onclick = async (e) => { e.stopPropagation(); const r = await emitAck('stage-set', { id: u.id, on: !sb.dataset.off }); if (r?.error) toast(r.error); };
-    d.querySelectorAll('.react-btn').forEach((b) => { b.onclick = (e) => { e.stopPropagation(); mandaReacao(b.dataset.react, u.id); }; });
+    // pointerdown em vez de click: a cena é redesenhada a toda hora e um click "perdia" o botão no meio do caminho
+    if (sb) sb.onclick = (e) => e.stopPropagation();
+    if (sb) sb.onpointerdown = async (e) => { e.stopPropagation(); e.preventDefault(); if (sb.disabled) return; const r = await emitAck('stage-set', { id: u.id, on: !sb.dataset.off }); if (r?.error) toast(r.error); };
+    d.querySelectorAll('.react-btn').forEach((b) => { b.onpointerdown = (e) => { e.stopPropagation(); e.preventDefault(); mandaReacao(b.dataset.react, u.id); b.classList.add('pop'); setTimeout(() => b.classList.remove('pop'), 250); }; b.onclick = (e) => e.stopPropagation(); });
+    // 🍿🍅 continuam visíveis por 1,5 s depois que o mouse sai (e sobrevivem ao redesenho da cena)
+    if (u.id !== selfId && eu) {
+      if ((reagindoAte.get(u.id) || 0) > Date.now()) d.classList.add('reagindo');
+      d.onpointerenter = () => { reagindoAte.set(u.id, Infinity); d.classList.add('reagindo'); };
+      d.onpointerleave = () => { const ate = Date.now() + 1500; reagindoAte.set(u.id, ate); setTimeout(() => { if (reagindoAte.get(u.id) === ate) document.querySelector(`.cinema [data-uid="${CSS.escape(u.id)}"]`)?.classList.remove('reagindo'); }, 1500); };
+    }
     if (u.id !== selfId) d.onclick = () => (volTarget === u.id ? closeVolume() : openVolume(u.id, d));
   };
   // quem está no palco: de pé ao lado da telona, iluminado
