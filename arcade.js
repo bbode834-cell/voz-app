@@ -1,558 +1,956 @@
-// 🕹️ Arcade King — tela do jogo (roda no site, dentro do painel, e no app, dentro do WebView).
-// O servidor manda o estado; aqui só desenhamos e enviamos as jogadas.
-const qs = new URLSearchParams(location.search);
-const token = qs.get('token') || '';
-const uid = Number(qs.get('uid') || 0);
-const $ = (s) => document.querySelector(s);
-const toastEl = $('#toast');
-let toastT = null;
-function toast(m) { toastEl.textContent = m; toastEl.style.opacity = 1; clearTimeout(toastT); toastT = setTimeout(() => (toastEl.style.opacity = 0), 2500); }
+// 🕹️ Arcade King — bot de mini-jogos da chamada. Jogo 1: Sinuca (8 bolas).
+// O servidor é o "juiz": roda a física das bolas e manda as posições para todo mundo
+// (quem joga e quem só assiste veem a mesma mesa). Jogos originais, sem ROM de ninguém.
 
-const socket = io(location.origin, { auth: { token }, transports: ['websocket'] });
-const emitAck = (ev, data = {}) => new Promise((ok) => { const t = setTimeout(() => ok({ error: 'Sem resposta do servidor.' }), 10000); socket.emit(ev, data, (r) => { clearTimeout(t); ok(r || {}); }); });
+const W = 800; // mesa (área de jogo) em "pixels" lógicos
+const H = 400;
+const R = 11; // raio da bola
+const POCKET_R = 19;
+const DT = 1 / 120;
+const FRICTION = 0.992; // por passo (atrito do pano)
+const STOP = 6; // abaixo disso a bola para (px/s)
+const MAX_POWER = 1700; // px/s
+const POCKETS = [
+  [0, 0], [W / 2, -4], [W, 0],
+  [0, H], [W / 2, H + 4], [W, H],
+];
 
-let A = null; // estado do arcade
-let live = null; // posições durante o movimento [[id,x,y],...]
-let W = 800, H = 400, R = 11, PR = 19;
-const PAD = 40; // borda da mesa (madeira)
-const cv = $('#c');
-const ctx = cv.getContext('2d');
-const COR = { 1: '#f5c400', 2: '#1e5bd6', 3: '#e0282a', 4: '#6a2aa8', 5: '#f07a1a', 6: '#1b8f3a', 7: '#7a1d1d', 8: '#111' };
-const corDe = (id) => COR[id > 8 ? id - 8 : id] || '#fff';
-
-socket.on('connect', () => socket.emit('arcade-hello'));
-socket.on('connect_error', (e) => toast('Não consegui entrar: ' + (e.message || e)));
-socket.on('arcade', (st) => {
-  A = st;
-  W = st.W; H = st.H; R = st.R; PR = st.POCKET_R;
-  if (st.state?.phase !== 'moving') live = null;
-  renderTop();
-  if (st.game === 'sinuca') fit();
-});
-socket.on('arcade-balls', (b) => { live = b; draw(); });
-socket.on('dj-info', ({ text }) => { if (/Arcade|🕹️/.test(text || '')) toast(text); });
-
-const meuSeat = () => (A?.seats || []).findIndex((s) => s && s.uid === uid);
-const minhaVez = () => A?.state && A.game === 'sinuca' && meuSeat() >= 0 && A.state.turn === meuSeat() && A.state.phase === 'aim';
-
-function renderTop() {
-  const semJogo = !A || !A.game;
-  $('#pick').classList.toggle('hide', !semJogo);
-  if (semJogo) return;
-  const st = A.state;
-  const sinuca = A.game === 'sinuca';
-  $('#stage').classList.toggle('hide', !sinuca);
-  $('#domino').classList.toggle('hide', A.game !== 'domino');
-  $('#cartas').classList.toggle('hide', A.game !== 'cartas');
-  $('#luta').classList.toggle('hide', A.game !== 'luta');
-  const box = $('#seats');
-  box.innerHTML = '';
-  A.seats.forEach((s, i) => {
-    const el = document.createElement('div');
-    el.className = 'seat' + (sinuca ? ' t' + (i % 2) : '');
-    const naVez = st && s && st.phase !== 'over' && st.turn === i && (st.ordem || []).includes(i);
-    if (naVez) el.classList.add('turn');
-    let extra = '';
-    if (sinuca && st) { const g = st.groups?.[i % 2]; extra = `<span class="dot ${g || ''}"></span>`; }
-    if ((A.game === 'domino' || A.game === 'cartas') && st && s) extra = `<span class="vs">${st.counts?.[i] ?? ''}${A.game === 'cartas' ? '🃏' : '🁣'}${A.game === 'cartas' && st.uno?.[i] ? ' <b style="color:var(--accent)">UNO</b>' : ''}</span>`;
-    if (A.game === 'luta' && st && s && st.wins && st.ordem.includes(i)) extra = `<span class="vs">${'★'.repeat(st.wins[st.ordem.indexOf(i)] || 0)}</span>`;
-    el.innerHTML = `${extra}<b>${s ? esc(s.name) : (A.started && st && st.phase !== 'over' ? '—' : 'vazio')}</b>`;
-    if (!s && !(A.started && st && st.phase !== 'over')) el.style.opacity = .5;
-    if (s || i < 2 || A.seats.slice(0, i).every(Boolean)) box.appendChild(el);
-  });
-  const eu = meuSeat();
-  const rolando = st && st.phase !== 'over';
-  const n = A.seats.filter(Boolean).length;
-  $('#sit').classList.toggle('hide', eu >= 0 || rolando || n >= 4);
-  $('#start').classList.toggle('hide', !(eu >= 0 && !rolando && n >= 2));
-  $('#stand').classList.toggle('hide', eu < 0);
-  $('#reset').classList.toggle('hide', !(st && st.phase === 'over' && n >= 2));
-  let msg = st?.msg || '';
-  if (!rolando && !(st && st.phase === 'over')) msg = n < 2 ? `Toque em "Jogar" para sentar (${n}/4). Com 2 ou mais, alguém aperta Começar.` : `${n} na mesa. Quem está sentado pode apertar Começar.`;
-  else if (sinuca && st && st.phase === 'aim' && minhaVez()) msg = (st.inHand ? 'Bola na mão: toque na mesa para colocar a branca. ' : '') + 'Sua vez: arraste a partir da branca e solte.';
-  $('#msg').textContent = msg;
-  if (A.game === 'domino') renderDomino();
-  if (A.game === 'cartas') renderCartas();
-  if (A.game === 'luta') renderLuta();
-}
-const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-
-$('#pick-sinuca').onclick = async () => { const r = await emitAck('arcade-game', { game: 'sinuca' }); if (r.error) toast(r.error); };
-$('#pick-domino').onclick = async () => { const r = await emitAck('arcade-game', { game: 'domino' }); if (r.error) toast(r.error); };
-$('#pick-cartas').onclick = async () => { const r = await emitAck('arcade-game', { game: 'cartas' }); if (r.error) toast(r.error); };
-$('#pick-luta').onclick = async () => { const r = await emitAck('arcade-game', { game: 'luta' }); if (r.error) toast(r.error); };
-$('#sit').onclick = async () => { const r = await emitAck('arcade-sit'); if (r.error) toast(r.error); };
-$('#start').onclick = async () => { const r = await emitAck('arcade-start'); if (r.error) toast(r.error); };
-$('#stand').onclick = async () => { const r = await emitAck('arcade-stand'); if (r.error) toast(r.error); };
-$('#reset').onclick = async () => { const r = await emitAck('arcade-reset'); if (r.error) toast(r.error); };
-$('#trocar').onclick = async () => {
-  if (A?.state && A.state.phase !== 'over' && !confirm('Trocar de jogo encerra a partida atual. Trocar?')) return;
-  const r = await emitAck('arcade-game', { game: null }); // volta para a escolha
-  if (r.error) toast(r.error);
-};
-
-// ---- 🥊 luta ----
-const LW = 800, LH = 400, CHAO = 330;
-let lframe = null; // último quadro vindo do servidor
-let lprev = null;
-let lframeAt = 0;
-socket.on('arcade-luta', (f) => { lprev = lframe; lframe = f; lframeAt = performance.now(); });
-// Celular/tablet (ou qualquer tela com toque): mostra os botões na tela
-if (matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window || navigator.maxTouchPoints > 0 || /Android|iPhone|iPad/i.test(navigator.userAgent)) document.body.classList.add('touch');
-window.addEventListener('touchstart', () => document.body.classList.add('touch'), { once: true, passive: true });
-const lc = $('#lc');
-const lctx = lc.getContext('2d');
-lc.tabIndex = 0;
-lc.addEventListener('pointerdown', () => lc.focus());
-function renderLuta() {
-  const st = A?.state;
-  const sel = st && st.phase === 'select';
-  $('#luta-select').classList.toggle('hide', !sel);
-  $('#luta-stage').classList.toggle('hide', !st || sel);
-  if (!st) return;
-  if (st.phase !== 'select' && !lframe && st.frame) lframe = st.frame;
-  if (sel) {
-    const L = A.luta?.lutadores || {}, AR = A.luta?.arenas || {};
-    const eu = meuSeat();
-    const souJogador = st.ordem.includes(eu);
-    const rival = st.ordem.find((c) => c !== eu);
-    $('#fighters').innerHTML = Object.entries(L).map(([k, d]) => `<div class="fcard ${st.pick[eu] === k ? 'sel' : ''} ${rival != null && st.pick[rival] === k ? 'rival' : ''}" data-f="${k}">
-        <div class="ava" style="background:radial-gradient(circle at 35% 35%, ${d.cor2}, ${d.cor})"></div><b>${d.nome}</b>${d.desc}
-        <small>✨ ${d.especial.nome} (${d.especial.custo}): ${d.especial.desc}</small><small>💥 ${d.ultra.nome}: ${d.ultra.desc}</small></div>`).join('');
-    $('#arenas').innerHTML = Object.entries(AR).map(([k, n]) => `<div class="acard ${st.arena === k ? 'sel' : ''}" data-a="${k}">${n}</div>`).join('');
-    const nomes = st.ordem.map((c) => `${esc(A.seats[c]?.name || '?')}: ${st.pick[c] ? L[st.pick[c]].nome : '…'}${st.ready[c] ? ' ✓' : ''}`).join(' · ');
-    $('#luta-status').textContent = (st.ordem.length < 2 ? 'Esperando o segundo lutador sentar. ' : '') + nomes + (st.arena ? ` · Arena: ${AR[st.arena]}` : ' · Arena: sorteio');
-    $('#luta-ready').classList.toggle('hide', !souJogador);
-    $('#luta-ready').textContent = st.ready[eu] ? 'Cancelar pronto' : 'Pronto!';
-  }
-}
-$('#fighters').addEventListener('click', async (e) => { const c = e.target.closest('[data-f]'); if (!c) return; const r = await emitAck('arcade-luta', { action: 'pick', pick: c.dataset.f }); if (r.error) toast(r.error); });
-$('#arenas').addEventListener('click', async (e) => { const c = e.target.closest('[data-a]'); if (!c) return; const r = await emitAck('arcade-luta', { action: 'arena', arena: c.dataset.a }); if (r.error) toast(r.error); });
-$('#luta-ready').onclick = async () => { const r = await emitAck('arcade-luta', { action: 'ready' }); if (r.error) toast(r.error); };
-
-// controles
-const KEYS = { a: 'l', arrowleft: 'l', d: 'r', arrowright: 'r', w: 'u', arrowup: 'u', ' ': 'u', s: 'd', arrowdown: 'd', j: 'p', k: 'k', l: 'b', u: 's', i: 'x' };
-const inp = {};
-let inpTimer = null;
-function sendInp() {
-  if (!A || A.game !== 'luta' || !A.state || A.state.phase !== 'fight' || !A.state.ordem.includes(meuSeat())) return;
-  socket.emit('arcade-luta', { action: 'input', inp: { ...inp } });
-}
-function setKey(k, on) { if (!!inp[k] === on) return; inp[k] = on; sendInp(); }
-window.addEventListener('keydown', (e) => { const k = KEYS[e.key.toLowerCase()]; if (!k) return; e.preventDefault(); setKey(k, true); });
-window.addEventListener('keyup', (e) => { const k = KEYS[e.key.toLowerCase()]; if (!k) return; setKey(k, false); });
-window.addEventListener('blur', () => { for (const k in inp) inp[k] = false; sendInp(); });
-document.querySelectorAll('#pad [data-k]').forEach((b) => {
-  const k = b.dataset.k;
-  b.addEventListener('pointerdown', (e) => { e.preventDefault(); b.setPointerCapture(e.pointerId); setKey(k, true); });
-  const off = () => setKey(k, false);
-  b.addEventListener('pointerup', off); b.addEventListener('pointercancel', off); b.addEventListener('lostpointercapture', off);
-});
-// golpes são "toques": soltamos sozinhos depois de um quadro para não repetir
-setInterval(() => { let mudou = false; for (const k of ['p', 'k', 's', 'x']) if (inp[k] && inp['_' + k]) { inp[k] = false; mudou = true; } for (const k of ['p', 'k', 's', 'x']) inp['_' + k] = !!inp[k]; if (mudou) sendInp(); }, 120);
-
-// desenho
-const ARENA_DRAW = {
-  praia: (c) => { const g = c.createLinearGradient(0, 0, 0, LH); g.addColorStop(0, '#ff9a5c'); g.addColorStop(.6, '#ffd36b'); g.addColorStop(1, '#4fc3f7'); c.fillStyle = g; c.fillRect(0, 0, LW, LH); c.fillStyle = '#ffe082'; c.beginPath(); c.arc(640, 150, 46, 0, 7); c.fill(); c.fillStyle = '#1e88e5'; c.fillRect(0, 290, LW, 40); c.fillStyle = '#f5deb3'; c.fillRect(0, 330, LW, 70); },
-  cidade: (c) => { const g = c.createLinearGradient(0, 0, 0, LH); g.addColorStop(0, '#0b1026'); g.addColorStop(1, '#2d2f6e'); c.fillStyle = g; c.fillRect(0, 0, LW, LH); for (let i = 0; i < 14; i++) { const h = 80 + ((i * 53) % 150); c.fillStyle = '#141a3a'; c.fillRect(i * 60 - 10, 330 - h, 50, h); c.fillStyle = '#ffeb3b88'; for (let y = 340 - h; y < 320; y += 18) for (let x = 0; x < 40; x += 14) if ((x + y + i) % 3) c.fillRect(i * 60 - 4 + x, y, 7, 9); } c.fillStyle = '#333'; c.fillRect(0, 330, LW, 70); c.strokeStyle = '#ffd54f'; c.setLineDash([24, 18]); c.beginPath(); c.moveTo(0, 365); c.lineTo(LW, 365); c.stroke(); c.setLineDash([]); },
-  templo: (c) => { const g = c.createLinearGradient(0, 0, 0, LH); g.addColorStop(0, '#cfe8ff'); g.addColorStop(1, '#eef4f8'); c.fillStyle = g; c.fillRect(0, 0, LW, LH); c.fillStyle = '#9fb4c7'; c.beginPath(); c.moveTo(0, 330); c.lineTo(150, 120); c.lineTo(300, 300); c.lineTo(450, 90); c.lineTo(620, 280); c.lineTo(800, 140); c.lineTo(800, 330); c.closePath(); c.fill(); c.fillStyle = '#8d2d2d'; c.fillRect(330, 200, 140, 14); c.fillRect(345, 214, 10, 116); c.fillRect(445, 214, 10, 116); c.fillStyle = '#6b8e23'; c.fillRect(0, 330, LW, 70); },
-  vulcao: (c) => { const g = c.createLinearGradient(0, 0, 0, LH); g.addColorStop(0, '#1a0000'); g.addColorStop(1, '#7a1e00'); c.fillStyle = g; c.fillRect(0, 0, LW, LH); c.fillStyle = '#2b1a14'; c.beginPath(); c.moveTo(200, 330); c.lineTo(400, 80); c.lineTo(600, 330); c.closePath(); c.fill(); c.fillStyle = '#ff7043'; c.fillRect(385, 80, 30, 12); c.fillStyle = '#3e2723'; c.fillRect(0, 330, LW, 70); c.fillStyle = '#ff5722'; for (let x = 0; x < LW; x += 90) c.fillRect(x + 20, 350, 40, 6); },
-};
-// ---- desenho dos lutadores (cada um com corpo e cara próprios) ----
-const FORMA = {
-  brasa: { tronco: 30, ombro: 36, cabeca: 14, pele: '#f1c27d', cabelo: 'fogo', roupa: '#d84315', detalhe: '#ffcc80' },
-  tempestade: { tronco: 22, ombro: 26, cabeca: 13, pele: '#e8beac', cabelo: 'espetado', roupa: '#1976d2', detalhe: '#fff176' },
-  rocha: { tronco: 46, ombro: 60, cabeca: 13, pele: '#a1887f', cabelo: 'careca', roupa: '#5d4037', detalhe: '#8d6e63' },
-  sombra: { tronco: 26, ombro: 32, cabeca: 13, pele: '#3e2f4f', cabelo: 'capuz', roupa: '#311b92', detalhe: '#b388ff' },
-  gelo: { tronco: 24, ombro: 28, cabeca: 13, pele: '#e3f2fd', cabelo: 'longo', roupa: '#0097a7', detalhe: '#e0f7fa' },
-};
-function sombrear(c, cor, x, y, w, h) {
-  const g = c.createLinearGradient(x, y, x + w, y + h);
-  g.addColorStop(0, cor); g.addColorStop(1, '#00000055');
-  return g;
-}
-function bracoCurvo(c, x1, y1, x2, y2, grossura, cor) {
-  // braço com cotovelo (duas curvas) e luva
-  const mx = (x1 + x2) / 2 + (y2 - y1) * 0.25, my = (y1 + y2) / 2 - (x2 - x1) * 0.15;
-  c.strokeStyle = '#00000066'; c.lineWidth = grossura + 3; c.lineCap = 'round';
-  c.beginPath(); c.moveTo(x1, y1); c.quadraticCurveTo(mx, my, x2, y2); c.stroke();
-  c.strokeStyle = cor; c.lineWidth = grossura;
-  c.beginPath(); c.moveTo(x1, y1); c.quadraticCurveTo(mx, my, x2, y2); c.stroke();
-  c.fillStyle = '#222'; c.beginPath(); c.arc(x2, y2, grossura * 0.75, 0, 7); c.fill();
-}
-function pernaCurva(c, x1, y1, x2, y2, grossura, cor) {
-  const mx = (x1 + x2) / 2 - 4, my = (y1 + y2) / 2;
-  c.strokeStyle = '#00000066'; c.lineWidth = grossura + 3; c.lineCap = 'round';
-  c.beginPath(); c.moveTo(x1, y1); c.quadraticCurveTo(mx, my, x2, y2); c.stroke();
-  c.strokeStyle = cor; c.lineWidth = grossura;
-  c.beginPath(); c.moveTo(x1, y1); c.quadraticCurveTo(mx, my, x2, y2); c.stroke();
-  // bota
-  c.fillStyle = '#222'; c.beginPath(); c.ellipse(x2 + 4, y2, 10, 5, 0, 0, 7); c.fill();
-}
-function cabeloDe(c, tipo, r, d, agora) {
-  if (tipo === 'fogo') {
-    for (let i = -2; i <= 2; i++) {
-      const h = 16 + Math.sin(agora / 70 + i) * 4;
-      c.fillStyle = i % 2 ? '#ff9800' : '#ff3d00';
-      c.beginPath(); c.moveTo(i * 5 - 4, -r + 2); c.quadraticCurveTo(i * 7, -r - h, i * 5 + 4, -r + 2); c.fill();
+function rackInicial() {
+  const balls = [];
+  // branca
+  balls.push({ id: 0, x: W * 0.25, y: H / 2, vx: 0, vy: 0, in: false });
+  // triângulo: 1..15, 8 no meio da terceira fileira, lisas/listradas misturadas
+  const ordem = [1, 9, 2, 10, 8, 3, 11, 4, 12, 5, 13, 6, 14, 15, 7];
+  let k = 0;
+  const ax = W * 0.72;
+  const gap = R * 2 + 0.6;
+  for (let col = 0; col < 5; col++) {
+    for (let row = 0; row <= col; row++) {
+      const x = ax + col * gap * 0.87;
+      const y = H / 2 + (row - col / 2) * gap;
+      balls.push({ id: ordem[k++], x, y, vx: 0, vy: 0, in: false });
     }
-  } else if (tipo === 'espetado') {
-    c.fillStyle = '#fff176';
-    for (let i = -2; i <= 2; i++) { c.beginPath(); c.moveTo(i * 5 - 4, -r + 3); c.lineTo(i * 8 + 3, -r - 14 - Math.abs(i) * 2); c.lineTo(i * 5 + 4, -r + 3); c.fill(); }
-  } else if (tipo === 'capuz') {
-    c.fillStyle = d.roupa; c.beginPath(); c.arc(0, -2, r + 6, Math.PI, 0); c.lineTo(r + 8, 12); c.lineTo(-r - 8, 12); c.closePath(); c.fill();
-    c.fillStyle = '#120a1f'; c.beginPath(); c.arc(0, 0, r - 1, 0, 7); c.fill();
-    c.fillStyle = '#b388ff'; c.beginPath(); c.arc(4, -1, 2.6, 0, 7); c.arc(-3, -1, 2.2, 0, 7); c.fill();
-  } else if (tipo === 'longo') {
-    c.fillStyle = '#b3e5fc'; c.beginPath(); c.moveTo(-r, -4); c.quadraticCurveTo(-r - 10, 20, -r + 2, 34 + Math.sin(agora / 150) * 2); c.lineTo(-2, 10); c.closePath(); c.fill();
-    c.beginPath(); c.arc(0, -3, r + 2, Math.PI, 0); c.fill();
-  } else if (tipo === 'careca') {
-    c.fillStyle = '#6d4c41'; c.beginPath(); c.arc(0, 2, r + 1, Math.PI * 1.15, Math.PI * 1.85); c.lineTo(0, -r + 6); c.fill();
   }
+  return balls;
 }
-function drawFighter(c, f, L, agora) {
-  const d = FORMA[f.k] || FORMA.brasa;
-  const cores = L[f.k] || { cor: '#fff', cor2: '#ccc' };
-  c.save();
-  c.translate(f.x, f.y);
-  if (f.invis) c.globalAlpha = 0.22;
-  const ag = f.st === 'crouch';
-  const resp = f.st === 'idle' ? Math.sin(agora / 400) * 1.5 : 0; // respira
-  const ritmo = f.st === 'walk' ? Math.sin(agora / 110) : 0;
-  const alt = (ag ? 64 : 96) + resp; // altura do pescoço
-  const quadril = ag ? 34 : 48;
-  // sombra no chão
-  c.fillStyle = '#0006'; c.beginPath(); c.ellipse(0, 2, d.ombro * 0.7, 6, 0, 0, 7); c.fill();
-  if (f.st === 'ko') {
-    c.scale(f.face, 1);
-    c.fillStyle = d.roupa; c.beginPath(); c.roundRect(-50, -24, 90, 22, 10); c.fill();
-    c.fillStyle = d.pele; c.beginPath(); c.arc(52, -16, d.cabeca, 0, 7); c.fill();
-    c.fillStyle = '#111'; c.font = 'bold 12px system-ui'; c.textAlign = 'center'; c.fillText('x  x', 52, -13);
-    c.restore(); return;
-  }
-  if (f.frozen) { c.fillStyle = '#b3e5fcaa'; c.beginPath(); c.roundRect(-d.ombro / 2 - 8, -alt - 22, d.ombro + 16, alt + 24, 10); c.fill(); }
-  c.scale(f.face, 1);
-  const calca = f.k === 'rocha' ? '#4e342e' : f.k === 'gelo' ? '#006064' : f.k === 'sombra' ? '#1a1030' : '#263238';
-  // pernas (com joelho)
-  const p1 = ritmo * 12, p2 = -ritmo * 12;
-  const chute = f.st === 'kick';
-  pernaCurva(c, -8, -quadril, -12 + p1, 0, d.tronco * 0.28 + 4, calca);
-  if (chute) pernaCurva(c, 8, -quadril, 52, -quadril - 6, d.tronco * 0.28 + 4, calca);
-  else if (f.st === 'jump') pernaCurva(c, 8, -quadril, 10, -18, d.tronco * 0.28 + 4, calca);
-  else pernaCurva(c, 8, -quadril, 12 + p2, 0, d.tronco * 0.28 + 4, calca);
-  // tronco: forma por lutador
-  const tw = d.tronco, th = alt - quadril + 6;
-  c.fillStyle = '#00000055'; c.beginPath(); c.moveTo(-d.ombro / 2 + 2, -alt + 8); c.lineTo(d.ombro / 2 + 2, -alt + 8); c.lineTo(tw / 2 + 2, -quadril + 8); c.lineTo(-tw / 2 + 2, -quadril + 8); c.closePath(); c.fill();
-  c.fillStyle = sombrear(c, d.roupa, -d.ombro / 2, -alt, d.ombro, th);
-  c.beginPath(); c.moveTo(-d.ombro / 2, -alt + 6); c.quadraticCurveTo(0, -alt - 2, d.ombro / 2, -alt + 6); c.lineTo(tw / 2, -quadril + 6); c.quadraticCurveTo(0, -quadril + 12, -tw / 2, -quadril + 6); c.closePath(); c.fill();
-  // detalhes de roupa
-  c.fillStyle = d.detalhe;
-  if (f.k === 'brasa') { c.beginPath(); c.moveTo(-6, -alt + 10); c.lineTo(6, -alt + 10); c.lineTo(0, -quadril + 4); c.closePath(); c.fill(); }
-  if (f.k === 'tempestade') { c.fillRect(-d.ombro / 2, -alt + 6, d.ombro, 6); c.beginPath(); c.moveTo(-14, -alt + 8); c.lineTo(-30 - ritmo * 6, -alt + 24); c.lineTo(-12, -alt + 20); c.fill(); }
-  if (f.k === 'rocha') { for (let i = -1; i <= 1; i++) { c.beginPath(); c.arc(i * 16, -alt + 10, 9, 0, 7); c.fill(); } c.fillStyle = '#3e2723'; c.fillRect(-tw / 2, -quadril - 4, tw, 8); }
-  if (f.k === 'sombra') { c.fillStyle = '#00000066'; c.beginPath(); c.moveTo(-d.ombro / 2, -alt + 10); c.lineTo(-d.ombro / 2 - 10 - ritmo * 4, 2); c.lineTo(-tw / 2 + 4, -quadril + 6); c.fill(); c.fillStyle = d.detalhe; c.beginPath(); c.arc(0, -alt + 30, 4, 0, 7); c.fill(); }
-  if (f.k === 'gelo') { c.fillStyle = '#ffffff88'; c.beginPath(); c.moveTo(-d.ombro / 2, -alt + 8); c.lineTo(0, -quadril); c.lineTo(d.ombro / 2, -alt + 8); c.lineTo(0, -alt + 16); c.fill(); }
-  // braços
-  const g = d.tronco * 0.24 + 4;
-  let a1 = [-d.ombro / 2 + 2, -alt + 12, -d.ombro / 2 - 8, -alt + 46 + resp], a2 = [d.ombro / 2 - 2, -alt + 12, d.ombro / 2 + 12, -alt + 40];
-  if (f.st === 'idle' || f.st === 'walk') { a1[3] -= 10; a2 = [d.ombro / 2 - 2, -alt + 12, d.ombro / 2 + 10, -alt + 30 + resp]; }
-  if (f.st === 'punch') a2 = [d.ombro / 2 - 2, -alt + 14, d.ombro / 2 + 40, -alt + 16];
-  if (f.st === 'kick') { a1 = [-d.ombro / 2 + 2, -alt + 12, -d.ombro / 2 - 14, -alt + 20]; }
-  if (f.st === 'block') { a1 = [-d.ombro / 2 + 2, -alt + 12, 10, -alt + 2]; a2 = [d.ombro / 2 - 2, -alt + 12, 16, -alt + 14]; }
-  if (f.st === 'special' || f.st === 'ultra') { a1 = [-d.ombro / 2 + 2, -alt + 12, 10, -alt - 16]; a2 = [d.ombro / 2 - 2, -alt + 12, d.ombro / 2 + 30, -alt + 4]; }
-  if (f.st === 'hit') { a1 = [-d.ombro / 2 + 2, -alt + 12, -d.ombro / 2 - 20, -alt + 4]; a2 = [d.ombro / 2 - 2, -alt + 12, -4, -alt + 34]; }
-  if (f.st === 'crouch') { a1 = [-d.ombro / 2 + 2, -alt + 12, -d.ombro / 2 - 2, -alt + 36]; a2 = [d.ombro / 2 - 2, -alt + 12, d.ombro / 2 + 6, -alt + 30]; }
-  bracoCurvo(c, a1[0], a1[1], a1[2], a1[3], g, d.pele);
-  // cabeça
-  const r = d.cabeca;
-  const incl = f.st === 'hit' ? -0.35 : f.st === 'punch' ? 0.15 : 0;
-  c.save(); c.translate(0, -alt - r + 2); c.rotate(incl);
-  c.fillStyle = '#00000044'; c.beginPath(); c.arc(2, 2, r, 0, 7); c.fill();
-  c.fillStyle = d.pele; c.beginPath(); c.arc(0, 0, r, 0, 7); c.fill();
-  cabeloDe(c, d.cabelo, r, d, agora);
-  if (d.cabelo !== 'capuz') {
-    // olhos e boca
-    c.fillStyle = '#111';
-    if (f.st === 'hit') { c.font = 'bold 10px system-ui'; c.textAlign = 'center'; c.fillText('>  <', 4, 2); }
-    else { c.beginPath(); c.arc(6, -2, 1.8, 0, 7); c.arc(0.5, -2, 1.6, 0, 7); c.fill(); }
-    c.strokeStyle = '#8d4b3a'; c.lineWidth = 1.5; c.beginPath();
-    if (f.st === 'punch' || f.st === 'kick' || f.st === 'special' || f.st === 'ultra') { c.arc(4, 5, 3.5, 0, Math.PI); } else c.moveTo(1, 6); c.lineTo(7, 6);
-    c.stroke();
-    if (f.k === 'brasa') { c.strokeStyle = '#5d4037'; c.lineWidth = 2; c.beginPath(); c.moveTo(-3, -6); c.lineTo(3, -7); c.moveTo(5, -7); c.lineTo(9, -6); c.stroke(); }
-    if (f.k === 'rocha') { c.strokeStyle = '#3e2723'; c.lineWidth = 2.5; c.beginPath(); c.moveTo(-4, -5); c.lineTo(9, -6); c.stroke(); c.fillStyle = '#3e2723'; c.fillRect(-2, 8, 10, 2); }
-    if (f.k === 'gelo') { c.fillStyle = '#4dd0e1'; c.beginPath(); c.arc(6, -2, 2.4, 0, 7); c.arc(0.5, -2, 2.2, 0, 7); c.fill(); }
-  }
-  c.restore();
-  bracoCurvo(c, a2[0], a2[1], a2[2], a2[3], g, d.pele);
-  // efeitos de estado
-  if (f.st === 'block') { c.fillStyle = '#ffffff44'; c.strokeStyle = '#ffffffaa'; c.lineWidth = 2; c.beginPath(); c.arc(18, -alt + 24, 24, 0, 7); c.fill(); c.stroke(); }
-  if (f.st === 'punch' || f.st === 'kick') { c.fillStyle = '#ffffffaa'; c.beginPath(); c.arc(f.st === 'punch' ? d.ombro / 2 + 42 : 54, f.st === 'punch' ? -alt + 16 : -quadril - 6, 7, 0, 7); c.fill(); }
-  if (f.burn) { c.fillStyle = '#ff6f0088'; for (let i = -1; i <= 1; i++) { c.beginPath(); c.arc(i * 10, -alt + 20 + Math.sin(agora / 50 + i) * 6, 10, 0, 7); c.fill(); } }
-  if (f.slow) { c.fillStyle = '#80deea'; c.font = '14px system-ui'; c.textAlign = 'center'; c.fillText('❄', -d.ombro / 2 - 10, -alt - 10); }
-  if (f.stun) { c.fillStyle = '#ffeb3b'; c.font = '16px system-ui'; c.textAlign = 'center'; c.fillText('✶ ✶', 0, -alt - 30); }
-  c.restore();
-}
-function drawLuta() {
-  if (!A || A.game !== 'luta' || !A.state || A.state.phase === 'select' || $('#luta').classList.contains('hide')) return;
-  const st = A.state;
-  const fr = lframe || st.frame;
-  const c = lctx;
-  const L = A.luta?.lutadores || {};
-  (ARENA_DRAW[st.arena] || ARENA_DRAW.praia)(c);
-  const agora = performance.now();
-  if (fr) {
-    // interpola um pouquinho entre o quadro anterior e o atual
-    const k = lprev && lframe ? Math.min(1, (agora - lframeAt) / 34) : 1;
-    const fs = fr.f.map((f, i) => (lprev && lprev.f?.[i] && k < 1 ? { ...f, x: lprev.f[i].x + (f.x - lprev.f[i].x) * k, y: lprev.f[i].y + (f.y - lprev.f[i].y) * k } : f));
-    // efeitos de chão (tremor, era do gelo)
-    for (const [tipo, x, t] of fr.fx) {
-      if (tipo === 'tremor') { c.fillStyle = '#8d6e6388'; c.beginPath(); c.ellipse(x, CHAO, 110 * (1 - Math.max(0, t) / 0.25 + 0.2), 14, 0, 0, 7); c.fill(); }
-      if (tipo === 'eragelo') { c.fillStyle = '#b3e5fc88'; c.fillRect(0, CHAO - 6, LW, 10); }
-    }
-    for (const f of fs) drawFighter(c, f, L, agora);
-    for (const [tipo, x, y] of fr.proj) {
-      c.beginPath(); c.arc(x, y, tipo === 'fogo' ? 14 : 11, 0, 7);
-      c.fillStyle = tipo === 'fogo' ? '#ff7043' : '#80deea'; c.fill();
-      c.beginPath(); c.arc(x, y, 6, 0, 7); c.fillStyle = '#fff'; c.fill();
-    }
-    for (const [tipo, x, t, dmg, y] of fr.fx) {
-      if (tipo === 'raio') {
-        if (t > 0) { c.fillStyle = '#ffffff55'; c.fillRect(x - 24, CHAO - 2, 48, 6); c.fillStyle = '#fff176'; c.font = 'bold 14px system-ui'; c.textAlign = 'center'; c.fillText('⚡', x, CHAO - 10); }
-        else { c.strokeStyle = '#fff59d'; c.lineWidth = 5; c.beginPath(); c.moveTo(x + 10, 0); c.lineTo(x - 8, 120); c.lineTo(x + 6, 130); c.lineTo(x - 10, CHAO); c.stroke(); c.strokeStyle = '#fff'; c.lineWidth = 2; c.stroke(); }
-      }
-      if (tipo === 'pedra') { if (t > 0) { c.fillStyle = '#ffffff55'; c.fillRect(x - 20, CHAO - 2, 40, 6); c.fillStyle = '#8d6e63'; c.beginPath(); c.arc(x, Math.max(-30, CHAO - 60 - t * 500), 16, 0, 7); c.fill(); } else { c.fillStyle = '#8d6e63'; c.beginPath(); c.arc(x, CHAO - 14, 16, 0, 7); c.fill(); } }
-      if (tipo === 'erupcao') { if (t > 0) { c.fillStyle = '#ff572288'; c.fillRect(x - 30, CHAO - 4, 60, 8); } else { const g = c.createLinearGradient(0, CHAO, 0, 60); g.addColorStop(0, '#ff3d00'); g.addColorStop(1, '#ffeb3b00'); c.fillStyle = g; c.fillRect(x - 34, 60, 68, CHAO - 60); } }
-      if (tipo === 'sombra') { c.fillStyle = '#6a1b9a88'; c.beginPath(); c.arc(x, CHAO - 50, 40 * (1 - Math.max(0, t) / 0.4 + 0.2), 0, 7); c.fill(); }
-      if (tipo === 'eclipse') { c.fillStyle = '#000000aa'; c.fillRect(0, 0, LW, LH); c.fillStyle = '#fff'; c.font = 'bold 26px system-ui'; c.textAlign = 'center'; c.fillText('ECLIPSE', LW / 2, 60); }
-      if (tipo === 'dano') { c.fillStyle = '#fff'; c.strokeStyle = '#000'; c.lineWidth = 3; c.font = 'bold 20px system-ui'; c.textAlign = 'center'; c.strokeText('-' + dmg, x, y - (0.5 - t) * 60); c.fillText('-' + dmg, x, y - (0.5 - t) * 60); }
-    }
-    // HUD
-    const nome = (i) => A.seats[st.ordem[i]]?.name || '?';
-    fr.f.forEach((f, i) => {
-      const x = i === 0 ? 20 : LW - 320, w = 300;
-      c.fillStyle = '#0008'; c.fillRect(x, 14, w, 16);
-      c.fillStyle = f.hp / f.hpMax > .3 ? '#43a047' : '#e53935';
-      const hpw = w * Math.max(0, f.hp) / f.hpMax;
-      c.fillRect(i === 0 ? x : x + w - hpw, 14, hpw, 16);
-      c.fillStyle = '#0008'; c.fillRect(x, 34, w, 6); c.fillStyle = f.en >= 100 ? '#ff4081' : '#ffb300'; const enw = w * f.en / 100; c.fillRect(i === 0 ? x : x + w - enw, 34, enw, 6);
-      c.fillStyle = '#fff'; c.font = 'bold 13px system-ui'; c.textAlign = i === 0 ? 'left' : 'right'; c.fillText(`${nome(i)} · ${L[f.k]?.nome || ''}`, i === 0 ? x : x + w, 54);
-      for (let r = 0; r < 2; r++) { c.fillStyle = st.wins[i] > r ? '#ffd54f' : '#ffffff44'; c.beginPath(); c.arc(i === 0 ? x + 8 + r * 18 : x + w - 8 - r * 18, 66, 6, 0, 7); c.fill(); }
-    });
-    c.fillStyle = '#fff'; c.font = 'bold 26px system-ui'; c.textAlign = 'center'; c.fillText(String(Math.max(0, fr.timer)), LW / 2, 36);
-    if (fr.phase === 'countdown') { c.font = 'bold 64px system-ui'; c.fillStyle = '#fff'; c.strokeStyle = '#000'; c.lineWidth = 6; const t = fr.cd > 0 ? String(fr.cd) : 'LUTEM!'; c.strokeText(t, LW / 2, 200); c.fillText(t, LW / 2, 200); }
-  }
-  if (st.phase === 'roundEnd' || st.phase === 'over') { c.fillStyle = '#0007'; c.fillRect(0, 150, LW, 90); c.fillStyle = '#fff'; c.font = 'bold 28px system-ui'; c.textAlign = 'center'; c.fillText(st.msg || '', LW / 2, 205); }
-}
-(function loop() { try { drawLuta(); } catch (e) { console.warn(e); } requestAnimationFrame(loop); })();
 
-// ---- cartas (estilo Uno) ----
-const NOMEV = { pula: '⊘', inverte: '⇄', '+2': '+2', coringa: '✦', '+4': '+4' };
-const cartaHTML = (c, cls = '', i = null) => `<div class="uc ${c.c} ${cls}" ${i != null ? `data-i="${i}"` : ''}><small>${NOMEV[c.v] || c.v}</small><span class="${/^\d$/.test(c.v) ? '' : 'act'}">${NOMEV[c.v] || c.v}</span></div>`;
-const CORHEX = { r: '#e53935', g: '#43a047', b: '#1e88e5', y: '#fdd835' };
-let pendCarta = null;
-function renderCartas() {
-  const st = A?.state;
-  const pile = $('#pile');
-  const hand = $('#myhand');
-  if (!st) { pile.innerHTML = ''; hand.innerHTML = ''; $('#deck-n').textContent = ''; ['#uno', '#pegou', '#passar'].forEach((x) => $(x).classList.add('hide')); return; }
-  pile.innerHTML = cartaHTML(st.top) + (st.top.c === 'k' ? `<span class="corbadge" style="background:${CORHEX[st.cor]}"></span>` : '');
-  pile.style.position = 'relative';
-  $('#deck-n').textContent = st.deck;
-  $('#sentido').textContent = st.dir === 1 ? '⟳' : '⟲';
-  const eu = meuSeat();
-  const minhaVezC = eu >= 0 && st.turn === eu && st.phase === 'play';
-  $('#deck').classList.toggle('ok', minhaVezC && st.drew !== eu);
-  if (!st.hand) { hand.innerHTML = '<span style="color:var(--muted);font-size:12px">Você está assistindo.</span>'; ['#uno', '#pegou', '#passar'].forEach((x) => $(x).classList.add('hide')); return; }
-  const ok = new Set(st.jogaveis || []);
-  hand.innerHTML = st.hand.map((c, i) => cartaHTML(c, ok.has(i) ? 'ok' : '', i)).join('');
-  $('#passar').classList.toggle('hide', !(minhaVezC && st.drew === eu));
-  $('#uno').classList.toggle('hide', !(st.hand.length <= 2 && !st.uno?.[eu] && st.phase === 'play'));
-  $('#pegou').classList.toggle('hide', !(st.unoPend != null && st.unoPend !== eu));
+function emMovimento(balls) {
+  return balls.some((b) => !b.in && (Math.abs(b.vx) > 0 || Math.abs(b.vy) > 0));
 }
-$('#myhand').addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-i]');
-  if (!t) return;
-  const st = A?.state;
-  const i = Number(t.dataset.i);
-  if (!(st?.jogaveis || []).includes(i)) return toast(st?.turn === meuSeat() ? 'Essa carta não combina com a mesa.' : 'Não é a sua vez.');
-  if (st.hand[i].c === 'k') { pendCarta = i; $('#cor').classList.remove('hide'); return; }
-  const r = await emitAck('arcade-cartas', { action: 'play', i });
-  if (r.error) toast(r.error);
-});
-document.querySelectorAll('#cor [data-cor]').forEach((b) => (b.onclick = async () => { $('#cor').classList.add('hide'); const r = await emitAck('arcade-cartas', { action: 'play', i: pendCarta, cor: b.dataset.cor }); if (r.error) toast(r.error); }));
-$('#cor-x').onclick = () => $('#cor').classList.add('hide');
-$('#deck').onclick = async () => { const r = await emitAck('arcade-cartas', { action: 'draw' }); if (r.error) toast(r.error); };
-$('#passar').onclick = async () => { const r = await emitAck('arcade-cartas', { action: 'draw' }); if (r.error) toast(r.error); };
-$('#uno').onclick = async () => { const r = await emitAck('arcade-cartas', { action: 'uno' }); if (r.error) toast(r.error); };
-$('#pegou').onclick = async () => { const r = await emitAck('arcade-cartas', { action: 'pegou' }); if (r.error) toast(r.error); };
 
-// ---- dominó ----
-// Pontinhos (pips) de cada número, numa grade 3x3: posições 0..8
-const PIPS = { 0: [], 1: [4], 2: [2, 6], 3: [2, 4, 6], 4: [0, 2, 6, 8], 5: [0, 2, 4, 6, 8], 6: [0, 2, 3, 5, 6, 8] };
-const pipsHTML = (n) => `<span class="half"><span class="pips">${[0, 1, 2, 3, 4, 5, 6, 7, 8].map((p) => `<i class="${PIPS[n].includes(p) ? 'on' : ''}"></i>`).join('')}</span></span>`;
-const tileHTML = (a, b, cls) => `<div class="tile ${cls}" title="${a}|${b}">${pipsHTML(a)}${pipsHTML(b)}</div>`;
-let pendente = null;
-function renderDomino() {
-  const st = A?.state;
-  const chain = $('#chain');
-  const hand = $('#hand');
-  if (!st) { chain.innerHTML = '<span style="color:#fff9">Esperando começar…</span>'; hand.innerHTML = ''; $('#dom-pass').classList.add('hide'); $('#dom-monte').textContent = ''; return; }
-  chain.innerHTML = st.chain.map(([a, b], i) => tileHTML(a, b, (a === b ? 'v' : 'h') + (st.lastMove && !st.lastMove.passou && ((st.lastMove.lado === 'esq' && i === 0) || (st.lastMove.lado !== 'esq' && i === st.chain.length - 1)) ? ' last' : ''))).join('') || '<span style="color:#fff9">Mesa vazia</span>';
-  const minha = st.hand;
-  if (!minha) {
-    hand.innerHTML = `<span style="color:var(--muted);font-size:12px">${st.phase === 'over' && st.revel ? 'Mãos: ' + Object.entries(st.revel).map(([c, h]) => `${esc(A.seats[c]?.name || '?')} (${h.map((p) => p.join('|')).join(' ') || 'bateu'})`).join(' · ') : 'Você está assistindo.'}</span>`;
-    $('#dom-pass').classList.add('hide');
-  } else {
-    const ok = new Map((st.jogadas || []).map((j) => [j.i, j.lados]));
-    hand.innerHTML = minha.map(([a, b], i) => tileHTML(a, b, ok.has(i) ? 'ok' : '').replace('class="tile', `data-i="${i}" class="tile`)).join('');
-    const minhaVezDom = st.turn === meuSeat() && st.phase === 'play';
-    $('#dom-pass').classList.toggle('hide', !(minhaVezDom && !ok.size));
-    $('#dom-pass').textContent = st.monte > 0 ? 'Comprar do monte' : 'Passar';
-  }
-  $('#dom-monte').textContent = `Monte: ${st.monte} pedra(s)`;
-  // última jogada em destaque na última pedra; a borda da mesa rola até o fim
-}
-$('#hand').addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-i]');
-  if (!t) return;
-  const st = A?.state;
-  const i = Number(t.dataset.i);
-  const j = (st?.jogadas || []).find((x) => x.i === i);
-  if (!j) return toast('Essa pedra não encaixa agora.');
-  if (j.lados.length > 1) { pendente = i; $('#lado-txt').textContent = `Pedra ${st.hand[i].join('|')}: de que lado?`; $('#lado').classList.remove('hide'); return; }
-  const r = await emitAck('arcade-domino', { action: 'play', i, lado: j.lados[0] });
-  if (r.error) toast(r.error);
-});
-$('#lado-esq').onclick = async () => { $('#lado').classList.add('hide'); const r = await emitAck('arcade-domino', { action: 'play', i: pendente, lado: 'esq' }); if (r.error) toast(r.error); };
-$('#lado-dir').onclick = async () => { $('#lado').classList.add('hide'); const r = await emitAck('arcade-domino', { action: 'play', i: pendente, lado: 'dir' }); if (r.error) toast(r.error); };
-$('#lado-x').onclick = () => $('#lado').classList.add('hide');
-$('#dom-pass').onclick = async () => { const r = await emitAck('arcade-domino', { action: 'pass' }); if (r.error) toast(r.error); };
-
-// ---- desenho ----
-let scale = 1;
-function fit() {
-  const st = $('#stage');
-  const aw = st.clientWidth - 12, ah = st.clientHeight - 12;
-  const tw = W + PAD * 2, th = H + PAD * 2;
-  const s = Math.max(0.2, Math.min(aw / tw, ah / th));
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
-  cv.width = Math.round(tw * s * dpr); cv.height = Math.round(th * s * dpr);
-  cv.style.width = Math.round(tw * s) + 'px'; cv.style.height = Math.round(th * s) + 'px';
-  scale = s * dpr;
-  draw();
-}
-window.addEventListener('resize', fit);
-function posicoes() {
-  const st = A?.state;
-  if (!st) return [];
-  if (live && st.phase === 'moving') return live.map(([id, x, y]) => ({ id, x, y, in: false }));
-  return st.balls;
-}
-function draw() {
-  if (!A?.state || A.game !== 'sinuca') return;
-  const st = A.state;
-  ctx.setTransform(scale, 0, 0, scale, 0, 0);
-  ctx.clearRect(0, 0, W + PAD * 2, H + PAD * 2);
-  // madeira
-  ctx.fillStyle = '#5a3a1e';
-  ctx.beginPath(); ctx.roundRect(0, 0, W + PAD * 2, H + PAD * 2, 18); ctx.fill();
-  // pano
-  ctx.save(); ctx.translate(PAD, PAD);
-  ctx.fillStyle = '#1f7a3f'; ctx.fillRect(-6, -6, W + 12, H + 12);
-  ctx.fillStyle = '#2a9b50'; ctx.fillRect(0, 0, W, H);
-  // marcas
-  ctx.strokeStyle = '#ffffff22'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(W * 0.25, 0); ctx.lineTo(W * 0.25, H); ctx.stroke();
-  // caçapas
-  for (const [px, py] of [[0, 0], [W / 2, -4], [W, 0], [0, H], [W / 2, H + 4], [W, H]]) { ctx.fillStyle = '#0a0a0a'; ctx.beginPath(); ctx.arc(px, py, PR, 0, Math.PI * 2); ctx.fill(); }
-  // mira
-  const eu = minhaVez();
-  const cue = posicoes().find((b) => b.id === 0);
-  if (eu && drag && cue && !cue.in) {
-    const ang = drag.angle;
-    const dx = Math.cos(ang), dy = Math.sin(ang);
-    // linha de mira até a primeira bola/tabela
-    let t = 2000;
-    for (const b of posicoes()) {
-      if (b.id === 0 || b.in) continue;
-      const fx = b.x - cue.x, fy = b.y - cue.y;
-      const proj = fx * dx + fy * dy;
-      if (proj <= 0) continue;
-      const perp = Math.abs(fx * dy - fy * dx);
-      if (perp < 2 * R) { const tt = proj - Math.sqrt(4 * R * R - perp * perp); if (tt < t) t = tt; }
-    }
-    const ex = cue.x + dx * Math.min(t, 1200), ey = cue.y + dy * Math.min(t, 1200);
-    ctx.setLineDash([6, 6]); ctx.strokeStyle = '#ffffffaa'; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(cue.x, cue.y); ctx.lineTo(ex, ey); ctx.stroke(); ctx.setLineDash([]);
-    ctx.strokeStyle = '#ffffff55'; ctx.beginPath(); ctx.arc(ex, ey, R, 0, Math.PI * 2); ctx.stroke();
-    // taco
-    const back = 20 + drag.power * 90;
-    ctx.strokeStyle = '#d9b26f'; ctx.lineWidth = 6; ctx.lineCap = 'round';
-    ctx.beginPath(); ctx.moveTo(cue.x - dx * (R + back), cue.y - dy * (R + back)); ctx.lineTo(cue.x - dx * (R + back + 260), cue.y - dy * (R + back + 260)); ctx.stroke();
-  }
-  // bolas
-  for (const b of posicoes()) {
+// Um passo da física. Devolve eventos: { pocketed: [ids], firstHit: id|null, cushion: bool }
+function passo(balls, ev) {
+  for (const b of balls) {
     if (b.in) continue;
-    ctx.beginPath(); ctx.arc(b.x + 1.5, b.y + 2, R, 0, Math.PI * 2); ctx.fillStyle = '#00000055'; ctx.fill();
-    ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, Math.PI * 2); ctx.fillStyle = b.id === 0 ? '#f4f1e8' : b.id > 8 ? '#f4f1e8' : corDe(b.id); ctx.fill();
-    if (b.id > 8) { ctx.save(); ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, Math.PI * 2); ctx.clip(); ctx.fillStyle = corDe(b.id); ctx.fillRect(b.x - R, b.y - R * 0.55, R * 2, R * 1.1); ctx.restore(); }
-    if (b.id !== 0) { ctx.beginPath(); ctx.arc(b.x, b.y, R * 0.5, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill(); ctx.fillStyle = '#111'; ctx.font = `bold ${R * 0.75}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(String(b.id), b.x, b.y + 0.5); }
-    ctx.beginPath(); ctx.arc(b.x - R * 0.35, b.y - R * 0.35, R * 0.3, 0, Math.PI * 2); ctx.fillStyle = '#ffffff66'; ctx.fill();
+    b.x += b.vx * DT;
+    b.y += b.vy * DT;
+    b.vx *= FRICTION;
+    b.vy *= FRICTION;
+    if (Math.hypot(b.vx, b.vy) < STOP) { b.vx = 0; b.vy = 0; }
   }
-  if (eu && st.inHand && cue && !drag) { ctx.strokeStyle = '#ffffffaa'; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.arc(cue.x, cue.y, R + 5, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]); }
-  ctx.restore();
-  // vencedor
-  if (st.phase === 'over') {
-    ctx.fillStyle = '#00000088'; ctx.fillRect(0, 0, W + PAD * 2, H + PAD * 2);
-    ctx.fillStyle = '#fff'; ctx.font = 'bold 28px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(st.msg || 'Fim de jogo', (W + PAD * 2) / 2, (H + PAD * 2) / 2);
+  // caçapas
+  for (const b of balls) {
+    if (b.in) continue;
+    for (const [px, py] of POCKETS) {
+      if (Math.hypot(b.x - px, b.y - py) < POCKET_R) {
+        b.in = true;
+        b.vx = 0;
+        b.vy = 0;
+        ev.pocketed.push(b.id);
+        break;
+      }
+    }
+  }
+  // tabelas (com "boca" das caçapas: perto delas a bola pode sair)
+  for (const b of balls) {
+    if (b.in) continue;
+    const pertoCanto = POCKETS.some(([px, py]) => Math.hypot(b.x - px, b.y - py) < POCKET_R + R);
+    if (!pertoCanto) {
+      if (b.x < R) { b.x = R; b.vx = -b.vx * 0.8; ev.cushion = true; }
+      if (b.x > W - R) { b.x = W - R; b.vx = -b.vx * 0.8; ev.cushion = true; }
+      if (b.y < R) { b.y = R; b.vy = -b.vy * 0.8; ev.cushion = true; }
+      if (b.y > H - R) { b.y = H - R; b.vy = -b.vy * 0.8; ev.cushion = true; }
+    } else if (b.x < -R * 2 || b.x > W + R * 2 || b.y < -R * 2 || b.y > H + R * 2) {
+      // caiu pela boca
+      b.in = true; b.vx = 0; b.vy = 0; ev.pocketed.push(b.id);
+    }
+  }
+  // bola com bola
+  for (let i = 0; i < balls.length; i++) {
+    const a = balls[i];
+    if (a.in) continue;
+    for (let j = i + 1; j < balls.length; j++) {
+      const c = balls[j];
+      if (c.in) continue;
+      const dx = c.x - a.x;
+      const dy = c.y - a.y;
+      const d = Math.hypot(dx, dy);
+      if (d === 0 || d >= 2 * R) continue;
+      const nx = dx / d;
+      const ny = dy / d;
+      // separa
+      const over = (2 * R - d) / 2;
+      a.x -= nx * over; a.y -= ny * over;
+      c.x += nx * over; c.y += ny * over;
+      // troca a componente normal da velocidade (massas iguais)
+      const va = a.vx * nx + a.vy * ny;
+      const vc = c.vx * nx + c.vy * ny;
+      if (va - vc <= 0) continue;
+      const e = 0.96;
+      const ia = va;
+      const ic = vc;
+      const nva = ((1 - e) * ia + (1 + e) * ic) / 2;
+      const nvc = ((1 + e) * ia + (1 - e) * ic) / 2;
+      a.vx += (nva - va) * nx; a.vy += (nva - va) * ny;
+      c.vx += (nvc - vc) * nx; c.vy += (nvc - vc) * ny;
+      if (ev.firstHit == null && (a.id === 0 || c.id === 0)) ev.firstHit = a.id === 0 ? c.id : a.id;
+    }
   }
 }
 
-// ---- controle: arrastar para mirar e dar força ----
-let drag = null;
-function ponto(e) {
-  const r = cv.getBoundingClientRect();
-  const sx = (W + PAD * 2) / r.width;
-  return { x: (e.clientX - r.left) * sx - PAD, y: (e.clientY - r.top) * sx - PAD };
+const grupoDe = (id) => (id >= 1 && id <= 7 ? 'lisa' : id >= 9 && id <= 15 ? 'listrada' : id === 8 ? 'oito' : null);
+
+// Sinuca em duplas: cadeiras 0 e 2 são o time A, 1 e 3 o time B. A vez roda entre as cadeiras ocupadas.
+const timeDe = (seat) => seat % 2;
+function novoJogo(seats) {
+  const ordem = seats.map((s, i) => (s ? i : -1)).filter((i) => i >= 0);
+  return {
+    balls: rackInicial(),
+    ordem, // cadeiras que jogam, na sequência
+    turn: ordem[0], // cadeira da vez
+    groups: [null, null], // 'lisa' | 'listrada' por TIME (0 = cadeiras 0/2, 1 = cadeiras 1/3)
+    inHand: true,
+    phase: 'aim', // aim | moving | over
+    winner: null, // time vencedor
+    msg: 'Quebra! Arraste a partir da bola branca para dar a tacada.',
+    shots: 0,
+  };
 }
-cv.addEventListener('pointerdown', (e) => {
-  if (!minhaVez()) return;
-  cv.setPointerCapture(e.pointerId);
-  const p = ponto(e);
-  drag = { sx: p.x, sy: p.y, angle: 0, power: 0, moved: false, t: Date.now() };
-  $('#power').style.display = 'block';
-});
-cv.addEventListener('pointermove', (e) => {
-  if (!drag) return;
-  const p = ponto(e);
-  const cue = posicoes().find((b) => b.id === 0);
-  const dx = p.x - drag.sx, dy = p.y - drag.sy;
-  const d = Math.hypot(dx, dy);
-  if (d > 6) drag.moved = true;
-  if (drag.moved && cue) {
-    // puxa o taco: a bola vai na direção contrária ao arrasto
-    drag.angle = Math.atan2(-dy, -dx);
-    drag.power = Math.min(1, d / 220);
-    $('#power i').style.width = Math.round(drag.power * 100) + '%';
-  }
-  draw();
-});
-async function soltar(e) {
-  if (!drag) return;
-  const d = drag; drag = null;
-  $('#power').style.display = 'none';
-  draw();
-  const st = A?.state;
-  if (!st) return;
-  if (!d.moved) {
-    // toque curto: com bola na mão, coloca a branca ali
-    if (st.inHand) { const r = await emitAck('arcade-place', { x: d.sx, y: d.sy }); if (r.error) toast(r.error); }
-    return;
-  }
-  if (d.power < 0.06) return;
-  const r = await emitAck('arcade-shot', { angle: d.angle, power: d.power });
-  if (r.error) toast(r.error);
+function proximaCadeira(st, atual) {
+  const i = st.ordem.indexOf(atual);
+  return st.ordem[(i + 1) % st.ordem.length];
 }
-cv.addEventListener('pointerup', soltar);
-cv.addEventListener('pointercancel', () => { drag = null; $('#power').style.display = 'none'; draw(); });
-fit();
+function proximaDoOutroTime(st, atual) {
+  let c = proximaCadeira(st, atual);
+  for (let k = 0; k < st.ordem.length && timeDe(c) === timeDe(atual); k++) c = proximaCadeira(st, c);
+  return c;
+}
+
+// ---------- 🁣 Dominó (2 a 4 jogadores) ----------
+function novoDomino(seats) {
+  const ordem = seats.map((s, i) => (s ? i : -1)).filter((i) => i >= 0);
+  const pecas = [];
+  for (let a = 0; a <= 6; a++) for (let b = a; b <= 6; b++) pecas.push([a, b]);
+  for (let i = pecas.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pecas[i], pecas[j]] = [pecas[j], pecas[i]]; }
+  const hands = {};
+  for (const c of ordem) hands[c] = pecas.splice(0, 7);
+  // começa quem tem a maior dupla (ou a maior pedra)
+  let inicio = ordem[0];
+  let melhor = -1;
+  for (const c of ordem) for (const [a, b] of hands[c]) { const v = a === b ? 100 + a : a + b; if (v > melhor) { melhor = v; inicio = c; } }
+  return {
+    ordem, hands, monte: pecas, chain: [], // chain: [[a,b],...] já orientadas (esquerda→direita)
+    turn: inicio, phase: 'play', winner: null, passes: 0,
+    msg: `${'%NOME%'} começa (tem a maior pedra).`, counts: {}, lastMove: null,
+  };
+}
+// ---------- 🃏 Cartas (estilo Uno, 2 a 4 jogadores) ----------
+// carta: { c: 'r'|'g'|'b'|'y'|'k', v: '0'..'9'|'pula'|'inverte'|'+2'|'coringa'|'+4' }
+function baralhoCartas() {
+  const d = [];
+  for (const c of ['r', 'g', 'b', 'y']) {
+    d.push({ c, v: '0' });
+    for (let k = 0; k < 2; k++) {
+      for (let n = 1; n <= 9; n++) d.push({ c, v: String(n) });
+      d.push({ c, v: 'pula' }, { c, v: 'inverte' }, { c, v: '+2' });
+    }
+  }
+  for (let k = 0; k < 4; k++) d.push({ c: 'k', v: 'coringa' }, { c: 'k', v: '+4' });
+  for (let i = d.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [d[i], d[j]] = [d[j], d[i]]; }
+  return d;
+}
+function novoCartas(seats) {
+  const ordem = seats.map((s, i) => (s ? i : -1)).filter((i) => i >= 0);
+  const deck = baralhoCartas();
+  const hands = {};
+  for (const c of ordem) hands[c] = deck.splice(0, 7);
+  // a primeira carta da mesa é um número
+  let top = deck.pop();
+  while (!/^\d$/.test(top.v)) { deck.unshift(top); top = deck.pop(); }
+  return {
+    ordem, hands, deck, pile: [top], cor: top.c, dir: 1, turn: ordem[0], phase: 'play', winner: null,
+    drew: null, // seat que já comprou nesta vez (pode jogar a comprada ou passar)
+    uno: {}, // seat -> true se gritou UNO com 1 carta
+    unoPend: null, // { seat, until } quem ficou com 1 carta e ainda não gritou
+    msg: `${seats[ordem[0]].name} começa.`, lastMove: null,
+  };
+}
+const podeJogarCarta = (carta, st) => carta.c === 'k' || carta.c === st.cor || carta.v === st.pile[st.pile.length - 1].v;
+function compraCartas(st, seat, n) {
+  for (let i = 0; i < n; i++) {
+    if (!st.deck.length) {
+      if (st.pile.length <= 1) break;
+      const top = st.pile.pop();
+      st.deck = st.pile.map((c) => (c.c === 'k' ? { ...c } : c));
+      st.pile = [top];
+      for (let k = st.deck.length - 1; k > 0; k--) { const j = Math.floor(Math.random() * (k + 1)); [st.deck[k], st.deck[j]] = [st.deck[j], st.deck[k]]; }
+    }
+    if (st.deck.length) st.hands[seat].push(st.deck.pop());
+  }
+}
+// ---------- 🥊 Luta (1x1, tempo real) ----------
+// O servidor simula a luta a 30 quadros/s e manda a posição de tudo; os jogadores só mandam os botões.
+const LW = 800, LH = 400, CHAO = 330, GRAV = 1800;
+const LUTADORES = {
+  brasa: { nome: 'Brasa', desc: 'Fogo. Equilibrada.', cor: '#ff6a00', cor2: '#ffd166', vel: 230, pulo: 620, soco: 7, chute: 11, hp: 100,
+    especial: { nome: 'Bola de fogo', custo: 35, desc: 'Lança uma bola de fogo (14).' },
+    ultra: { nome: 'Erupção', custo: 100, desc: 'Coluna de fogo embaixo do rival (30) e queima por 3 s.' } },
+  tempestade: { nome: 'Tempestade', desc: 'Raio. Rápida, frágil.', cor: '#3aa0ff', cor2: '#e0f2ff', vel: 300, pulo: 700, soco: 5, chute: 8, hp: 85,
+    especial: { nome: 'Relâmpago', custo: 30, desc: 'Raio cai onde o rival está (12). Dá para desviar.' },
+    ultra: { nome: 'Tormenta', custo: 100, desc: 'Cinco raios seguidos pela arena.' } },
+  rocha: { nome: 'Rocha', desc: 'Terra. Lenta, pesada.', cor: '#8d6e63', cor2: '#d7ccc8', vel: 170, pulo: 520, soco: 9, chute: 15, hp: 125,
+    especial: { nome: 'Terremoto', custo: 40, desc: 'Soca o chão: quem está no chão toma 16 e fica tonto.' },
+    ultra: { nome: 'Avalanche', custo: 100, desc: 'Pedras caem por toda a arena (10 cada).' } },
+  sombra: { nome: 'Sombra', desc: 'Sombras. Traiçoeira.', cor: '#6a1b9a', cor2: '#ce93d8', vel: 260, pulo: 640, soco: 6, chute: 10, hp: 90,
+    especial: { nome: 'Passo das sombras', custo: 30, desc: 'Some e reaparece atrás do rival com um golpe (13).' },
+    ultra: { nome: 'Eclipse', custo: 100, desc: 'Fica invisível por 4 s e os golpes dão o dobro.' } },
+  gelo: { nome: 'Névoa', desc: 'Gelo. Controle.', cor: '#26c6da', cor2: '#e0f7fa', vel: 240, pulo: 600, soco: 6, chute: 10, hp: 95,
+    especial: { nome: 'Sopro gelado', custo: 30, desc: 'Projétil que congela o rival por 1,5 s (8).' },
+    ultra: { nome: 'Era do gelo', custo: 100, desc: 'Congela a arena: o rival anda a metade por 6 s e toma 20.' } },
+};
+const ARENAS = { praia: 'Praia ao pôr do sol', cidade: 'Cidade à noite', templo: 'Templo nas montanhas', vulcao: 'Vulcão' };
+const ROUND_TIME = 60;
+function novaLuta(seats) {
+  const ordem = seats.map((s, i) => (s ? i : -1)).filter((i) => i >= 0).slice(0, 2);
+  return {
+    ordem, phase: 'select', // select | countdown | fight | roundEnd | over
+    pick: {}, ready: {}, arena: null, // escolhas por cadeira
+    round: 1, wins: [0, 0], timer: ROUND_TIME, t: 0, winner: null, msg: 'Escolham o lutador. Quem está na primeira cadeira escolhe a arena.',
+    f: null, // lutadores [{...}] por índice 0/1 (ordem)
+    proj: [], fx: [], inputs: [{}, {}], seq: 0,
+  };
+}
+function novoLutador(key, lado) {
+  const d = LUTADORES[key];
+  return { key, x: lado === 0 ? 200 : 600, y: CHAO, vx: 0, vy: 0, hp: d.hp, hpMax: d.hp, en: 0, face: lado === 0 ? 1 : -1,
+    st: 'idle', stT: 0, cd: 0, stun: 0, frozen: 0, slow: 0, burn: 0, invis: 0, chao: true, hits: 0 };
+}
+function iniciaRound(st) {
+  st.f = [novoLutador(st.pick[st.ordem[0]], 0), novoLutador(st.pick[st.ordem[1]], 1)];
+  if (st.round > 1) for (const f of st.f) f.en = 20;
+  st.proj = []; st.fx = []; st.timer = ROUND_TIME; st.t = 0;
+  st.phase = 'countdown'; st.cdT = 3.2;
+}
+// Um passo da luta (dt em segundos). Devolve true se o round acabou.
+function passoLuta(st, dt) {
+  st.t += dt;
+  if (st.phase === 'countdown') { st.cdT -= dt; if (st.cdT <= 0) { st.phase = 'fight'; st.msg = 'LUTEM!'; } return false; }
+  if (st.phase !== 'fight') return false;
+  st.timer -= dt;
+  const [a, b] = st.f;
+  const outro = (f) => (f === a ? b : a);
+  for (let i = 0; i < 2; i++) {
+    const f = st.f[i], o = st.f[1 - i], inp = st.inputs[i] || {}, d = LUTADORES[f.key];
+    f.stT += dt; f.cd = Math.max(0, f.cd - dt);
+    for (const k of ['stun', 'frozen', 'slow', 'invis']) f[k] = Math.max(0, f[k] - dt);
+    if (f.burn > 0) { f.burn -= dt; f.hp -= 4 * dt; }
+    // estados "presos" (golpe em andamento, tonto, congelado, caído)
+    const preso = f.frozen > 0 || f.stun > 0 || ['punch', 'kick', 'hit', 'special', 'ko', 'ultra'].includes(f.st);
+    if (['punch', 'kick', 'hit', 'special', 'ultra'].includes(f.st)) {
+      const dur = { punch: 0.3, kick: 0.45, hit: 0.35, special: 0.5, ultra: 0.8 }[f.st];
+      if (f.stT >= dur) { f.st = 'idle'; f.stT = 0; }
+    }
+    // olhar sempre para o rival (menos no meio de um golpe)
+    if (!preso) f.face = o.x >= f.x ? 1 : -1;
+    const vel = d.vel * (f.slow > 0 ? 0.5 : 1);
+    if (!preso) {
+      f.vx = 0;
+      if (inp.b) { f.st = 'block'; }
+      else if (inp.d && f.chao) { f.st = 'crouch'; }
+      else {
+        if (inp.l) f.vx = -vel;
+        if (inp.r) f.vx = vel;
+        if (inp.u && f.chao) { f.vy = -d.pulo; f.chao = false; }
+        f.st = f.chao ? (f.vx ? 'walk' : 'idle') : 'jump';
+      }
+      // golpes
+      if (f.cd === 0 && f.chao !== null) {
+        if (inp.p) { f.st = 'punch'; f.stT = 0; f.cd = 0.35; f.vx = 0; golpe(st, f, o, d.soco, 46, 0.2, 'soco'); }
+        else if (inp.k) { f.st = 'kick'; f.stT = 0; f.cd = 0.55; f.vx = 0; golpe(st, f, o, d.chute, 58, 0.3, 'chute'); }
+        else if (inp.s && f.en >= d.especial.custo) { f.en -= d.especial.custo; f.st = 'special'; f.stT = 0; f.cd = 0.7; f.vx = 0; especial(st, f, o, i); }
+        else if (inp.x && f.en >= d.ultra.custo) { f.en -= d.ultra.custo; f.st = 'ultra'; f.stT = 0; f.cd = 1; f.vx = 0; ultra(st, f, o, i); }
+      }
+    } else if (f.chao) f.vx = 0;
+    // física
+    f.x += f.vx * dt;
+    f.vy += GRAV * dt;
+    f.y += f.vy * dt;
+    if (f.y >= CHAO) { f.y = CHAO; f.vy = 0; f.chao = true; } else f.chao = false;
+    f.x = Math.max(30, Math.min(LW - 30, f.x));
+  }
+  // não atravessar o outro
+  if (Math.abs(a.x - b.x) < 44 && a.chao && b.chao) { const m = (a.x + b.x) / 2; const s = a.x <= b.x ? 1 : -1; a.x = m - 22 * s; b.x = m + 22 * s; }
+  // projéteis
+  for (const p of st.proj) {
+    p.x += p.vx * dt; p.t -= dt;
+    const alvo = st.f[1 - p.dono];
+    if (Math.abs(p.x - alvo.x) < 34 && Math.abs(p.y - (alvo.y - 50)) < 60 && !(alvo.st === 'crouch' && p.y < alvo.y - 70)) {
+      dano(st, st.f[p.dono], alvo, p.dmg, p.tipo); p.t = 0;
+      if (p.tipo === 'gelo') alvo.frozen = Math.max(alvo.frozen, 1.5);
+    }
+  }
+  st.proj = st.proj.filter((p) => p.t > 0 && p.x > -40 && p.x < LW + 40);
+  // efeitos com atraso (raios, pedras, erupção)
+  for (const e of st.fx) {
+    e.t -= dt;
+    if (e.tipo === 'golpe') continue; // tratados em aplicaGolpes
+    if (e.t <= 0 && !e.feito) {
+      e.feito = true;
+      const alvo = st.f[1 - e.dono];
+      if (e.tipo === 'raio' && Math.abs(alvo.x - e.x) < 40) dano(st, st.f[e.dono], alvo, e.dmg, 'raio');
+      if (e.tipo === 'pedra' && Math.abs(alvo.x - e.x) < 36 && alvo.y > CHAO - 90) dano(st, st.f[e.dono], alvo, e.dmg, 'pedra');
+      if (e.tipo === 'erupcao' && Math.abs(alvo.x - e.x) < 50) { dano(st, st.f[e.dono], alvo, e.dmg, 'fogo'); alvo.burn = 3; }
+    }
+  }
+  st.fx = st.fx.filter((e) => e.t > -0.6);
+  // fim do round
+  const ko = st.f.findIndex((f) => f.hp <= 0);
+  if (ko >= 0 || st.timer <= 0) {
+    let venc;
+    if (ko >= 0) { venc = 1 - ko; st.f[ko].st = 'ko'; st.f[ko].hp = 0; }
+    else venc = a.hp === b.hp ? -1 : a.hp > b.hp ? 0 : 1;
+    if (venc >= 0) st.wins[venc] += 1;
+    st.phase = 'roundEnd';
+    st.roundWinner = venc;
+    st.cdT = 3;
+    return true;
+  }
+  return false;
+}
+function golpe(st, f, o, dmg, alcance, atraso, tipo) {
+  // o dano entra um pouco depois (animação); guardamos como efeito
+  st.fx.push({ tipo: 'golpe', dono: st.f.indexOf(f), t: atraso, x: f.x + f.face * alcance * 0.5, alcance, dmg, g: tipo });
+}
+function dano(st, de, para, dmg, tipo) {
+  if (para.st === 'ko') return;
+  let d = dmg;
+  if (de.invis > 0) d *= 2;
+  if (para.st === 'block' && tipo !== 'raio' && tipo !== 'pedra' && tipo !== 'fogo') { d = Math.round(d * 0.2); para.en = Math.min(100, para.en + 3); }
+  else { para.st = 'hit'; para.stT = 0; para.vx = 0; para.x += (para.x >= de.x ? 1 : -1) * 12; }
+  para.hp -= d;
+  de.en = Math.min(100, de.en + 12);
+  para.en = Math.min(100, para.en + 8);
+  de.hits += 1;
+  st.fx.push({ tipo: 'dano', x: para.x, y: para.y - 70, t: 0.5, dmg: Math.round(d), feito: true });
+}
+function especial(st, f, o, i) {
+  if (f.key === 'brasa') st.proj.push({ tipo: 'fogo', dono: i, x: f.x + f.face * 30, y: f.y - 50, vx: f.face * 520, dmg: 14, t: 2 });
+  if (f.key === 'gelo') st.proj.push({ tipo: 'gelo', dono: i, x: f.x + f.face * 30, y: f.y - 50, vx: f.face * 420, dmg: 8, t: 2 });
+  if (f.key === 'tempestade') st.fx.push({ tipo: 'raio', dono: i, x: o.x, t: 0.45, dmg: 12 });
+  if (f.key === 'rocha') { st.fx.push({ tipo: 'tremor', dono: i, x: f.x, t: 0.25, feito: true }); if (Math.abs(o.x - f.x) < 220) st.fx.push({ tipo: 'golpe', dono: i, t: 0.25, x: o.x, alcance: 60, dmg: 16, g: 'terremoto', stun: 1.2 }); }
+  if (f.key === 'sombra') { f.x = Math.max(30, Math.min(LW - 30, o.x - o.face * 40)); f.face = o.x >= f.x ? 1 : -1; st.fx.push({ tipo: 'sombra', x: f.x, t: 0.4, feito: true }); st.fx.push({ tipo: 'golpe', dono: i, t: 0.15, x: o.x, alcance: 60, dmg: 13, g: 'sombra' }); }
+}
+function ultra(st, f, o, i) {
+  if (f.key === 'brasa') st.fx.push({ tipo: 'erupcao', dono: i, x: o.x, t: 0.6, dmg: 30 });
+  if (f.key === 'tempestade') for (let k = 0; k < 5; k++) st.fx.push({ tipo: 'raio', dono: i, x: 80 + k * 160 + (o.x % 50), t: 0.5 + k * 0.35, dmg: 10 });
+  if (f.key === 'rocha') for (let k = 0; k < 9; k++) st.fx.push({ tipo: 'pedra', dono: i, x: 60 + k * 85, t: 0.6 + (k % 3) * 0.4, dmg: 10 });
+  if (f.key === 'sombra') { f.invis = 4; st.fx.push({ tipo: 'eclipse', x: f.x, t: 0.6, feito: true }); }
+  if (f.key === 'gelo') { o.slow = 6; st.fx.push({ tipo: 'eragelo', x: o.x, t: 0.6, feito: true }); st.fx.push({ tipo: 'golpe', dono: i, t: 0.3, x: o.x, alcance: 80, dmg: 20, g: 'gelo' }); }
+}
+// golpes corpo a corpo entram pela fila de efeitos
+function aplicaGolpes(st) {
+  for (const e of st.fx) {
+    if (e.tipo !== 'golpe' || e.feito || e.t > 0) continue;
+    e.feito = true;
+    const de = st.f[e.dono], para = st.f[1 - e.dono];
+    if (de.st === 'hit' || de.st === 'ko') continue; // foi interrompido
+    const alcance = e.alcance;
+    const dist = Math.abs(para.x - e.x);
+    const alturaOk = e.g === 'terremoto' ? para.chao : Math.abs(para.y - de.y) < 70;
+    if (dist < alcance && alturaOk) { dano(st, de, para, e.dmg, e.g); if (e.stun) para.stun = Math.max(para.stun, e.stun); }
+  }
+}
+const extremos = (chain) => (chain.length ? [chain[0][0], chain[chain.length - 1][1]] : null);
+function jogadasPossiveis(hand, chain) {
+  const ex = extremos(chain);
+  if (!ex) return hand.map((_, i) => ({ i, lados: ['dir'] }));
+  const out = [];
+  hand.forEach(([a, b], i) => {
+    const lados = [];
+    if (a === ex[0] || b === ex[0]) lados.push('esq');
+    if (a === ex[1] || b === ex[1]) lados.push('dir');
+    if (lados.length) out.push({ i, lados });
+  });
+  return out;
+}
+
+module.exports = function setupArcade(io, { byId, socketsOf, BOTS_ROOM, broadcastChannels, rank, RANK }) {
+  const MAX_SEATS = 4;
+  const arcade = { id: 'bot-arcade', name: 'Arcade King', avatar: 'p:arcade', room: null, game: null, seats: [null, null, null, null], started: false, state: null, timer: null };
+  const pub = () => ({ id: arcade.id, name: arcade.name, avatar: arcade.avatar, room: arcade.room });
+  // O dominó manda a mão de cada um só para ele: o snapshot público esconde as mãos
+  const snapshot = (uid) => {
+    let state = null;
+    if (arcade.state && arcade.game === 'sinuca') state = { ...arcade.state, balls: arcade.state.balls.map((b) => ({ id: b.id, x: Math.round(b.x * 10) / 10, y: Math.round(b.y * 10) / 10, in: b.in })) };
+    if (arcade.state && arcade.game === 'domino') {
+      const st = arcade.state;
+      const seat = uid != null ? cadeira(uid) : -1;
+      const counts = {};
+      for (const c of st.ordem) counts[c] = st.hands[c].length;
+      state = { ordem: st.ordem, chain: st.chain, turn: st.turn, phase: st.phase, winner: st.winner, msg: st.msg, counts, monte: st.monte.length, lastMove: st.lastMove,
+        hand: seat >= 0 ? st.hands[seat] : null, jogadas: seat >= 0 && st.phase === 'play' && st.turn === seat ? jogadasPossiveis(st.hands[seat], st.chain) : [],
+        revel: st.phase === 'over' ? st.hands : null };
+    }
+    if (arcade.state && arcade.game === 'luta') {
+      const st = arcade.state;
+      state = { ordem: st.ordem, phase: st.phase, pick: st.pick, ready: st.ready, arena: st.arena, round: st.round, wins: st.wins, winner: st.winner, msg: st.msg, roundWinner: st.roundWinner,
+        frame: quadroLuta(st) };
+    }
+    if (arcade.state && arcade.game === 'cartas') {
+      const st = arcade.state;
+      const seat = uid != null ? cadeira(uid) : -1;
+      const counts = {};
+      for (const c of st.ordem) counts[c] = st.hands[c].length;
+      state = { ordem: st.ordem, top: st.pile[st.pile.length - 1], cor: st.cor, dir: st.dir, turn: st.turn, phase: st.phase, winner: st.winner, msg: st.msg, counts, deck: st.deck.length,
+        drew: st.drew, unoPend: st.unoPend ? st.unoPend.seat : null, uno: st.uno, lastMove: st.lastMove,
+        hand: seat >= 0 ? st.hands[seat] : null,
+        jogaveis: seat >= 0 && st.phase === 'play' && st.turn === seat ? st.hands[seat].map((c, i) => (podeJogarCarta(c, st) && (st.drew == null || i === st.hands[seat].length - 1) ? i : -1)).filter((i) => i >= 0) : [] };
+    }
+    return { id: arcade.id, name: arcade.name, avatar: arcade.avatar, room: arcade.room, game: arcade.game, seats: arcade.seats, started: arcade.started, state, W, H, R, POCKET_R, serverNow: Date.now(),
+      luta: arcade.game === 'luta' ? { lutadores: LUTADORES, arenas: ARENAS } : undefined };
+  };
+  const quadroLuta = (st) => (st.f ? { t: Math.round(st.t * 100) / 100, timer: Math.ceil(st.timer), cd: st.cdT ? Math.ceil(st.cdT) : 0, phase: st.phase,
+    f: st.f.map((f) => ({ k: f.key, x: Math.round(f.x), y: Math.round(f.y), hp: Math.max(0, Math.round(f.hp)), hpMax: f.hpMax, en: Math.round(f.en), face: f.face, st: f.st, frozen: f.frozen > 0, slow: f.slow > 0, burn: f.burn > 0, invis: f.invis > 0, stun: f.stun > 0 })),
+    proj: st.proj.map((p) => [p.tipo, Math.round(p.x), Math.round(p.y), p.vx > 0 ? 1 : -1]),
+    fx: st.fx.filter((e) => e.tipo !== 'golpe').map((e) => [e.tipo, Math.round(e.x), Math.round((e.t) * 100) / 100, e.dmg || 0, Math.round(e.y || 0)]) } : null);
+  function broadcast() {
+    if ((arcade.game === 'domino' || arcade.game === 'cartas') && arcade.state) {
+      for (const s of io.sockets.sockets.values()) s.emit('arcade', snapshot(s.data.user?.id));
+    } else io.emit('arcade', snapshot());
+  }
+  const naSala = (uid) => !!arcade.room && socketsOf(uid).some((s) => s.data.channel === arcade.room);
+  const cadeira = (uid) => arcade.seats.findIndex((s) => s && s.uid === uid);
+
+  function pararJogo() {
+    clearInterval(arcade.timer);
+    arcade.timer = null;
+    arcade.state = null;
+    arcade.game = null;
+    arcade.started = false;
+    arcade.seats = [null, null, null, null];
+  }
+  const sentados = () => arcade.seats.filter(Boolean).length;
+  function encerra(msgFn) {
+    const st = arcade.state;
+    if (!st || st.phase === 'over') return;
+    clearInterval(arcade.timer);
+    arcade.timer = null;
+    st.phase = 'over';
+    msgFn(st);
+  }
+  function voltarParaBots() {
+    pararJogo();
+    arcade.room = null;
+    broadcast();
+  }
+  // Quem saiu da sala perde a cadeira
+  function limpaCadeiras() {
+    let mudou = false;
+    arcade.seats = arcade.seats.map((s) => {
+      if (s && !naSala(s.uid)) { mudou = true; return null; }
+      return s;
+    });
+    if (mudou && arcade.state && arcade.state.phase !== 'over') saiuDaPartida();
+    return mudou;
+  }
+  // Alguém da partida saiu: tira da ordem; se sobrou um (ou um time), acabou
+  function saiuDaPartida() {
+    const st = arcade.state;
+    if (!st) return;
+    st.ordem = st.ordem.filter((c) => arcade.seats[c]);
+    if (arcade.game === 'sinuca') {
+      const times = new Set(st.ordem.map(timeDe));
+      if (times.size <= 1) encerra((s) => { s.winner = st.ordem.length ? timeDe(st.ordem[0]) : null; s.msg = st.ordem.length ? `${nomeTime(s.winner)} venceu (o adversário saiu).` : 'Todo mundo saiu da mesa.'; });
+      else if (!arcade.seats[st.turn]) { st.turn = st.ordem[0]; st.phase = st.phase === 'moving' ? 'moving' : 'aim'; }
+    } else if (arcade.game === 'luta') {
+      if (st.ordem.length <= 1) encerra((s) => { s.winner = st.ordem[0] ?? null; s.msg = st.ordem.length ? `${arcade.seats[st.ordem[0]].name} venceu (o rival saiu).` : 'Todo mundo saiu.'; });
+    } else if (arcade.game === 'domino' || arcade.game === 'cartas') {
+      if (st.ordem.length <= 1) encerra((s) => { s.winner = st.ordem[0] ?? null; s.msg = st.ordem.length ? `${arcade.seats[st.ordem[0]].name} venceu (os outros saíram).` : 'Todo mundo saiu.'; });
+      else if (!arcade.seats[st.turn]) st.turn = st.ordem[0];
+    }
+  }
+  const nomeTime = (t) => {
+    const ns = arcade.seats.map((s, i) => (s && timeDe(i) === t ? s.name : null)).filter(Boolean);
+    return ns.length > 1 ? `Dupla ${ns.join(' e ')}` : ns[0] || `Time ${t + 1}`;
+  }
+
+  // ---- regras da sinuca ----
+  function tacada(seat, angle, power) {
+    const st = arcade.state;
+    const cue = st.balls.find((b) => b.id === 0);
+    if (cue.in) { cue.in = false; cue.x = W * 0.25; cue.y = H / 2; }
+    const p = Math.max(80, Math.min(MAX_POWER, Number(power) || 0));
+    cue.vx = Math.cos(angle) * p;
+    cue.vy = Math.sin(angle) * p;
+    st.phase = 'moving';
+    st.inHand = false;
+    st.shots += 1;
+    st.msg = '';
+    const ev = { pocketed: [], firstHit: null, cushion: false };
+    const antes = st.balls.filter((b) => b.in).map((b) => b.id);
+    clearInterval(arcade.timer);
+    let ticks = 0;
+    arcade.timer = setInterval(() => {
+      // 120 passos/s de física, 24 quadros/s para a tela
+      for (let i = 0; i < 5; i++) passo(st.balls, ev);
+      ticks += 1;
+      if (!emMovimento(st.balls) || ticks > 24 * 18) {
+        clearInterval(arcade.timer);
+        arcade.timer = null;
+        for (const b of st.balls) { b.vx = 0; b.vy = 0; }
+        resolveTacada(seat, ev, antes);
+        broadcast();
+        return;
+      }
+      io.to('arcade-view').volatile.emit('arcade-balls', st.balls.filter((b) => !b.in).map((b) => [b.id, Math.round(b.x * 10) / 10, Math.round(b.y * 10) / 10]));
+    }, 1000 / 24);
+  }
+
+  function resolveTacada(seat, ev, antes) {
+    const st = arcade.state;
+    const time = timeDe(seat);
+    const outroTime = 1 - time;
+    const nome = (i) => arcade.seats[i]?.name || 'Jogador';
+    const novas = ev.pocketed.filter((id) => !antes.includes(id));
+    const brancaCaiu = novas.includes(0);
+    const oitoCaiu = novas.includes(8);
+    const meuGrupo = st.groups[time];
+    const minhasFora = (g) => st.balls.filter((b) => grupoDe(b.id) === g && !b.in).length;
+    const proxAdv = proximaDoOutroTime(st, seat);
+    const prox = proximaCadeira(st, seat);
+
+    if (oitoCaiu) {
+      const limpou = meuGrupo && minhasFora(meuGrupo) === 0;
+      st.phase = 'over';
+      if (limpou && !brancaCaiu) { st.winner = time; st.msg = `🎱 ${nome(seat)} encaçapou a 8. ${nomeTime(time)} venceu!`; }
+      else { st.winner = outroTime; st.msg = `💀 ${nome(seat)} derrubou a 8 antes da hora. ${nomeTime(outroTime)} venceu!`; }
+      return;
+    }
+    if (!st.groups[0] && !st.groups[1]) {
+      const primeira = novas.find((id) => id !== 0 && id !== 8);
+      if (primeira != null && !brancaCaiu) {
+        st.groups[time] = grupoDe(primeira);
+        st.groups[outroTime] = grupoDe(primeira) === 'lisa' ? 'listrada' : 'lisa';
+      }
+    }
+    let falta = null;
+    if (brancaCaiu) falta = 'A branca caiu';
+    else if (ev.firstHit == null) falta = 'Não tocou em nenhuma bola';
+    else if (st.groups[time]) {
+      const g = grupoDe(ev.firstHit);
+      const precisaOito = minhasFora(st.groups[time]) === 0;
+      if (precisaOito ? g !== 'oito' : g !== st.groups[time]) falta = `Tocou primeiro numa bola ${g === 'oito' ? 'oito' : g}`;
+    } else if (grupoDe(ev.firstHit) === 'oito' && st.shots > 1) falta = 'Tocou primeiro na 8';
+    const encaçapouMinha = novas.some((id) => id !== 0 && id !== 8 && (!st.groups[time] || grupoDe(id) === st.groups[time]));
+    if (falta) {
+      if (brancaCaiu) { const cue = st.balls.find((b) => b.id === 0); cue.in = false; cue.x = W * 0.25; cue.y = H / 2; }
+      st.turn = proxAdv;
+      st.inHand = true;
+      st.msg = `Falta de ${nome(seat)}: ${falta}. ${nome(proxAdv)} joga com a bola na mão.`;
+    } else if (encaçapouMinha) {
+      st.turn = seat;
+      st.msg = `${nome(seat)} encaçapou e continua.`;
+    } else {
+      st.turn = prox;
+      st.msg = `Vez de ${nome(prox)}.`;
+    }
+    st.phase = 'aim';
+    const g = st.groups[timeDe(st.turn)];
+    if (g) {
+      const resta = minhasFora(g);
+      st.msg += resta === 0 ? ' Agora é a 8!' : ` (${g === 'lisa' ? 'lisas' : 'listradas'}, faltam ${resta})`;
+    }
+  }
+
+  // ---- luta: laço de 30 quadros/s ----
+  function comecaLuta() {
+    const st = arcade.state;
+    iniciaRound(st);
+    clearInterval(arcade.timer);
+    let last = Date.now();
+    arcade.timer = setInterval(() => {
+      const now = Date.now();
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      const st2 = arcade.state;
+      if (!st2 || arcade.game !== 'luta') { clearInterval(arcade.timer); arcade.timer = null; return; }
+      if (st2.phase === 'roundEnd') {
+        st2.cdT -= dt;
+        if (st2.cdT <= 0) {
+          if (st2.wins[0] >= 2 || st2.wins[1] >= 2 || st2.round >= 5) {
+            st2.phase = 'over';
+            const v = st2.wins[0] === st2.wins[1] ? null : st2.wins[0] > st2.wins[1] ? 0 : 1;
+            st2.winner = v == null ? null : st2.ordem[v];
+            st2.msg = v == null ? 'Empate!' : `🏆 ${arcade.seats[st2.ordem[v]]?.name || 'Alguém'} venceu a luta!`;
+            clearInterval(arcade.timer); arcade.timer = null;
+            broadcast();
+            return;
+          }
+          st2.round += 1;
+          iniciaRound(st2);
+          broadcast();
+        }
+        io.to('arcade-view').volatile.emit('arcade-luta', quadroLuta(st2));
+        return;
+      }
+      const fase = st2.phase;
+      const acabou = passoLuta(st2, dt);
+      aplicaGolpes(st2);
+      if (st2.phase !== fase) {
+        if (st2.phase === 'roundEnd') {
+          const rw = st2.roundWinner;
+          st2.msg = rw < 0 ? 'Empate no round!' : `${arcade.seats[st2.ordem[rw]]?.name || 'Alguém'} venceu o round ${st2.round}!`;
+        }
+        broadcast();
+      }
+      io.to('arcade-view').volatile.emit('arcade-luta', quadroLuta(st2));
+      if (acabou) broadcast();
+    }, 1000 / 30);
+  }
+
+  // ---- cartas ----
+  function proximoCartas(st, de, pulos = 0) {
+    let c = de;
+    for (let k = 0; k <= pulos; k++) {
+      const i = st.ordem.indexOf(c);
+      c = st.ordem[(i + st.dir + st.ordem.length) % st.ordem.length];
+    }
+    return c;
+  }
+  function jogaCarta(seat, idx, cor) {
+    const st = arcade.state;
+    const nome = (i) => arcade.seats[i]?.name || 'Jogador';
+    const hand = st.hands[seat];
+    const carta = hand[idx];
+    if (!carta) return 'Carta inválida.';
+    if (!podeJogarCarta(carta, st)) return 'Essa carta não combina com a mesa.';
+    if (st.drew != null && idx !== hand.length - 1) return 'Depois de comprar, só dá para jogar a carta comprada.';
+    if (carta.c === 'k' && !['r', 'g', 'b', 'y'].includes(cor)) return 'Escolha a cor.';
+    hand.splice(idx, 1);
+    st.pile.push(carta);
+    st.cor = carta.c === 'k' ? cor : carta.c;
+    st.drew = null;
+    st.lastMove = { seat, carta, cor: st.cor };
+    // quem estava pendente de UNO e jogou de novo? já era: o castigo só vale se outro pegar antes
+    if (st.unoPend && st.unoPend.seat === seat) st.unoPend = null;
+    if (!hand.length) {
+      st.phase = 'over';
+      st.winner = seat;
+      st.msg = `🏆 ${nome(seat)} bateu e venceu!`;
+      return null;
+    }
+    if (hand.length === 1 && !st.uno[seat]) st.unoPend = { seat, until: Date.now() + 15000 };
+    if (hand.length > 1) st.uno[seat] = false;
+    let prox;
+    let extra = '';
+    if (carta.v === 'inverte') {
+      st.dir = -st.dir;
+      prox = st.ordem.length === 2 ? seat : proximoCartas(st, seat); // com 2, inverte = pula
+      extra = st.ordem.length === 2 ? ' Inverteu: joga de novo.' : ' Inverteu o sentido.';
+    } else if (carta.v === 'pula') {
+      prox = proximoCartas(st, seat, 1);
+      extra = ` ${nome(proximoCartas(st, seat))} foi pulado.`;
+    } else if (carta.v === '+2' || carta.v === '+4') {
+      const alvo = proximoCartas(st, seat);
+      compraCartas(st, alvo, carta.v === '+2' ? 2 : 4);
+      st.uno[alvo] = false;
+      prox = proximoCartas(st, seat, 1);
+      extra = ` ${nome(alvo)} comprou ${carta.v === '+2' ? 2 : 4} e perdeu a vez.`;
+    } else prox = proximoCartas(st, seat);
+    st.turn = prox;
+    st.msg = `${nome(seat)} jogou.${extra} Vez de ${nome(prox)}.`;
+    return null;
+  }
+  function compraVez(seat) {
+    const st = arcade.state;
+    const nome = (i) => arcade.seats[i]?.name || 'Jogador';
+    if (st.drew === seat) {
+      // já comprou e não quer/pode jogar: passa
+      st.drew = null;
+      st.turn = proximoCartas(st, seat);
+      st.msg = `${nome(seat)} passou. Vez de ${nome(st.turn)}.`;
+      return null;
+    }
+    const antes = st.hands[seat].length;
+    compraCartas(st, seat, 1);
+    if (st.hands[seat].length === antes) return 'Acabaram as cartas do monte.';
+    st.uno[seat] = false;
+    const nova = st.hands[seat][st.hands[seat].length - 1];
+    if (podeJogarCarta(nova, st)) { st.drew = seat; st.msg = `${nome(seat)} comprou uma carta e pode jogá-la (ou passar).`; }
+    else { st.turn = proximoCartas(st, seat); st.msg = `${nome(seat)} comprou e passou. Vez de ${nome(st.turn)}.`; }
+    return null;
+  }
+  function gritaUno(seat) {
+    const st = arcade.state;
+    if (st.hands[seat].length > 2) return 'Só dá para gritar UNO com 1 carta (ou prestes a ficar com 1).';
+    st.uno[seat] = true;
+    if (st.unoPend && st.unoPend.seat === seat) st.unoPend = null;
+    st.msg = `${arcade.seats[seat].name}: UNO! 🗣️`;
+    return null;
+  }
+  function pegouUno(seat) {
+    const st = arcade.state;
+    const p = st.unoPend;
+    if (!p || p.seat === seat) return 'Ninguém para pegar agora.';
+    if (st.hands[p.seat].length !== 1) { st.unoPend = null; return 'Já passou.'; }
+    compraCartas(st, p.seat, 2);
+    st.unoPend = null;
+    st.msg = `😅 ${arcade.seats[p.seat].name} esqueceu de gritar UNO e comprou 2 (${arcade.seats[seat].name} pegou).`;
+    return null;
+  }
+
+  // ---- dominó ----
+  function jogaDomino(seat, idx, lado) {
+    const st = arcade.state;
+    const nome = (i) => arcade.seats[i]?.name || 'Jogador';
+    const hand = st.hands[seat];
+    const pos = jogadasPossiveis(hand, st.chain).find((j) => j.i === idx);
+    if (!pos) return 'Essa pedra não encaixa.';
+    const l = pos.lados.includes(lado) ? lado : pos.lados[0];
+    let [a, b] = hand[idx];
+    if (!st.chain.length) st.chain.push([a, b]);
+    else if (l === 'esq') { const e = st.chain[0][0]; if (b !== e) [a, b] = [b, a]; st.chain.unshift([a, b]); }
+    else { const d = st.chain[st.chain.length - 1][1]; if (a !== d) [a, b] = [b, a]; st.chain.push([a, b]); }
+    hand.splice(idx, 1);
+    st.passes = 0;
+    st.lastMove = { seat, peca: [a, b], lado: l };
+    if (!hand.length) {
+      st.phase = 'over';
+      st.winner = seat;
+      st.msg = `🏆 ${nome(seat)} bateu!`;
+      return null;
+    }
+    st.turn = proximaCadeira(st, seat);
+    st.msg = `Vez de ${nome(st.turn)}.`;
+    return null;
+  }
+  function passaDomino(seat) {
+    const st = arcade.state;
+    const nome = (i) => arcade.seats[i]?.name || 'Jogador';
+    if (jogadasPossiveis(st.hands[seat], st.chain).length) return 'Você tem pedra para jogar.';
+    if (st.monte.length) {
+      st.hands[seat].push(st.monte.pop());
+      st.msg = `${nome(seat)} comprou do monte.`;
+      return null; // continua na vez dele (pode jogar ou comprar de novo)
+    }
+    st.passes += 1;
+    st.lastMove = { seat, passou: true };
+    if (st.passes >= st.ordem.length) {
+      // jogo fechado: menos pontos ganha
+      const soma = (c) => st.hands[c].reduce((t, [a, b]) => t + a + b, 0);
+      let best = null;
+      for (const c of st.ordem) if (best == null || soma(c) < soma(best)) best = c;
+      st.phase = 'over';
+      st.winner = best;
+      st.msg = `🔒 Jogo fechado! ${nome(best)} venceu com ${soma(best)} ponto(s) na mão.`;
+      return null;
+    }
+    st.turn = proximaCadeira(st, seat);
+    st.msg = `${nome(seat)} passou. Vez de ${nome(st.turn)}.`;
+    return null;
+  }
+
+  io.on('connection', (socket) => {
+    const me = () => socket.data.user;
+    const isMod = () => RANK[me().role] >= RANK.mod;
+    socket.emit('arcade', snapshot(me().id));
+    const pode = () => isMod() || naSala(me().id);
+    // A tela do jogo avisa que quer receber as bolas em movimento
+    socket.on('arcade-hello', () => socket.join('arcade-view'));
+
+    socket.on('arcade-move', ({ to } = {}, ack = () => {}) => {
+      if (to === BOTS_ROOM || to == null) {
+        if (!pode() && arcade.room) return ack({ error: 'Só quem está na chamada com o Arcade pode devolver ele.' });
+        const from = arcade.room;
+        voltarParaBots();
+        ack({ ok: true });
+        broadcastChannels();
+        if (from) io.to(from).emit('dj-info', { text: `🕹️ ${me().name} devolveu o Arcade King para a sala Bots.` });
+        return;
+      }
+      const ch = byId(to);
+      if (!ch) return ack({ error: 'Sala não encontrada.' });
+      if (socket.data.channel !== ch.id && !naSala(me().id) && !isMod()) return ack({ error: 'Entre na chamada primeiro e puxe o Arcade para ela.' });
+      const from = arcade.room;
+      if (from !== ch.id) pararJogo();
+      arcade.room = ch.id;
+      ack({ ok: true });
+      broadcastChannels();
+      broadcast();
+      if (from && from !== ch.id) io.to(from).emit('dj-info', { text: `🕹️ ${me().name} levou o Arcade King para a sala ${ch.name}.` });
+      socket.to(ch.id).emit('dj-info', { text: `🕹️ ${me().name} chamou o Arcade King para a chamada.` });
+    });
+
+    // Escolher o jogo (por enquanto só sinuca) e sentar/levantar
+    socket.on('arcade-game', ({ game } = {}, ack = () => {}) => {
+      if (!pode()) return ack({ error: 'Puxe o Arcade King para a sua chamada primeiro.' });
+      if (game == null) { pararJogo(); ack({ ok: true }); broadcast(); return; } // volta para a escolha de jogo
+      if (!['sinuca', 'domino', 'cartas', 'luta'].includes(game)) return ack({ error: 'Jogo desconhecido.' });
+      pararJogo();
+      arcade.game = game;
+      ack({ ok: true });
+      broadcast();
+    });
+    // Começar a partida (qualquer um sentado, com 2+ sentados)
+    socket.on('arcade-start', (_d, ack = () => {}) => {
+      if (!arcade.game) return ack({ error: 'Escolha um jogo.' });
+      limpaCadeiras();
+      if (cadeira(me().id) < 0 && !isMod()) return ack({ error: 'Sente na mesa para começar.' });
+      if (sentados() < 2) return ack({ error: 'Precisa de pelo menos 2 jogadores.' });
+      if (arcade.state && arcade.state.phase !== 'over') return ack({ error: 'A partida já está rolando.' });
+      arcade.started = true;
+      arcade.state = arcade.game === 'sinuca' ? novoJogo(arcade.seats) : arcade.game === 'cartas' ? novoCartas(arcade.seats) : arcade.game === 'luta' ? novaLuta(arcade.seats) : novoDomino(arcade.seats);
+      if (arcade.game === 'domino') arcade.state.msg = arcade.state.msg.replace('%NOME%', arcade.seats[arcade.state.turn].name);
+      ack({ ok: true });
+      broadcast();
+    });
+    socket.on('arcade-sit', (_d, ack = () => {}) => {
+      if (!naSala(me().id)) return ack({ error: 'Entre na chamada com o Arcade para jogar.' });
+      if (!arcade.game) return ack({ error: 'Escolha um jogo primeiro.' });
+      limpaCadeiras();
+      if (cadeira(me().id) >= 0) return ack({ ok: true });
+      if (arcade.state && arcade.state.phase !== 'over') return ack({ error: 'A partida já começou. Espere acabar para entrar.' });
+      const livre = arcade.seats.findIndex((s) => !s);
+      if (livre < 0) return ack({ error: 'A mesa está cheia (4 jogadores).' });
+      if (arcade.game === 'luta' && sentados() >= 2) return ack({ error: 'A luta é 1x1: as duas cadeiras já estão ocupadas.' });
+      arcade.seats[livre] = { uid: me().id, name: me().name, avatar: me().avatar };
+      ack({ ok: true });
+      broadcast();
+    });
+    socket.on('arcade-stand', (_d, ack = () => {}) => {
+      const i = cadeira(me().id);
+      if (i < 0) return ack({ ok: true });
+      arcade.seats[i] = null;
+      if (arcade.state && arcade.state.phase !== 'over') saiuDaPartida();
+      ack({ ok: true });
+      broadcast();
+    });
+    socket.on('arcade-reset', (_d, ack = () => {}) => {
+      if (!pode()) return ack({ error: 'Só quem está na chamada pode reiniciar.' });
+      if (!arcade.game) return ack({ error: 'Escolha um jogo.' });
+      clearInterval(arcade.timer);
+      arcade.timer = null;
+      limpaCadeiras();
+      if (sentados() < 2) { arcade.state = null; arcade.started = false; ack({ ok: true }); broadcast(); return; }
+      arcade.state = arcade.game === 'sinuca' ? novoJogo(arcade.seats) : arcade.game === 'cartas' ? novoCartas(arcade.seats) : arcade.game === 'luta' ? novaLuta(arcade.seats) : novoDomino(arcade.seats);
+      if (arcade.game === 'domino') arcade.state.msg = arcade.state.msg.replace('%NOME%', arcade.seats[arcade.state.turn].name);
+      ack({ ok: true });
+      broadcast();
+    });
+    // Luta: escolhas e botões
+    socket.on('arcade-luta', ({ action, pick, arena, inp } = {}, ack = () => {}) => {
+      const st = arcade.state;
+      if (!st || arcade.game !== 'luta') return ack({ error: 'Sem jogo.' });
+      const seat = cadeira(me().id);
+      const idx = st.ordem.indexOf(seat);
+      if (idx < 0) return ack({ error: 'Você está só assistindo (a luta é 1x1).' });
+      if (action === 'pick') {
+        if (st.phase !== 'select') return ack({ error: 'A luta já começou.' });
+        if (!LUTADORES[pick]) return ack({ error: 'Lutador desconhecido.' });
+        st.pick[seat] = pick; st.ready[seat] = false;
+      } else if (action === 'arena') {
+        if (st.phase !== 'select') return ack({ error: 'A luta já começou.' });
+        if (idx !== 0) return ack({ error: 'Quem está na primeira cadeira escolhe a arena.' });
+        if (!ARENAS[arena]) return ack({ error: 'Arena desconhecida.' });
+        st.arena = arena;
+      } else if (action === 'ready') {
+        if (st.phase !== 'select') return ack({ error: 'A luta já começou.' });
+        if (!st.pick[seat]) return ack({ error: 'Escolha um lutador primeiro.' });
+        st.ready[seat] = !st.ready[seat];
+        if (st.ordem.length === 2 && st.ordem.every((c) => st.pick[c] && st.ready[c])) {
+          if (!st.arena) st.arena = Object.keys(ARENAS)[Math.floor(Math.random() * 4)];
+          st.msg = 'Round 1';
+          comecaLuta();
+        }
+      } else if (action === 'input') {
+        if (st.phase !== 'fight') return ack({ ok: true });
+        st.inputs[idx] = inp && typeof inp === 'object' ? inp : {};
+        return ack({ ok: true }); // sem broadcast: o laço manda os quadros
+      } else return ack({ error: 'Ação desconhecida.' });
+      ack({ ok: true });
+      broadcast();
+    });
+    // Cartas: { action: 'play'|'draw'|'uno'|'pegou', i, cor }
+    socket.on('arcade-cartas', ({ action, i, cor } = {}, ack = () => {}) => {
+      const st = arcade.state;
+      if (!st || arcade.game !== 'cartas') return ack({ error: 'Sem jogo.' });
+      limpaCadeiras();
+      const seat = cadeira(me().id);
+      if (seat < 0) return ack({ error: 'Você está só assistindo.' });
+      if (st.phase !== 'play') return ack({ error: 'A partida acabou.' });
+      let err;
+      if (action === 'uno') err = gritaUno(seat);
+      else if (action === 'pegou') err = pegouUno(seat);
+      else if (st.turn !== seat) err = 'Não é a sua vez.';
+      else if (action === 'draw') err = compraVez(seat);
+      else err = jogaCarta(seat, Number(i), cor);
+      if (err) return ack({ error: err });
+      ack({ ok: true });
+      broadcast();
+    });
+    // Dominó: jogar { i, lado } e passar/comprar
+    socket.on('arcade-domino', ({ action, i, lado } = {}, ack = () => {}) => {
+      const st = arcade.state;
+      if (!st || arcade.game !== 'domino') return ack({ error: 'Sem jogo.' });
+      limpaCadeiras();
+      const seat = cadeira(me().id);
+      if (seat < 0) return ack({ error: 'Você está só assistindo.' });
+      if (st.phase !== 'play') return ack({ error: 'A partida acabou.' });
+      if (st.turn !== seat) return ack({ error: 'Não é a sua vez.' });
+      const err = action === 'pass' ? passaDomino(seat) : jogaDomino(seat, Number(i), lado === 'esq' ? 'esq' : 'dir');
+      if (err) return ack({ error: err });
+      ack({ ok: true });
+      broadcast();
+    });
+    // Tacada: { angle (rad), power (0..1) }
+    socket.on('arcade-shot', ({ angle, power } = {}, ack = () => {}) => {
+      const st = arcade.state;
+      if (!st || arcade.game !== 'sinuca') return ack({ error: 'Sem jogo.' });
+      limpaCadeiras();
+      const i = cadeira(me().id);
+      if (i < 0) return ack({ error: 'Você está só assistindo. Toque em "Jogar" para sentar.' });
+      if (!st.ordem.includes(i)) return ack({ error: 'Você entrou depois: espere a próxima partida.' });
+      if (st.phase !== 'aim') return ack({ error: st.phase === 'over' ? 'A partida acabou.' : 'As bolas ainda estão rolando.' });
+      if (st.turn !== i) return ack({ error: 'Não é a sua vez.' });
+      const a = Number(angle);
+      if (!Number.isFinite(a)) return ack({ error: 'Tacada inválida.' });
+      tacada(i, a, Math.max(0.05, Math.min(1, Number(power) || 0.5)) * MAX_POWER);
+      ack({ ok: true });
+      broadcast();
+    });
+    // Bola na mão: { x, y }
+    socket.on('arcade-place', ({ x, y } = {}, ack = () => {}) => {
+      const st = arcade.state;
+      if (!st || arcade.game !== 'sinuca') return ack({ error: 'Sem jogo.' });
+      const i = cadeira(me().id);
+      if (i < 0 || st.turn !== i || st.phase !== 'aim' || !st.inHand) return ack({ error: 'Agora não dá para mover a branca.' });
+      const cue = st.balls.find((b) => b.id === 0);
+      const nx = Math.max(R, Math.min(W - R, Number(x) || 0));
+      const ny = Math.max(R, Math.min(H - R, Number(y) || 0));
+      if (st.balls.some((b) => b.id !== 0 && !b.in && Math.hypot(b.x - nx, b.y - ny) < 2 * R + 1)) return ack({ error: 'Tem bola aí.' });
+      cue.x = nx; cue.y = ny; cue.in = false;
+      ack({ ok: true });
+      broadcast();
+    });
+  });
+
+  return {
+    pub,
+    onLeave(chId, usersLeft) {
+      if (arcade.room !== chId) return;
+      if (usersLeft === 0) { voltarParaBots(); return; }
+      if (limpaCadeiras()) broadcast();
+    },
+    onChannelDeleted(chId) { if (arcade.room === chId) voltarParaBots(); },
+  };
+};
