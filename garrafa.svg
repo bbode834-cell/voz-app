@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 240">
+<defs>
+<linearGradient id="vd" x1="0" x2="1"><stop offset="0" stop-color="#3b1d06"/><stop offset=".22" stop-color="#7a3d0c"/><stop offset=".38" stop-color="#b8661a"/><stop offset=".55" stop-color="#8a4510"/><stop offset="1" stop-color="#2e1604"/></linearGradient>
+<linearGradient id="rt" x1="0" x2="1"><stop offset="0" stop-color="#b8860b"/><stop offset=".4" stop-color="#ffe9a0"/><stop offset=".6" stop-color="#f5c542"/><stop offset="1" stop-color="#8a6508"/></linearGradient>
+<linearGradient id="tp" x1="0" x2="1"><stop offset="0" stop-color="#8a8f98"/><stop offset=".45" stop-color="#f1f3f6"/><stop offset="1" stop-color="#6b7079"/></linearGradient>
+</defs>
+<path d="M30 14 h20 v44 c0 14 22 26 22 52 v112 c0 8 -6 14 -14 14 h-36 c-8 0 -14 -6 -14 -14 v-112 c0 -26 22 -38 22 -52 z" fill="url(#vd)"/>
+<rect x="27" y="4" width="26" height="14" rx="3" fill="url(#tp)"/>
+<path d="M27 15 h26" stroke="#555" stroke-width="2" stroke-dasharray="3 2"/>
+<rect x="30" y="34" width="20" height="16" fill="url(#rt)"/>
+<path d="M8 128 h64 v66 h-64 z" fill="url(#rt)"/>
+<path d="M8 134 h64 M8 188 h64" stroke="#7a1010" stroke-width="3"/>
+<text x="40" y="160" font-family="Arial Black,Arial,sans-serif" font-weight="900" font-size="15" text-anchor="middle" fill="#7a1010">KING</text>
+<text x="40" y="178" font-family="Arial,sans-serif" font-weight="700" font-size="9" text-anchor="middle" fill="#3b1d06">BEER</text>
+<path d="M22 118 c-2 30 -2 80 0 104" stroke="#fff" stroke-opacity=".28" stroke-width="5" fill="none" stroke-linecap="round"/>
+<path d="M36 20 v30" stroke="#fff" stroke-opacity=".3" stroke-width="3" stroke-linecap="round"/>
+</svg>

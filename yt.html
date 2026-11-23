@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>DJ King · YouTube</title>
+<style>html,body{margin:0;padding:0;background:#000;height:100%;overflow:hidden}#p{position:absolute;inset:0;width:100%;height:100%}</style>
+</head>
+<body>
+<div id="p"></div>
+<script>
+// Player oficial do YouTube usado pelo app King Launcher (o app manda comandos por cmd() e recebe avisos pelo canal "King").
+let p = null, ready = false;
+function send(o) { try { if (window.King) King.postMessage(JSON.stringify(o)); } catch (e) {} }
+function info() {
+  try {
+    const d = p.getVideoData() || {}; const pl = p.getPlaylist() || null; const temLista = !!(pl && pl.length);
+    return { idx: temLista ? p.getPlaylistIndex() : 0, count: temLista ? pl.length : 1, title: d.title || '', author: d.author || '', video: d.video_id || '',
+      t: p.getCurrentTime() || 0, dur: p.getDuration() || 0, state: p.getPlayerState() };
+  } catch (e) { return {}; }
+}
+window.onYouTubeIframeAPIReady = function () {
+  p = new YT.Player('p', {
+    width: '100%', height: '100%',
+    playerVars: { playsinline: 1, controls: 0, rel: 0, iv_load_policy: 3, hl: 'pt', origin: location.origin, enablejsapi: 1 },
+    events: {
+      onReady: () => { ready = true; send({ ev: 'ready' }); },
+      onStateChange: (e) => send({ ev: 'state', ...info(), state: e.data }),
+      onError: (e) => send({ ev: 'error', code: e.data, ...info() }),
+    },
+  });
+};
+window.cmd = function (json) {
+  try {
+    const c = typeof json === 'string' ? JSON.parse(json) : json;
+    if (!ready) return 'notready';
+    if (c.op === 'playlist') p.loadPlaylist({ listType: 'playlist', list: c.list, index: c.index || 0, startSeconds: c.start || 0 });
+    else if (c.op === 'video') p.loadVideoById({ videoId: c.video, startSeconds: c.start || 0 });
+    else if (c.op === 'at') p.playVideoAt(c.index);
+    else if (c.op === 'play') p.playVideo();
+    else if (c.op === 'pause') p.pauseVideo();
+    else if (c.op === 'stop') p.stopVideo();
+    else if (c.op === 'seek') p.seekTo(c.t, true);
+    else if (c.op === 'vol') { p.setVolume(c.v); if (c.muted) p.mute(); else p.unMute(); }
+    return 'ok';
+  } catch (e) { return 'err ' + e; }
+};
+setInterval(() => { if (ready) send({ ev: 'tick', ...info() }); }, 1000);
+const s = document.createElement('script'); s.src = 'https://www.youtube.com/iframe_api'; document.head.appendChild(s);
+</script>
+</body>
+</html>

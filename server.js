@@ -318,6 +318,7 @@ app.post('/api/clip', express.raw({ type: () => true, limit: CLIP_MAX }), async 
     if (dados.length > CLIP_STORE_MAX) return erro(res, 413, 'O clipe ficou grande demais. Tente um clipe mais curto.');
     const id = crypto.randomBytes(12).toString('base64url');
     await banco.addImg({ id, dono: u.id, mime: mp4 ? 'video/mp4' : 'video/webm', dados });
+    mediaCacheGuarda(id, { mime: mp4 ? 'video/mp4' : 'video/webm', dados });
     // Vai para o chat da sala, como se a pessoa tivesse mandado
     const ch = byId(sala);
     const live = [...io.sockets.sockets.values()].find((s) => s.data.channel === sala && s.data.user?.id === u.id);
@@ -335,11 +336,34 @@ app.post('/api/clip', express.raw({ type: () => true, limit: CLIP_MAX }), async 
     erro(res, 500, 'Não consegui salvar o clipe.');
   }
 });
+// Cache de fotos/áudios/clipes em memória: cada arquivo é lido do banco uma vez só
+// (poupa o limite de tráfego do banco grátis). Guarda até 120 MB; tira os mais antigos.
+const MEDIA_CACHE_MAX = 120 * 1024 * 1024; // o Render grátis tem 512 MB de memória
+const mediaCache = new Map(); // id -> { mime, dados }
+let mediaCacheBytes = 0;
+function mediaCacheGuarda(id, im) {
+  if (!im || im.dados.length > 60 * 1024 * 1024) return;
+  if (mediaCache.has(id)) return;
+  mediaCache.set(id, im);
+  mediaCacheBytes += im.dados.length;
+  for (const [k, v] of mediaCache) {
+    if (mediaCacheBytes <= MEDIA_CACHE_MAX) break;
+    mediaCache.delete(k);
+    mediaCacheBytes -= v.dados.length;
+  }
+}
+async function pegaMedia(id) {
+  const c = mediaCache.get(id);
+  if (c) { mediaCache.delete(id); mediaCache.set(id, c); return c; } // mais usado vai para o fim
+  const im = await banco.getImg(id);
+  if (im) mediaCacheGuarda(id, { mime: im.mime, dados: im.dados });
+  return im;
+}
 app.get('/img/:id', async (req, res) => {
   try {
     const id = String(req.params.id || '');
     if (!/^[A-Za-z0-9_-]{16}$/.test(id)) return res.sendStatus(404);
-    const im = await banco.getImg(id);
+    const im = await pegaMedia(id);
     if (!im) return res.sendStatus(404);
     res.set('Content-Type', im.mime);
     res.set('Cache-Control', 'private, max-age=31536000, immutable');
@@ -463,7 +487,9 @@ app.get('/api/gifs', async (req, res) => {
 });
 
 const server = http.createServer(app);
-const io = new Server(server, { maxHttpBufferSize: 200_000, cors: { origin: '*' } });
+// pingTimeout maior: a internet do celular oscila (troca de Wi-Fi para 4G, tela apagada);
+// com 20 s (padrão) a pessoa caía da sala à toa. Agora espera até 60 s antes de derrubar.
+const io = new Server(server, { maxHttpBufferSize: 200_000, cors: { origin: '*' }, pingTimeout: 60_000, pingInterval: 25_000 });
 
 // ---------- Canais ----------
 // Canais (salas) ficam guardados no banco: o dono e os moderadores criam, renomeiam e apagam.

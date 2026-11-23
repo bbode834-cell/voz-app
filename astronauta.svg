@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0f172a"/><stop offset="1" stop-color="#1e3a8a"/></linearGradient><radialGradient id="shade" cx="70%" cy="80%" r="70%"><stop offset="0" stop-color="#000" stop-opacity=".6"/><stop offset="1" stop-color="#000" stop-opacity="0"/></radialGradient></defs><rect width="128" height="128" fill="url(#bg)"/><circle cx="20" cy="22" r="1.5" fill="#fff"/><circle cx="108" cy="30" r="1.2" fill="#fff"/><circle cx="100" cy="108" r="1.5" fill="#fff"/><circle cx="16" cy="96" r="1" fill="#fff"/>
+<rect x="18" y="58" width="10" height="20" rx="4" fill="#cbd5e1"/><rect x="100" y="58" width="10" height="20" rx="4" fill="#cbd5e1"/>
+<circle cx="64" cy="68" r="40" fill="#f8fafc"/>
+<rect x="36" y="46" width="56" height="42" rx="20" fill="#1e293b"/>
+<path d="M44 58 q6 -8 16 -8" fill="none" stroke="#7dd3fc" stroke-width="4" stroke-linecap="round" opacity=".8"/>
+<circle cx="80" cy="76" r="3" fill="#7dd3fc" opacity=".6"/></svg>

@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Arcade King</title>
+<style>
+  :root { --bg: #15171c; --panel: #23262d; --text: #dfe2e8; --muted: #9aa0ab; --accent: #f5b82e; --green: #23a55a; --red: #da373c; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; touch-action: none; }
+  #app { display: flex; flex-direction: column; height: 100%; }
+  #top { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 13px; flex-wrap: wrap; }
+  .seat { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 8px; background: var(--panel); min-width: 0; }
+  .seat.turn { outline: 2px solid var(--accent); }
+  .seat .dot { width: 12px; height: 12px; border-radius: 50%; background: #fff; border: 2px solid #999; flex: none; }
+  .seat .dot.listrada { background: linear-gradient(#fff 30%, #e33 30%, #e33 70%, #fff 70%); }
+  .seat .dot.lisa { background: #e33; }
+  .seat b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 110px; }
+  .vs { color: var(--muted); }
+  #msg { flex: 1; min-width: 120px; color: var(--muted); font-size: 12px; }
+  button { font: inherit; border: 0; border-radius: 8px; padding: 6px 12px; background: var(--panel); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); color: #1a1300; font-weight: 700; }
+  button.danger { background: var(--red); color: #fff; }
+  #stage { flex: 1; display: grid; place-items: center; padding: 6px; min-height: 0; }
+  canvas { display: block; border-radius: 10px; touch-action: none; max-width: 100%; max-height: 100%; }
+  #pick { position: absolute; inset: 0; display: grid; place-items: center; background: var(--bg); }
+  .card { background: var(--panel); border-radius: 14px; padding: 18px 22px; text-align: center; width: min(320px, 90vw); }
+  .card h2 { margin: 0 0 6px; }
+  .card p { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+  .hide { display: none !important; }
+  #power { position: absolute; left: 10px; bottom: 10px; width: 120px; height: 10px; border-radius: 5px; background: #333; overflow: hidden; display: none; }
+  #power i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--green), var(--accent), var(--red)); }
+  #seats { display: flex; gap: 6px; flex-wrap: wrap; }
+  .seat.t0 { border-left: 3px solid #3b82f6; } .seat.t1 { border-left: 3px solid #ef4444; }
+  #domino { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 6px; gap: 6px; }
+  #board { flex: 1; overflow: auto; background: #1f7a3f; border-radius: 10px; padding: 14px; display: flex; align-items: center; }
+  #chain { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; justify-content: center; margin: auto; max-width: 100%; }
+  .tile { display: inline-flex; background: #f8f5ea; color: #111; border-radius: 5px; border: 1px solid #999; box-shadow: 0 1px 2px #0006; }
+  .tile.h { flex-direction: row; width: 52px; height: 26px; } .tile.v { flex-direction: column; width: 26px; height: 52px; }
+  .tile .half { flex: 1; display: grid; place-items: center; }
+  .pips { display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr); width: 82%; height: 82%; }
+  .pips i { display: block; width: 70%; height: 70%; margin: auto; border-radius: 50%; }
+  .pips i.on { background: #111; }
+  .tile.h .half { width: 26px; height: 26px; } .tile.v .half { width: 26px; height: 26px; }
+  .tile.h .half + .half { border-left: 1px solid #999; } .tile.v .half + .half { border-top: 1px solid #999; }
+  .tile.last { outline: 2px solid var(--accent); }
+  #hand { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; min-height: 64px; align-items: center; }
+  #hand .tile { width: 36px; height: 72px; flex-direction: column; cursor: pointer; opacity: .45; }
+  #hand .tile .half { width: 36px; height: 36px; } #hand .tile .half + .half { border-top: 1px solid #999; border-left: 0; }
+  #hand .tile.ok { opacity: 1; box-shadow: 0 0 0 2px var(--green); } #hand .tile.ok:hover { transform: translateY(-4px); }
+  #dom-actions { display: flex; align-items: center; gap: 10px; justify-content: center; font-size: 12px; color: var(--muted); }
+  #lado { position: absolute; inset: 0; display: grid; place-items: center; background: #0008; }
+  #cartas { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 6px; gap: 6px; }
+  #mesa { flex: 1; display: flex; align-items: center; justify-content: center; gap: 26px; background: #1f5a3f; border-radius: 10px; position: relative; min-height: 120px; }
+  .uc { width: 64px; height: 96px; border-radius: 9px; border: 3px solid #fff; display: grid; place-items: center; font-weight: 900; font-size: 26px; color: #fff; text-shadow: 0 1px 2px #0008; box-shadow: 0 2px 6px #0007; position: relative; user-select: none; }
+  .uc.r { background: #e53935; } .uc.g { background: #43a047; } .uc.b { background: #1e88e5; } .uc.y { background: #fdd835; color: #222; text-shadow: none; } .uc.k { background: #222; }
+  .uc small { position: absolute; left: 5px; top: 3px; font-size: 11px; font-weight: 800; }
+  .uc .act { font-size: 15px; text-align: center; line-height: 1.1; }
+  #deck { width: 64px; height: 96px; border-radius: 9px; background: #222; border: 3px solid #fff; display: grid; place-items: center; cursor: pointer; color: #fff; font-size: 34px; }
+  #deck small { font-size: 11px; }
+  #deck.ok { box-shadow: 0 0 0 3px var(--green); }
+  #sentido { position: absolute; right: 12px; top: 8px; color: #fff9; font-size: 22px; }
+  #cartas-acoes { display: flex; gap: 8px; justify-content: center; min-height: 32px; }
+  #myhand { display: flex; gap: 6px; overflow-x: auto; padding: 6px 4px 10px; min-height: 110px; align-items: flex-end; justify-content: safe center; }
+  #myhand .uc { flex: none; opacity: .45; cursor: pointer; transition: transform .1s; }
+  #myhand .uc.ok { opacity: 1; box-shadow: 0 0 0 3px var(--green); } #myhand .uc.ok:hover { transform: translateY(-6px); }
+  #cor { position: absolute; inset: 0; display: grid; place-items: center; background: #0008; }
+  .cores { display: flex; gap: 10px; justify-content: center; margin-bottom: 12px; }
+  .cores button { width: 54px; height: 54px; border-radius: 12px; border: 3px solid #fff; }
+  .corbadge { position: absolute; right: -10px; top: -10px; width: 22px; height: 22px; border-radius: 50%; border: 2px solid #fff; }
+  #luta { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
+  #luta-select { flex: 1; overflow: auto; padding: 8px; }
+  .lsel h3 { margin: 6px 0; font-size: 14px; color: var(--muted); }
+  #fighters, #arenas { display: flex; flex-wrap: wrap; gap: 8px; }
+  .fcard { width: 150px; background: var(--panel); border-radius: 10px; padding: 8px; cursor: pointer; border: 2px solid transparent; font-size: 12px; }
+  .fcard.sel { border-color: var(--accent); } .fcard.rival { border-color: #ef4444; border-style: dashed; }
+  .fcard b { display: block; font-size: 14px; } .fcard .ava { width: 40px; height: 40px; border-radius: 50%; margin-bottom: 4px; }
+  .fcard small { color: var(--muted); display: block; margin-top: 3px; }
+  .acard { padding: 8px 12px; border-radius: 10px; background: var(--panel); cursor: pointer; border: 2px solid transparent; font-size: 13px; }
+  .acard.sel { border-color: var(--accent); }
+  #luta-status { margin: 10px 0; font-size: 13px; color: var(--muted); }
+  #luta-stage { flex: 1; display: flex; flex-direction: column; min-height: 0; align-items: center; position: relative; }
+  #lc { max-width: 100%; max-height: 100%; border-radius: 10px; }
+  body.touch #lc { width: 100%; height: auto; max-height: calc(100% - 150px); object-fit: contain; flex: none; }
+  #pad { display: none; width: 100%; justify-content: space-between; padding: 6px; gap: 6px; flex: none; }
+  #pad button { width: 54px; height: 54px; border-radius: 50%; font-size: 20px; background: #2b2f38; }
+  #pad .pad-l, #pad .pad-r { display: flex; gap: 6px; flex-wrap: wrap; max-width: 48%; align-content: flex-start; }
+  #pad .pad-r { justify-content: flex-end; }
+  #pad .sp { background: #6a1b9a; } #pad .ult { background: #b71c1c; }
+  body.touch #pad { display: flex; } body.touch #luta-help { display: none; }
+  #luta-help { font-size: 11px; color: var(--muted); padding: 4px; }
+  #toast { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); background: #000c; color: #fff; padding: 8px 14px; border-radius: 10px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="top">
+    <div id="seats"></div>
+    <span id="msg"></span>
+    <button id="sit" class="primary">Jogar</button>
+    <button id="start" class="primary hide">▶ Começar</button>
+    <button id="stand" class="hide">Sair da mesa</button>
+    <button id="reset" class="hide">Nova partida</button>
+    <button id="trocar" title="Trocar de jogo">Jogos</button>
+  </div>
+  <div id="stage"><canvas id="c" width="880" height="480"></canvas></div>
+  <div id="luta" class="hide">
+    <div id="luta-select" class="hide">
+      <div class="lsel">
+        <h3>Escolha seu lutador</h3>
+        <div id="fighters"></div>
+        <h3>Arena</h3>
+        <div id="arenas"></div>
+        <div id="luta-status"></div>
+        <button id="luta-ready" class="primary">Pronto!</button>
+      </div>
+    </div>
+    <div id="luta-stage" class="hide"><canvas id="lc" width="800" height="400"></canvas>
+      <div id="pad">
+        <div class="pad-l"><button data-k="l">◀</button><button data-k="r">▶</button><button data-k="u">▲</button><button data-k="d">▼</button></div>
+        <div class="pad-r"><button data-k="p">👊</button><button data-k="k">🦵</button><button data-k="b">🛡️</button><button data-k="s" class="sp">✨</button><button data-k="x" class="ult">💥</button></div>
+      </div>
+      <div id="luta-help">Teclado: A/D anda · W pula · S agacha · J soco · K chute · L defende · U especial · I ultra</div>
+    </div>
+  </div>
+  <div id="cartas" class="hide">
+    <div id="mesa">
+      <div id="pile"></div>
+      <div id="deck" title="Comprar"><span>🂠</span><small id="deck-n"></small></div>
+      <div id="sentido">⟳</div>
+    </div>
+    <div id="cartas-acoes"><button id="uno" class="primary hide">UNO!</button><button id="pegou" class="danger hide">Pegou! (esqueceu o UNO)</button><button id="passar" class="hide">Passar</button></div>
+    <div id="myhand"></div>
+  </div>
+  <div id="domino" class="hide">
+    <div id="board"><div id="chain"></div></div>
+    <div id="hand"></div>
+    <div id="dom-actions"><button id="dom-pass" class="hide">Passar / Comprar</button><span id="dom-monte"></span></div>
+  </div>
+</div>
+<div id="pick">
+  <div class="card">
+    <h2>🕹️ Arcade King</h2>
+    <p>Escolha o jogo para a sala. Quem quiser jogar senta; o resto assiste.</p>
+    <button id="pick-sinuca" class="primary" style="font-size:16px;padding:10px 18px;width:100%">🎱 Sinuca (2 a 4, em duplas)</button>
+    <div style="height:10px"></div>
+    <button id="pick-domino" class="primary" style="font-size:16px;padding:10px 18px;width:100%">🁣 Dominó (2 a 4)</button>
+    <div style="height:10px"></div>
+    <button id="pick-cartas" class="primary" style="font-size:16px;padding:10px 18px;width:100%">🃏 Cartas, estilo Uno (2 a 4)</button>
+    <div style="height:10px"></div>
+    <button id="pick-luta" class="primary" style="font-size:16px;padding:10px 18px;width:100%">🥊 Luta (1x1)</button>
+  </div>
+</div>
+<div id="cor" class="hide"><div class="card"><p>Escolha a cor</p><div class="cores"><button data-cor="r" style="background:#e53935"></button><button data-cor="g" style="background:#43a047"></button><button data-cor="b" style="background:#1e88e5"></button><button data-cor="y" style="background:#fdd835"></button></div><button id="cor-x">Cancelar</button></div></div>
+<div id="lado" class="hide"><div class="card"><p id="lado-txt">De que lado?</p><button id="lado-esq" class="primary">◀ Esquerda</button> <button id="lado-dir" class="primary">Direita ▶</button> <button id="lado-x">Cancelar</button></div></div>
+<div id="power"><i></i></div>
+<div id="toast"></div>
+<script src="/socket.io/socket.io.js"></script>
+<script src="arcade.js?v=7"></script>
+</body>
+</html>
