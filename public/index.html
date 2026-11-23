@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>TalKing</title>
   <link rel="icon" href="logo-coroa.svg" />
-  <link rel="stylesheet" href="style.css?v=189" />
+  <link rel="stylesheet" href="style.css?v=190" />
 </head>
 <body>
   <!-- Abertura: a logo parada e o fone caindo em cima da coroa (clique para pular) -->
@@ -157,6 +157,7 @@
         <div id="dj-panel" class="dj-panel" hidden>
           <header class="dj-head">
             <span class="dj-title">🤖 DJ King<small id="dj-mini-now" class="dj-mini-now"></small></span>
+            <button id="dj-mini-prev" class="dj-btn dj-mini-ctl" type="button" title="Voltar" hidden>⏮</button>
             <button id="dj-mini-play" class="dj-btn dj-mini-ctl" type="button" title="Tocar / pausar" hidden>▶</button>
             <button id="dj-mini-skip" class="dj-btn dj-mini-ctl" type="button" title="Pular" hidden>⏭</button>
             <button class="dj-mute dj-btn dj-mini-ctl" type="button" title="Silenciar o DJ (só para você)" hidden>🔊</button>
@@ -173,8 +174,10 @@
           <div class="dj-row">
             <div id="dj-now" class="dj-now"></div>
             <div class="dj-ctrl">
+              <button id="dj-prev" class="dj-btn" type="button" title="Voltar: recomeça a música (ou volta para a anterior)">⏮</button>
               <button id="dj-play" class="dj-btn" type="button" title="Tocar / pausar">▶</button>
               <button id="dj-skip" class="dj-btn" type="button" title="Pular">⏭</button>
+              <button id="dj-repeat" class="dj-btn" type="button" title="Repetir">🔁</button>
               <button id="dj-skip-all" class="btn small" type="button" title="Pular a playlist inteira" hidden>Pular playlist</button>
               <button type="button" class="dj-mute icon-btn" title="Silenciar o DJ (só para você)">🔊</button><label class="music-vol" title="Só você ouve mais alto ou mais baixo"><input id="dj-vol" type="range" min="0" max="100" /></label>
             </div>
@@ -425,6 +428,6 @@
   </div>
   <div id="photo-view" class="photo-view" hidden><img alt="Foto" /></div>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=189"></script>
+  <script src="app.js?v=190"></script>
 </body>
 </html>

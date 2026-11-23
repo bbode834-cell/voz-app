@@ -1320,3 +1320,6 @@ body.chat-open .main, body.dm-open .main { margin-right: 354px; }
   body.side-min .pessoa .avatar { width: 40px; height: 40px; }
   body.side-min .pessoa.live-on .avatar { outline: 2px solid var(--live); outline-offset: 2px; }
 }
+
+/* 🔁 repetir ligado */
+.dj-btn#dj-repeat.on { background: var(--accent-soft, var(--panel-3)); color: var(--accent); box-shadow: 0 0 14px -4px var(--accent-glow, transparent); }
