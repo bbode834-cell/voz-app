@@ -2376,16 +2376,21 @@ function renderScreens() {
 
 // Quadradinho da câmera por cima da tela de quem transmite (dá para arrastar
 // e mudar o tamanho puxando o canto)
+// Câmeras de quem transmite que você escolheu esconder (só nesta tela; o 👥 traz de volta)
+const camPipHidden = new Set();
 function updateCamPip(card, id) {
   const st = camOf(id);
   let pip = card.querySelector('.cam-pip');
-  if (!st) { if (pip) { pip.querySelector('video').srcObject = null; pip.remove(); } return; }
+  if (!st || camPipHidden.has(id)) { if (pip) { pip.querySelector('video').srcObject = null; pip.remove(); } return; }
   if (!pip) {
     pip = document.createElement('div');
     pip.className = 'cam-pip';
     pip.title = 'Arraste para mover · puxe o canto para mudar o tamanho';
-    pip.innerHTML = '<video autoplay playsinline muted></video>';
+    pip.innerHTML = '<video autoplay playsinline muted></video><button type="button" class="x" title="Esconder a câmera de quem transmite (só para você)">×</button>';
     pip.appendChild(mirrorButton(id));
+    const x = pip.querySelector('.x');
+    x.onpointerdown = (e) => e.stopPropagation();
+    x.onclick = (e) => { e.stopPropagation(); camPipHidden.add(id); renderScreens(); toast('Câmera de quem transmite escondida (só para você). Use 👥 para trazer de volta.'); };
     card.appendChild(pip);
     let drag = null;
     pip.addEventListener('pointerdown', (e) => {
@@ -2838,7 +2843,7 @@ const camStripHidden = new Set(); // pessoas escondidas com o ×
 let camMiniResizing = false; // alguém está puxando o canto de uma janelinha
 function toggleCamStrip() {
   camStripOn = !camStripOn;
-  if (camStripOn) camStripHidden.clear();
+  if (camStripOn) { camStripHidden.clear(); camPipHidden.clear(); }
   store.set('voz-cams-na-tela', camStripOn);
   renderScreens();
   toast(camStripOn ? '👥 Câmeras dos outros aparecem por cima da transmissão.' : 'Câmeras dos outros escondidas (só nesta tela).');
