@@ -386,7 +386,10 @@ const emailPendente = () => !!(config?.email && config?.cadastro === 'email' && 
 // Sem servidor: a pessoa fica "solta" no TalKing até entrar com um convite ou criar o seu
 function renderSemServidor() {
   const box = $('#empty');
-  if (!loggedIn || serversState.length) { box.classList.remove('sem-srv'); return false; }
+  if (!loggedIn || serversState.length) {
+    if (box.classList.contains('sem-srv')) { box.classList.remove('sem-srv'); box.innerHTML = '<img src="logo-fone.svg" alt="" class="empty-logo" /><h2>Nenhum canal selecionado</h2><p>Clique em uma sala para entrar.</p>'; }
+    return false;
+  }
   box.classList.add('sem-srv');
   box.innerHTML = `<img src="logo-fone.svg" alt="" class="empty-logo" />
     <h2>Bem-vindo ao TalKing, ${esc(myName)}!</h2>
@@ -5587,7 +5590,7 @@ function renderMain() {
   const ch = channelsState.find((c) => c.id === currentChannel);
   $('#main-title').textContent = ch ? ch.name : (serversState.length ? 'Escolha um canal de voz' : 'TalKing');
   $('#empty').hidden = !!ch;
-  if (!ch && !renderSemServidor()) { const box = $('#empty'); if (box.classList.contains('sem-srv') || !box.querySelector('h2')) { box.classList.remove('sem-srv'); box.innerHTML = '<img src="logo-fone.svg" alt="" class="empty-logo" /><h2>Nenhum canal selecionado</h2><p>Clique em uma sala para entrar.</p>'; } }
+  if (!ch) renderSemServidor();
   $('#callbar').hidden = !ch;
   $('#main-hint').hidden = !ch || ch.users.length < 2;
 
