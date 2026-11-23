@@ -5987,6 +5987,15 @@ function renderCinema(ch, box) {
     return u.stage ? '<button type="button" class="btn small stage-btn" data-off="1">⬇ Descer</button>' : `<button type="button" class="btn small stage-btn" ${palco.length >= 2 ? 'disabled title="O palco só cabe 2"' : ''}>⬆ Subir ao palco</button>`;
   };
   const botaoReacao = (u) => (u.id === selfId || !eu ? '' : `<span class="react-btns"><button type="button" class="react-btn" data-react="pipoca" title="Jogar pipoca">🍿</button><button type="button" class="react-btn" data-react="tomate" title="Jogar tomate">🍅</button></span>`);
+  // ⇄ na bolinha da câmera (e, na sua, o 👥 de espelhar para todo mundo)
+  const botoesEspelho = (d, u) => {
+    const b = document.createElement('span');
+    b.className = 'espelho-bolha';
+    b.appendChild(mirrorButton(u.id));
+    if (u.id === selfId) b.appendChild(flipAllButton());
+    b.onclick = (e) => e.stopPropagation();
+    d.appendChild(b);
+  };
   const liga = (d, u) => {
     const sb = d.querySelector('.stage-btn');
     if (sb) sb.onclick = async (e) => { e.stopPropagation(); const r = await emitAck('stage-set', { id: u.id, on: !sb.dataset.off }); if (r?.error) toast(r.error); };
@@ -6002,7 +6011,7 @@ function renderCinema(ch, box) {
     if (cena.palcoPos?.[i]) Object.assign(d.style, { left: cena.palcoPos[i].left, right: 'auto', top: cena.palcoPos[i].top });
     d.innerHTML = `${avatarHTML(u)}<span class="pname">🎤 ${esc(u.name)}${u.id === selfId ? ' (você)' : ''}</span>${isSharing(u.id) ? '<span class="live">AO VIVO</span>' : ''}${botaoPalco(u)}${botaoReacao(u)}`;
     const cam = camOf(u.id);
-    if (cam) { const v = camVideoFor(u.id, cam); d.querySelector('.avatar').replaceWith(v); v.className = 'cam-redonda'; v.play().catch(() => {}); }
+    if (cam) { const v = camVideoFor(u.id, cam); d.querySelector('.avatar').replaceWith(v); v.className = 'cam-redonda' + (isMirrored(u.id) ? ' mirror' : ''); v.play().catch(() => {}); botoesEspelho(d, u); }
     liga(d, u);
     wrap.appendChild(d);
   });
@@ -6032,7 +6041,7 @@ function renderCinema(ch, box) {
       if (cena.porta && (!vistos.has(u.id) || chegadas.has(u.id))) chegando.push(d);
       d.innerHTML = `<span class="assento">${assentoSVG(tipo, cor)}</span>${avatarHTML(u)}${fumaca(u)}<span class="pname">${esc(u.name)}${u.id === selfId ? ' (você)' : ''}</span>${u.hand ? '<span class="hand-badge" title="Quer subir ao palco">✋</span>' : ''}${botaoPalco(u)}${botaoReacao(u)}`;
       const camP = camOf(u.id);
-      if (camP) { const v = camVideoFor(u.id, camP); d.querySelector('.avatar').replaceWith(v); v.className = 'cam-redonda'; v.play().catch(() => {}); }
+      if (camP) { const v = camVideoFor(u.id, camP); d.querySelector('.avatar').replaceWith(v); v.className = 'cam-redonda' + (isMirrored(u.id) ? ' mirror' : ''); v.play().catch(() => {}); botoesEspelho(d, u); }
       liga(d, u);
       wrap.appendChild(d);
     }

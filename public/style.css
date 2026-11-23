@@ -1427,6 +1427,16 @@ body.palco #screens .screen-card { height: 100%; border-radius: 0; }
 .sentado .assento svg { width: 100%; height: 100%; display: block; }
 .sentado .avatar, .sentado .cam-redonda { position: absolute; left: 50%; top: 8%; transform: translate(-50%, -55%); width: 54%; aspect-ratio: 1; height: auto; font-size: calc(16px * var(--k)); border: 2px solid rgba(255,255,255,.85); box-shadow: 0 3px 8px #000; }
 .sentado.tapete .avatar, .sentado.tapete .cam-redonda { top: 30%; }
+.sentado .cam-redonda.mirror { transform: translate(-50%, -55%) scaleX(-1); }
+/* ⇄ e 👥 nas bolinhas de câmera do cinema: aparecem ao passar o mouse */
+.espelho-bolha { position: absolute; left: 50%; transform: translateX(-50%); display: flex; gap: 4px; z-index: 6; opacity: 0; transition: opacity .2s; }
+.no-palco-pessoa .espelho-bolha { top: 0; }
+.sentado .espelho-bolha { top: 18%; }
+.sentado.tapete .espelho-bolha { top: 40%; }
+.no-palco-pessoa:hover .espelho-bolha, .sentado:hover .espelho-bolha { opacity: 1; }
+.espelho-bolha .mirror-btn { position: static; opacity: 1; width: 24px; height: 24px; }
+.espelho-bolha .mirror-btn svg { width: 13px; height: 13px; }
+@media (hover: none) { .espelho-bolha { opacity: .8; } }
 .sentado .cam-redonda { border-radius: 50%; object-fit: cover; background: #000; z-index: 1; }
 .sentado.speaking .avatar, .sentado.speaking .cam-redonda { outline: 3px solid var(--green); }
 .sentado.eu .avatar, .sentado.eu .cam-redonda { outline: 3px solid var(--accent); }
